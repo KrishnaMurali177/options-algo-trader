@@ -1,0 +1,19 @@
+{
+  "account_id": "TEST123",
+  "buying_power": 50000.0,
+  "cash": 50000.0,
+  "portfolio_value": 100000.0,
+  "options_buying_power": 25000.0,
+  "stock_positions": [
+    {
+      "symbol": "AAPL",
+      "quantity": 200,
+      "average_cost": 150.0,
+      "current_price": 190.0,
+      "market_value": 38000.0,
+      "unrealized_pnl": 8000.0
+    }
+  ],
+  "option_positions": []
+}
+

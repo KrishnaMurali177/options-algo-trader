@@ -1,0 +1,4 @@
+date,direction,entry_price,exit_price,pnl,exit_reason,momentum,quality,explosion,is_winner,entry_time,exit_time
+2026-03-18,put,665.969970703125,667.74,-1.77,stop,-40,6,5,False,10:30,11:05
+2026-03-23,call,661.65,659.14,-2.51,stop,45,7,4,False,10:45,11:40
+2026-04-17,call,709.239990234375,710.48,1.24,target_1,40,7,4,True,10:30,10:40

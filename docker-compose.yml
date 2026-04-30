@@ -1,0 +1,19 @@
+services:
+  # Scheduled agent — scans at 9:35 AM, 12:00 PM, 3:30 PM ET (Mon–Fri)
+  agent:
+    build: .
+    env_file: .env
+    environment:
+      - WATCHLIST=SPY,QQQ,AAPL
+    restart: unless-stopped
+    volumes:
+      - ./backtest_results:/app/backtest_results
+
+  # Streamlit dashboard — http://localhost:8501
+  dashboard:
+    build: .
+    env_file: .env
+    command: streamlit run dashboard/app.py --server.address=0.0.0.0 --server.port=8501
+    ports:
+      - "8501:8501"
+    restart: unless-stopped

@@ -1,0 +1,63 @@
+[
+  {
+    "symbol": "AAPL260515C00195000",
+    "strike_price": 195.0,
+    "expiration_date": "2026-05-15",
+    "bid_price": 3.20,
+    "ask_price": 3.50,
+    "last_trade_price": 3.35,
+    "volume": 1200,
+    "open_interest": 5400,
+    "delta": 0.35,
+    "gamma": 0.04,
+    "theta": -0.05,
+    "vega": 0.12,
+    "implied_volatility": 0.25
+  },
+  {
+    "symbol": "AAPL260515C00200000",
+    "strike_price": 200.0,
+    "expiration_date": "2026-05-15",
+    "bid_price": 1.80,
+    "ask_price": 2.10,
+    "last_trade_price": 1.95,
+    "volume": 800,
+    "open_interest": 3200,
+    "delta": 0.25,
+    "gamma": 0.03,
+    "theta": -0.04,
+    "vega": 0.10,
+    "implied_volatility": 0.24
+  },
+  {
+    "symbol": "AAPL260515P00190000",
+    "strike_price": 190.0,
+    "expiration_date": "2026-05-15",
+    "bid_price": 4.50,
+    "ask_price": 4.80,
+    "last_trade_price": 4.65,
+    "volume": 1500,
+    "open_interest": 6000,
+    "delta": -0.48,
+    "gamma": 0.05,
+    "theta": -0.06,
+    "vega": 0.14,
+    "implied_volatility": 0.27
+  },
+  {
+    "symbol": "AAPL260515P00185000",
+    "strike_price": 185.0,
+    "expiration_date": "2026-05-15",
+    "bid_price": 2.80,
+    "ask_price": 3.10,
+    "last_trade_price": 2.95,
+    "volume": 900,
+    "open_interest": 4100,
+    "delta": -0.35,
+    "gamma": 0.04,
+    "theta": -0.05,
+    "vega": 0.12,
+    "implied_volatility": 0.26
+  }
+]
+

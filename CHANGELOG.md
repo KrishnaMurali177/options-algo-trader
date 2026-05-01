@@ -1,0 +1,31 @@
+# Changelog
+
+- [2026-04-27] Created: Dockerfile — Python 3.12 container for scheduled agent and dashboard
+- [2026-04-27] Created: docker-compose.yml — Orchestrates agent + Streamlit dashboard services
+- [2026-04-27] Created: .env — Environment config template (credentials to be filled in)
+- [2026-04-27] Created: CHANGELOG.md — This file
+- [2026-04-28] Modified: scripts/run_scheduled.py — Fixed RuntimeError by making main() async and using asyncio.run()
+- [2026-04-28] Modified: requirements.txt — Added tzdata>=2024.1 to fix tz_convert crashes on python:3.12-slim Docker image (zoneinfo needs tzdata on slim containers)
+- [2026-04-29] Modified: src/models/market_data.py — Added rsi_5min, zlema_fast, zlema_slow, zlema_trend fields
+- [2026-04-29] Modified: src/market_analyzer.py — Hybrid intraday indicators (daily for regime, 5-min for trade signals) + ZLEMA trend
+- [2026-04-29] Modified: src/opening_range.py — Added _analyze_from_bars() for replay mode using pre-fetched bars
+- [2026-04-29] Modified: src/recent_momentum.py — Accept pre-fetched bars_5m for replay mode
+- [2026-04-29] Modified: src/momentum_cascade.py — ZLEMA trend signal, VPVR level break, replay bars support, 11-point scoring
+- [2026-04-29] Modified: src/utils/quality_scorer.py — Upgraded to 11-point scoring with ZLEMA, VPVR, and regime guard penalties
+- [2026-04-29] Modified: src/strategies/buy_call.py — Use rsi_5min for intraday, regime guard for active sell-offs
+- [2026-04-29] Modified: src/strategies/buy_put.py — Use rsi_5min for intraday, regime guard for extended sell-offs
+- [2026-04-29] Modified: src/backtester.py — ZLEMA trend proxy, regime guard for calls/puts
+- [2026-04-29] Modified: dashboard/app.py — Replay uses real bars, ZLEMA/VPVR scoring, sweet spot indicator, improved eligibility reasons
+- [2026-04-29] Modified: scripts/run_scheduled.py — Fixed async main() to use synchronous event loop
+- [2026-04-29] Modified: scripts/test_replay.py — Updated quality score label to /11
+- [2026-04-29] Created: scripts/backtest_sweet_spot.py — Sweet spot backtest script
+- [2026-04-29] Created: scripts/scan_sweet_spot_today.py — Today's sweet spot scanner
+- [2026-04-29] Modified: README.md — Updated for 11-point scoring, ZLEMA, VPVR, momentum cascade docs
+- [2026-04-30] Created: src/exceptions.py — Custom exception hierarchy (DataFetchError, InsufficientDataError, PortfolioDataError)
+- [2026-04-30] Modified: src/opening_range.py — Narrow except clause to DataFetchError; replace ValueError with domain exceptions
+- [2026-04-30] Modified: src/recent_momentum.py — Narrow except clause to DataFetchError; replace ValueError with domain exceptions
+- [2026-04-30] Modified: src/momentum_cascade.py — Narrow except clause to DataFetchError; replace ValueError with domain exceptions
+- [2026-04-30] Modified: src/market_analyzer.py — Replace ValueError with DataFetchError for empty data
+- [2026-04-30] Modified: src/backtester.py — Replace ValueError with DataFetchError for empty data
+- [2026-04-30] Modified: CLAUDE.md — Updated project guidelines with code style, testing, and layout docs
+- [2026-04-30] Created: CRITICAL_FIXES_PLAN.md — Five-phase plan for critical safety fixes

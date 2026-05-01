@@ -1,0 +1,40 @@
+[build-system]
+requires = ["setuptools>=68.0", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "options-agent"
+version = "0.1.0"
+description = "AI-powered options trading agent via MCP (Robinhood)"
+requires-python = ">=3.11"
+dependencies = [
+    "mcp>=1.0.0",
+    "anthropic>=0.40.0",
+    "robin_stocks>=3.0.0",
+    "pyotp>=2.9.0",
+    "yfinance>=0.2.40",
+    "pandas>=2.2.0",
+    "pandas-ta>=0.3.14b",
+    "numpy>=1.26.0",
+    "pydantic>=2.8.0",
+    "pydantic-settings>=2.4.0",
+    "python-dotenv>=1.0.0",
+    "apscheduler>=3.10.0",
+    "structlog>=24.4.0",
+    "scipy>=1.12.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.24.0",
+]
+dashboard = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+

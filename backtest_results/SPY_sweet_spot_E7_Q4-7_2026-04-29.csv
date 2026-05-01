@@ -1,0 +1,4 @@
+date,direction,entry_price,exit_price,pnl,exit_reason,momentum,quality,explosion,is_winner,entry_time,exit_time
+2025-06-09,call,599.84,599.22,-0.62,stop,70,7,7,False,10:30,11:30
+2025-08-25,call,644.54,644.93,0.39,target_1,65,7,7,True,10:30,11:30
+2025-09-04,call,645.12,646.23,1.11,target_2,50,7,7,True,10:30,11:30

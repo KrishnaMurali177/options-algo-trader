@@ -37,6 +37,7 @@ class Settings(BaseSettings):
 
     # ── Agent Behaviour ──
     dry_run: bool = Field(default=True, description="If True, log orders without executing")
+    require_confirmation: bool = Field(default=True, description="Require explicit confirmation before live order execution")
     log_level: str = "INFO"
 
     # ── Risk Parameters ──

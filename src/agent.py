@@ -49,6 +49,8 @@ class TradingAgent:
         self.analyzer = analyzer or MarketAnalyzer()
         self.risk_mgr = risk_mgr or RiskManager()
         self.selector = selector or StrategySelector()
+        self._pending_order: OptionOrder | None = None
+        self._pending_summary: dict | None = None
 
     # ── Main entry point ─────────────────────────────────────────
 
@@ -122,6 +124,12 @@ class TradingAgent:
                 summary["status"] = "dry_run"
                 summary["message"] = "Order validated but NOT executed (dry-run mode)."
                 logger.info("🟡 DRY RUN — order not placed.")
+            elif settings.require_confirmation:
+                self._pending_order = order
+                self._pending_summary = summary
+                summary["status"] = "awaiting_confirmation"
+                summary["message"] = "Order passed risk checks. Call confirm_and_execute() to place it."
+                logger.info("🟠 AWAITING CONFIRMATION — order held pending human approval.")
             else:
                 exec_result = await self.mcp.place_option_order(
                     self._order_to_mcp_payload(order)
@@ -134,6 +142,36 @@ class TradingAgent:
             summary["status"] = "error"
             summary["message"] = str(exc)
             logger.exception("Agent error: %s", exc)
+        finally:
+            try:
+                await self.mcp.disconnect()
+            except Exception:
+                pass
+
+        return summary
+
+    async def confirm_and_execute(self) -> dict:
+        """Execute a previously held order after human confirmation."""
+        if self._pending_order is None:
+            return {"status": "error", "message": "No pending order to execute."}
+
+        order = self._pending_order
+        summary = self._pending_summary or {}
+        self._pending_order = None
+        self._pending_summary = None
+
+        try:
+            await self.mcp.connect()
+            exec_result = await self.mcp.place_option_order(
+                self._order_to_mcp_payload(order)
+            )
+            summary["status"] = "executed"
+            summary["execution_result"] = exec_result
+            logger.info("🟢 Order EXECUTED after confirmation: %s", exec_result)
+        except Exception as exc:
+            summary["status"] = "error"
+            summary["message"] = f"Execution failed: {exc}"
+            logger.exception("Execution error: %s", exc)
         finally:
             try:
                 await self.mcp.disconnect()

@@ -31,3 +31,6 @@
 - [2026-04-30] Created: CRITICAL_FIXES_PLAN.md — Five-phase plan for critical safety fixes
 - [2026-05-01] Modified: src/risk_manager.py — Raise PortfolioDataError on zero/negative portfolio value instead of silently defaulting to 1.0
 - [2026-05-01] Modified: tests/test_risk_manager.py — Added tests for zero and negative portfolio value raising PortfolioDataError
+- [2026-05-01] Modified: config/settings.py — Added require_confirmation setting (default True) for live order gate
+- [2026-05-01] Modified: src/agent.py — Two-step order confirmation: hold order when require_confirmation=True, execute via confirm_and_execute()
+- [2026-05-01] Modified: tests/test_agent.py — Added tests for confirmation gate (holds order, confirm executes, no-pending returns error)

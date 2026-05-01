@@ -8,6 +8,7 @@ import pytest
 from datetime import date
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from config.settings import settings
 from src.agent import TradingAgent
 from src.models.market_data import MarketIndicators, MarketRegime
 from src.models.options import Greeks, OptionContract
@@ -145,4 +146,76 @@ class TestTradingAgent:
         assert "rationale" in decision
         assert "confidence" in decision
         assert decision["confidence"] > 0
+
+    @pytest.mark.asyncio
+    async def test_live_with_confirmation_holds_order(self, low_vol_bullish_indicators):
+        """Live mode with require_confirmation=True should hold the order, not execute."""
+
+        mcp = AsyncMock()
+        mcp.connect = AsyncMock()
+        mcp.disconnect = AsyncMock()
+        mcp.get_account_info = AsyncMock(return_value={
+            "account_id": "T", "buying_power": 50000, "cash": 50000,
+            "portfolio_value": 100000, "options_buying_power": 25000,
+        })
+        mcp.get_positions = AsyncMock(side_effect=lambda t: [
+            {"symbol": "AAPL", "quantity": 200, "average_cost": 150, "current_price": 190,
+             "market_value": 38000, "unrealized_pnl": 8000}
+        ] if t == "stock" else [])
+        mcp.get_options_chain = AsyncMock(return_value=_mock_chain())
+        mcp.place_option_order = AsyncMock(return_value={"order_id": "12345"})
+
+        analyzer = MagicMock()
+        analyzer.analyze = MagicMock(return_value=low_vol_bullish_indicators)
+        analyzer.classify_regime = MagicMock(return_value=MarketRegime.LOW_VOL_BULLISH)
+
+        agent = TradingAgent(mcp_client=mcp, analyzer=analyzer)
+
+        with patch.object(settings, "require_confirmation", True):
+            summary = await agent.run("AAPL", dry_run=False)
+
+        assert summary["status"] == "awaiting_confirmation"
+        mcp.place_option_order.assert_not_called()
+        assert agent._pending_order is not None
+
+    @pytest.mark.asyncio
+    async def test_confirm_and_execute_places_order(self, low_vol_bullish_indicators):
+        """confirm_and_execute() should place the held order via MCP."""
+
+        mcp = AsyncMock()
+        mcp.connect = AsyncMock()
+        mcp.disconnect = AsyncMock()
+        mcp.get_account_info = AsyncMock(return_value={
+            "account_id": "T", "buying_power": 50000, "cash": 50000,
+            "portfolio_value": 100000, "options_buying_power": 25000,
+        })
+        mcp.get_positions = AsyncMock(side_effect=lambda t: [
+            {"symbol": "AAPL", "quantity": 200, "average_cost": 150, "current_price": 190,
+             "market_value": 38000, "unrealized_pnl": 8000}
+        ] if t == "stock" else [])
+        mcp.get_options_chain = AsyncMock(return_value=_mock_chain())
+        mcp.place_option_order = AsyncMock(return_value={"order_id": "12345"})
+
+        analyzer = MagicMock()
+        analyzer.analyze = MagicMock(return_value=low_vol_bullish_indicators)
+        analyzer.classify_regime = MagicMock(return_value=MarketRegime.LOW_VOL_BULLISH)
+
+        agent = TradingAgent(mcp_client=mcp, analyzer=analyzer)
+
+        with patch.object(settings, "require_confirmation", True):
+            summary = await agent.run("AAPL", dry_run=False)
+        assert summary["status"] == "awaiting_confirmation"
+
+        result = await agent.confirm_and_execute()
+        assert result["status"] == "executed"
+        mcp.place_option_order.assert_called_once()
+        assert agent._pending_order is None
+
+    @pytest.mark.asyncio
+    async def test_confirm_without_pending_returns_error(self):
+        """confirm_and_execute() with no pending order should return error."""
+        agent = TradingAgent(mcp_client=AsyncMock())
+        result = await agent.confirm_and_execute()
+        assert result["status"] == "error"
+        assert "No pending order" in result["message"]
 

@@ -7,6 +7,7 @@ from datetime import date
 from unittest.mock import MagicMock
 
 import pytest
+from src.exceptions import PortfolioDataError
 from src.models.options import OptionLeg, OptionOrder
 from src.risk_manager import RiskManager
 
@@ -91,4 +92,18 @@ class TestRiskManager:
         result = rm.validate(order, sample_portfolio, low_vol_bullish_indicators)
         assert not result.approved
         assert any("Daily trade limit" in r for r in result.rejection_reasons)
+
+    def test_raises_on_zero_portfolio_value(self, sample_portfolio, low_vol_bullish_indicators):
+        sample_portfolio.account.portfolio_value = 0.0
+        rm = RiskManager(cfg=self._make_cfg())
+        order = _make_order(max_loss=500)
+        with pytest.raises(PortfolioDataError, match="Invalid portfolio value"):
+            rm.validate(order, sample_portfolio, low_vol_bullish_indicators)
+
+    def test_raises_on_negative_portfolio_value(self, sample_portfolio, low_vol_bullish_indicators):
+        sample_portfolio.account.portfolio_value = -500.0
+        rm = RiskManager(cfg=self._make_cfg())
+        order = _make_order(max_loss=500)
+        with pytest.raises(PortfolioDataError, match="Invalid portfolio value"):
+            rm.validate(order, sample_portfolio, low_vol_bullish_indicators)
 

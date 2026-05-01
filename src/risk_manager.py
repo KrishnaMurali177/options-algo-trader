@@ -6,6 +6,7 @@ import logging
 from datetime import date
 
 from config.settings import settings
+from src.exceptions import PortfolioDataError
 from src.models.options import OptionOrder
 from src.models.portfolio import PortfolioSummary, RiskAssessment
 from src.models.market_data import MarketIndicators
@@ -26,7 +27,11 @@ class RiskManager:
         indicators: MarketIndicators,
     ) -> RiskAssessment:
         reasons: list[str] = []
-        pv = portfolio.account.portfolio_value or 1.0  # avoid div-by-zero
+        pv = portfolio.account.portfolio_value
+        if not pv or pv <= 0:
+            raise PortfolioDataError(
+                f"Invalid portfolio value: {pv}. Cannot perform risk checks."
+            )
 
         # 1. Position size check
         position_size_pct = order.max_loss / pv

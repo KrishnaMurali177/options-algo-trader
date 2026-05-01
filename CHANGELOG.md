@@ -29,3 +29,5 @@
 - [2026-04-30] Modified: src/backtester.py — Replace ValueError with DataFetchError for empty data
 - [2026-04-30] Modified: CLAUDE.md — Updated project guidelines with code style, testing, and layout docs
 - [2026-04-30] Created: CRITICAL_FIXES_PLAN.md — Five-phase plan for critical safety fixes
+- [2026-05-01] Modified: src/risk_manager.py — Raise PortfolioDataError on zero/negative portfolio value instead of silently defaulting to 1.0
+- [2026-05-01] Modified: tests/test_risk_manager.py — Added tests for zero and negative portfolio value raising PortfolioDataError

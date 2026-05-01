@@ -21,3 +21,11 @@
 - [2026-04-29] Created: scripts/backtest_sweet_spot.py — Sweet spot backtest script
 - [2026-04-29] Created: scripts/scan_sweet_spot_today.py — Today's sweet spot scanner
 - [2026-04-29] Modified: README.md — Updated for 11-point scoring, ZLEMA, VPVR, momentum cascade docs
+- [2026-04-30] Created: src/exceptions.py — Custom exception hierarchy (DataFetchError, InsufficientDataError, PortfolioDataError)
+- [2026-04-30] Modified: src/opening_range.py — Narrow except clause to DataFetchError; replace ValueError with domain exceptions
+- [2026-04-30] Modified: src/recent_momentum.py — Narrow except clause to DataFetchError; replace ValueError with domain exceptions
+- [2026-04-30] Modified: src/momentum_cascade.py — Narrow except clause to DataFetchError; replace ValueError with domain exceptions
+- [2026-04-30] Modified: src/market_analyzer.py — Replace ValueError with DataFetchError for empty data
+- [2026-04-30] Modified: src/backtester.py — Replace ValueError with DataFetchError for empty data
+- [2026-04-30] Modified: CLAUDE.md — Updated project guidelines with code style, testing, and layout docs
+- [2026-04-30] Created: CRITICAL_FIXES_PLAN.md — Five-phase plan for critical safety fixes

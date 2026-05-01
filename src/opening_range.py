@@ -18,6 +18,7 @@ from typing import Optional
 import numpy as np
 import pandas as pd
 
+from src.exceptions import DataFetchError, InsufficientDataError
 from src.models.market_data import MarketIndicators
 
 logger = logging.getLogger(__name__)
@@ -91,7 +92,7 @@ class OpeningRangeAnalyzer:
             return self._analyze_synthesized(indicators)
         try:
             return self._analyze_live(indicators)
-        except Exception as exc:
+        except DataFetchError as exc:
             logger.warning(
                 "Live intraday fetch failed for %s (%s) — falling back to synthesized",
                 indicators.symbol, exc,
@@ -259,7 +260,7 @@ class OpeningRangeAnalyzer:
 
         df = yf.download(symbol, period="5d", interval="5m", progress=False)
         if df.empty:
-            raise ValueError(f"No intraday data returned for {symbol}")
+            raise DataFetchError(f"No intraday data returned for {symbol}")
 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
@@ -276,14 +277,14 @@ class OpeningRangeAnalyzer:
             last_trading_day = df.index[-1].date()
             today_bars = df[df.index.date == last_trading_day].copy()
             if today_bars.empty:
-                raise ValueError(f"No bars found for {symbol} on {today} or recent trading day")
+                raise DataFetchError(f"No bars found for {symbol} on {today} or recent trading day")
             logger.info("Using data from %s (last trading day)", last_trading_day)
 
         # First 60 minutes: 9:30–10:30 ET
         opening_bars = today_bars.between_time("09:30", "10:29")
 
         if len(opening_bars) < 2:
-            raise ValueError(
+            raise InsufficientDataError(
                 f"Only {len(opening_bars)} bars in 9:30–10:30 window for {symbol}. "
                 f"Market may not have opened yet."
             )

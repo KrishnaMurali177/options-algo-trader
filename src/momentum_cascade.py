@@ -24,6 +24,7 @@ from datetime import date
 
 import pandas as pd
 
+from src.exceptions import DataFetchError, InsufficientDataError
 from src.models.market_data import MarketIndicators
 
 logger = logging.getLogger(__name__)
@@ -74,7 +75,7 @@ class MomentumCascadeDetector:
             if bars_5m is not None and not bars_5m.empty:
                 return self._analyze_from_bars(bars_5m, indicators, quality_score, or_momentum, recent_momentum)
             return self._analyze_live(indicators, quality_score, or_momentum, recent_momentum)
-        except Exception as exc:
+        except DataFetchError as exc:
             logger.warning("Live cascade analysis failed (%s) — using synthesized", exc)
             return self._analyze_synthesized(indicators, quality_score, or_momentum, recent_momentum)
 
@@ -91,7 +92,7 @@ class MomentumCascadeDetector:
         symbol = indicators.symbol
         df = yf.download(symbol, period="5d", interval="5m", progress=False)
         if df.empty:
-            raise ValueError(f"No intraday data for {symbol}")
+            raise DataFetchError(f"No intraday data for {symbol}")
 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
@@ -108,7 +109,7 @@ class MomentumCascadeDetector:
             today_bars = df[df.index.date == last_day].copy()
 
         if len(today_bars) < 6:
-            raise ValueError(f"Only {len(today_bars)} bars — need at least 6")
+            raise InsufficientDataError(f"Only {len(today_bars)} bars — need at least 6")
 
         close = today_bars["Close"].astype(float)
         volume = today_bars["Volume"].astype(float)
@@ -278,7 +279,7 @@ class MomentumCascadeDetector:
         Same logic as _analyze_live but operates on pre-fetched bars.
         """
         if len(bars_5m) < 6:
-            raise ValueError(f"Only {len(bars_5m)} bars — need at least 6")
+            raise InsufficientDataError(f"Only {len(bars_5m)} bars — need at least 6")
 
         close = bars_5m["Close"].astype(float)
         volume = bars_5m["Volume"].astype(float)

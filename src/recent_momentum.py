@@ -16,6 +16,7 @@ from datetime import date, datetime, time, timedelta, timezone
 import numpy as np
 import pandas as pd
 
+from src.exceptions import DataFetchError, InsufficientDataError
 from src.models.market_data import MarketIndicators
 
 logger = logging.getLogger(__name__)
@@ -62,7 +63,7 @@ class RecentMomentumAnalyzer:
             return self._synthesize(indicators)
         try:
             return self._analyze_live(indicators)
-        except Exception as exc:
+        except DataFetchError as exc:
             logger.warning(
                 "Live recent momentum fetch failed for %s (%s) — falling back to synthesized",
                 indicators.symbol, exc,
@@ -78,7 +79,7 @@ class RecentMomentumAnalyzer:
 
         df = yf.download(symbol, period="5d", interval="5m", progress=False)
         if df.empty:
-            raise ValueError(f"No intraday data for {symbol}")
+            raise DataFetchError(f"No intraday data for {symbol}")
 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
@@ -94,12 +95,12 @@ class RecentMomentumAnalyzer:
             last_day = df.index[-1].date()
             today_bars = df[df.index.date == last_day].copy()
             if today_bars.empty:
-                raise ValueError(f"No bars for {symbol}")
+                raise DataFetchError(f"No bars for {symbol}")
 
         # Take the last 6 bars (30 min of 5-min candles)
         recent = today_bars.tail(6)
         if len(recent) < 3:
-            raise ValueError(f"Only {len(recent)} recent bars — need at least 3")
+            raise InsufficientDataError(f"Only {len(recent)} recent bars — need at least 3")
 
         return self._score(recent, today_bars, indicators, data_source="live")
 

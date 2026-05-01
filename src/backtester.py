@@ -40,6 +40,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+from src.exceptions import DataFetchError
 from src.models.backtest_result import (
     BacktestReport,
     SignalAccuracy,
@@ -94,7 +95,7 @@ class IntradayBacktester:
 
         df = yf.download(symbol, period=period, interval=interval, progress=False)
         if df.empty:
-            raise ValueError(f"No data returned for {symbol}")
+            raise DataFetchError(f"No data returned for {symbol}")
 
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)

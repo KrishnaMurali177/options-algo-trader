@@ -9,6 +9,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
+from src.exceptions import DataFetchError
 from src.models.market_data import MarketIndicators, MarketRegime
 
 logger = logging.getLogger(__name__)
@@ -49,7 +50,7 @@ class MarketAnalyzer:
         # ── Fetch primary data ──
         df = yf.download(symbol, period=tf["period"], interval=tf["interval"], progress=False)
         if df.empty:
-            raise ValueError(f"No data returned for {symbol} ({tf['label']})")
+            raise DataFetchError(f"No data returned for {symbol} ({tf['label']})")
         if isinstance(df.columns, pd.MultiIndex):
             df.columns = df.columns.get_level_values(0)
 

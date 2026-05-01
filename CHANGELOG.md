@@ -39,3 +39,8 @@
 - [2026-05-01] Modified: src/agent.py — Populate delta from MCP position data
 - [2026-05-01] Modified: src/risk_manager.py — Compute net portfolio delta from positions and order legs
 - [2026-05-01] Modified: tests/test_risk_manager.py — Added delta computation tests (buy and sell legs)
+- [2026-05-01] Created: src/audit.py — AuditLogger: persistent JSON-lines trail per agent run
+- [2026-05-01] Modified: src/agent.py — Integrated audit logging in finally block of run()
+- [2026-05-01] Modified: docker-compose.yml — Added audit_logs volume mount for agent service
+- [2026-05-01] Modified: .gitignore — Added audit_logs/ directory
+- [2026-05-01] Created: tests/test_audit.py — Tests for AuditLogger (create, append, nested dir)

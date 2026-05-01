@@ -7,6 +7,7 @@ import logging
 from datetime import date, datetime, timedelta, timezone
 
 from config.settings import settings
+from src.audit import AuditLogger
 from src.market_analyzer import MarketAnalyzer
 from src.mcp_client import MCPClient
 from src.models.market_data import MarketRegime
@@ -49,6 +50,7 @@ class TradingAgent:
         self.analyzer = analyzer or MarketAnalyzer()
         self.risk_mgr = risk_mgr or RiskManager()
         self.selector = selector or StrategySelector()
+        self.audit = AuditLogger()
         self._pending_order: OptionOrder | None = None
         self._pending_summary: dict | None = None
 
@@ -143,6 +145,10 @@ class TradingAgent:
             summary["message"] = str(exc)
             logger.exception("Agent error: %s", exc)
         finally:
+            try:
+                self.audit.log(summary)
+            except Exception:
+                logger.warning("Failed to write audit log", exc_info=True)
             try:
                 await self.mcp.disconnect()
             except Exception:

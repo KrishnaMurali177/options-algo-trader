@@ -10,4 +10,5 @@ logs/
 .DS_Store
 .pytest_cache/
 .claude/
+audit_logs/
 

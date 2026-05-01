@@ -8,6 +8,7 @@ services:
     restart: unless-stopped
     volumes:
       - ./backtest_results:/app/backtest_results
+      - ./audit_logs:/app/audit_logs
 
   # Streamlit dashboard — http://localhost:8501
   dashboard:

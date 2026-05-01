@@ -39,6 +39,7 @@ class OptionLeg(BaseModel):
     option_type: Literal["call", "put"]
     action: Literal["buy_to_open", "sell_to_open", "buy_to_close", "sell_to_close"]
     quantity: int = 1
+    greeks: Optional[Greeks] = None
 
 
 class OptionOrder(BaseModel):

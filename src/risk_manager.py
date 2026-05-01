@@ -81,13 +81,23 @@ class RiskManager:
                 f"CIRCUIT BREAKER: daily loss {daily_loss_pct:.1%} >= {self.cfg.circuit_breaker_daily_loss_pct:.1%}"
             )
 
+        # 8. Compute net portfolio delta
+        current_delta = sum(
+            pos.delta * pos.quantity * 100 for pos in portfolio.option_positions
+        )
+        order_delta = sum(
+            self._leg_delta(leg) * leg.quantity * 100
+            for leg in order.legs
+        )
+        portfolio_delta_after = current_delta + order_delta
+
         approved = len(reasons) == 0
         assessment = RiskAssessment(
             approved=approved,
             rejection_reasons=reasons,
             position_size_pct=position_size_pct,
             max_loss_pct=max_loss_pct,
-            portfolio_delta_after=0.0,  # TODO: compute net delta
+            portfolio_delta_after=portfolio_delta_after,
             options_allocation_after_pct=new_alloc_pct,
         )
 
@@ -97,4 +107,12 @@ class RiskManager:
             logger.warning("❌ Risk check FAILED for %s: %s", order.strategy_name, reasons)
 
         return assessment
+
+    @staticmethod
+    def _leg_delta(leg) -> float:
+        """Extract per-contract delta from an order leg, accounting for sell direction."""
+        delta = leg.greeks.delta if leg.greeks else 0.0
+        if leg.action in ("sell_to_open", "sell_to_close"):
+            delta = -delta
+        return delta
 

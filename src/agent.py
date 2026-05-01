@@ -219,6 +219,7 @@ class TradingAgent:
                 current_price=float(p.get("current_price", 0)),
                 market_value=float(p.get("market_value", 0)),
                 unrealized_pnl=float(p.get("unrealized_pnl", 0)),
+                delta=float(p.get("delta", 0)),
             )
             for p in opt_raw
         ]

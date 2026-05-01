@@ -8,7 +8,8 @@ from unittest.mock import MagicMock
 
 import pytest
 from src.exceptions import PortfolioDataError
-from src.models.options import OptionLeg, OptionOrder
+from src.models.options import Greeks, OptionLeg, OptionOrder
+from src.models.portfolio import OptionPosition
 from src.risk_manager import RiskManager
 
 
@@ -106,4 +107,44 @@ class TestRiskManager:
         order = _make_order(max_loss=500)
         with pytest.raises(PortfolioDataError, match="Invalid portfolio value"):
             rm.validate(order, sample_portfolio, low_vol_bullish_indicators)
+
+    def test_portfolio_delta_computed(self, sample_portfolio, low_vol_bullish_indicators):
+        sample_portfolio.option_positions = [
+            OptionPosition(
+                symbol="AAPL260515C00195000", underlying="AAPL",
+                strike=195.0, expiration=date.today() + __import__("datetime").timedelta(days=30),
+                option_type="call", quantity=2, average_cost=3.0, current_price=3.5,
+                market_value=700.0, unrealized_pnl=100.0, delta=0.45,
+            ),
+        ]
+        order = OptionOrder(
+            strategy_name="test", underlying="AAPL",
+            legs=[OptionLeg(
+                symbol="AAPL260515C00200000", strike=200.0,
+                expiration=date.today() + __import__("datetime").timedelta(days=30),
+                option_type="call", action="buy_to_open", quantity=1,
+                greeks=Greeks(delta=0.30),
+            )],
+            max_loss=500, max_profit=500, risk_reward_ratio=1.0,
+        )
+        rm = RiskManager(cfg=self._make_cfg())
+        result = rm.validate(order, sample_portfolio, low_vol_bullish_indicators)
+        # existing: 0.45 * 2 * 100 = 90, order: 0.30 * 1 * 100 = 30, total = 120
+        assert result.portfolio_delta_after == pytest.approx(120.0)
+
+    def test_portfolio_delta_sell_leg_negates(self, sample_portfolio, low_vol_bullish_indicators):
+        order = OptionOrder(
+            strategy_name="test", underlying="AAPL",
+            legs=[OptionLeg(
+                symbol="AAPL260515C00200000", strike=200.0,
+                expiration=date.today() + __import__("datetime").timedelta(days=30),
+                option_type="call", action="sell_to_open", quantity=1,
+                greeks=Greeks(delta=0.30),
+            )],
+            max_loss=500, max_profit=500, risk_reward_ratio=1.0,
+        )
+        rm = RiskManager(cfg=self._make_cfg())
+        result = rm.validate(order, sample_portfolio, low_vol_bullish_indicators)
+        # no existing positions, sell leg: -0.30 * 1 * 100 = -30
+        assert result.portfolio_delta_after == pytest.approx(-30.0)
 

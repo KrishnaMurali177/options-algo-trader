@@ -28,6 +28,7 @@ class OptionPosition(BaseModel):
     current_price: float
     market_value: float
     unrealized_pnl: float
+    delta: float = 0.0
 
 
 class AccountInfo(BaseModel):

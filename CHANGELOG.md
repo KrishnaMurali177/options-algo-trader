@@ -34,3 +34,8 @@
 - [2026-05-01] Modified: config/settings.py — Added require_confirmation setting (default True) for live order gate
 - [2026-05-01] Modified: src/agent.py — Two-step order confirmation: hold order when require_confirmation=True, execute via confirm_and_execute()
 - [2026-05-01] Modified: tests/test_agent.py — Added tests for confirmation gate (holds order, confirm executes, no-pending returns error)
+- [2026-05-01] Modified: src/models/portfolio.py — Added delta field to OptionPosition
+- [2026-05-01] Modified: src/models/options.py — Added optional greeks field to OptionLeg
+- [2026-05-01] Modified: src/agent.py — Populate delta from MCP position data
+- [2026-05-01] Modified: src/risk_manager.py — Compute net portfolio delta from positions and order legs
+- [2026-05-01] Modified: tests/test_risk_manager.py — Added delta computation tests (buy and sell legs)

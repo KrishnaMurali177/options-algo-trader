@@ -190,3 +190,119 @@ def clear_cache(symbol: str | None = None):
             logger.info("Removed cache: %s", f)
 
 
+def get_0dte_chain(
+    symbol: str,
+    option_type: str = "call",
+    target_delta: float = 0.50,
+    delta_tolerance: float = 0.15,
+) -> dict | None:
+    """Fetch today's 0DTE options chain and pick the contract closest to target_delta.
+
+    Args:
+        symbol: Underlying ticker (e.g., "SPY").
+        option_type: "call" or "put".
+        target_delta: Desired delta magnitude (default 0.50 = ATM).
+        delta_tolerance: Acceptable delta range around target.
+
+    Returns:
+        Dict with contract details (occ_symbol, strike, expiration, delta, bid, ask, mid,
+        greeks) or None if no suitable contract found.
+    """
+    from alpaca.data.historical import OptionHistoricalDataClient
+    from alpaca.trading.client import TradingClient
+    from alpaca.trading.requests import GetOptionContractsRequest
+    from dotenv import load_dotenv
+    from datetime import date
+
+    load_dotenv()
+
+    api_key = os.environ.get("ALPACA_API_KEY", "")
+    secret_key = os.environ.get("ALPACA_SECRET_KEY", "")
+
+    if not api_key or not secret_key:
+        raise RuntimeError("ALPACA_API_KEY / ALPACA_SECRET_KEY not set")
+
+    trading_client = TradingClient(api_key=api_key, secret_key=secret_key, paper=True)
+    today = date.today()
+
+    # Fetch 0DTE contracts expiring today
+    try:
+        req = GetOptionContractsRequest(
+            underlying_symbols=[symbol],
+            expiration_date=today,
+            type=option_type,
+            status="active",
+        )
+        contracts_resp = trading_client.get_option_contracts(req)
+        contracts = contracts_resp.option_contracts if contracts_resp else []
+    except Exception as e:
+        logger.error("Failed to fetch 0DTE chain for %s: %s", symbol, e)
+        return None
+
+    if not contracts:
+        logger.warning("No 0DTE %s contracts found for %s expiring %s", option_type, symbol, today)
+        return None
+
+    # Get snapshots for greeks (via options data client)
+    try:
+        option_client = OptionHistoricalDataClient(api_key=api_key, secret_key=secret_key)
+        occ_symbols = [c.symbol for c in contracts]
+        # Alpaca snapshots endpoint — get latest quotes and greeks
+        from alpaca.data.requests import OptionSnapshotRequest
+        snap_req = OptionSnapshotRequest(symbol_or_symbols=occ_symbols)
+        snapshots = option_client.get_option_snapshot(snap_req)
+    except Exception as e:
+        logger.warning("Failed to fetch option snapshots: %s — using strike proximity only", e)
+        snapshots = {}
+
+    best = None
+    best_delta_diff = float("inf")
+
+    for contract in contracts:
+        occ = contract.symbol
+        snap = snapshots.get(occ)
+
+        if snap and snap.greeks:
+            delta = abs(snap.greeks.delta) if snap.greeks.delta else 0.0
+            iv = snap.greeks.implied_volatility or 0.0
+            gamma = snap.greeks.gamma or 0.0
+            theta = snap.greeks.theta or 0.0
+        else:
+            delta = 0.0
+            iv = gamma = theta = 0.0
+
+        bid = float(snap.latest_quote.bid_price) if snap and snap.latest_quote else 0.0
+        ask = float(snap.latest_quote.ask_price) if snap and snap.latest_quote else 0.0
+        mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else 0.0
+
+        # Skip illiquid contracts
+        if mid <= 0.01:
+            continue
+
+        delta_diff = abs(delta - target_delta)
+        if delta_diff < best_delta_diff and delta_diff <= delta_tolerance:
+            best_delta_diff = delta_diff
+            best = {
+                "occ_symbol": occ,
+                "underlying": symbol,
+                "strike": float(contract.strike_price),
+                "expiration": str(contract.expiration_date),
+                "option_type": option_type,
+                "delta": delta,
+                "gamma": gamma,
+                "theta": theta,
+                "iv": iv,
+                "bid": bid,
+                "ask": ask,
+                "mid": mid,
+            }
+
+    if best:
+        logger.info(
+            "Selected 0DTE %s: %s strike=$%.2f delta=%.2f mid=$%.2f",
+            option_type, best["occ_symbol"], best["strike"], best["delta"], best["mid"],
+        )
+    else:
+        logger.warning("No 0DTE %s contract near delta %.2f for %s", option_type, target_delta, symbol)
+
+    return best

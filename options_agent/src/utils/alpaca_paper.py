@@ -280,6 +280,98 @@ class AlpacaPaperTrader:
             "time": str(order.filled_at) if order.filled_at else None,
         }
 
+    def place_options_trade(
+        self,
+        occ_symbol: str,
+        direction: str,
+        qty: int = 1,
+        limit_price: float | None = None,
+        time_in_force: str = "day",
+    ) -> dict:
+        """Buy a 0DTE option contract on the paper account.
+
+        Args:
+            occ_symbol: OCC option symbol (e.g., "SPY260504C00550000").
+            direction: "buy_call" or "buy_put" — always buy-to-open.
+            qty: Number of contracts (default 1).
+            limit_price: Limit price per contract (None = market order).
+            time_in_force: "day" or "gtc".
+
+        Returns:
+            Dict with order details.
+        """
+        from alpaca.trading.requests import LimitOrderRequest, MarketOrderRequest
+        from alpaca.trading.enums import OrderSide, TimeInForce
+
+        side = OrderSide.BUY  # Always buy-to-open for 0DTE calls/puts
+        tif = TimeInForce.DAY if time_in_force == "day" else TimeInForce.GTC
+
+        if limit_price:
+            order_data = LimitOrderRequest(
+                symbol=occ_symbol,
+                qty=qty,
+                side=side,
+                time_in_force=tif,
+                limit_price=round(limit_price, 2),
+            )
+        else:
+            order_data = MarketOrderRequest(
+                symbol=occ_symbol,
+                qty=qty,
+                side=side,
+                time_in_force=tif,
+            )
+
+        order = self.client.submit_order(order_data)
+        logger.info(
+            "Options order placed: BUY %d %s @ %s (id=%s)",
+            qty, occ_symbol,
+            f"${limit_price:.2f}" if limit_price else "MKT",
+            order.id,
+        )
+
+        return {
+            "order_id": str(order.id),
+            "occ_symbol": occ_symbol,
+            "side": "buy",
+            "qty": qty,
+            "type": "limit" if limit_price else "market",
+            "limit_price": limit_price,
+            "status": order.status.value,
+            "submitted_at": str(order.submitted_at),
+        }
+
+    def close_options_position(self, occ_symbol: str) -> dict | None:
+        """Sell-to-close an open option position."""
+        try:
+            order = self.client.close_position(occ_symbol)
+        except Exception as e:
+            logger.warning("close_options_position(%s) failed: %s", occ_symbol, e)
+            return None
+        logger.info("Option position closed: %s (order=%s)", occ_symbol, order.id)
+        return {"order_id": str(order.id), "occ_symbol": occ_symbol, "status": order.status.value}
+
+    def get_option_quote(self, occ_symbol: str) -> float | None:
+        """Get current mid price for an option contract (for stop/target monitoring)."""
+        try:
+            from alpaca.data.historical import OptionHistoricalDataClient
+            from alpaca.data.requests import OptionLatestQuoteRequest
+            import os
+
+            option_client = OptionHistoricalDataClient(
+                api_key=os.environ.get("ALPACA_API_KEY", ""),
+                secret_key=os.environ.get("ALPACA_SECRET_KEY", ""),
+            )
+            quotes = option_client.get_option_latest_quote(
+                OptionLatestQuoteRequest(symbol_or_symbols=[occ_symbol])
+            )
+            quote = quotes.get(occ_symbol)
+            if quote and quote.bid_price and quote.ask_price:
+                return (float(quote.bid_price) + float(quote.ask_price)) / 2
+        except Exception as e:
+            logger.warning("get_option_quote(%s) failed: %s", occ_symbol, e)
+        return None
+
     def cancel_open_orders(self):
         """Cancel all open paper orders."""
         self.client.cancel_orders()

@@ -166,7 +166,7 @@ def check_sweet_spot(symbol: str, max_chop: int = 5) -> dict | None:
         chop = compute_choppiness(bars)
 
         # Sweet spot criteria
-        if not (4 <= quality <= 7):
+        if not (3 <= quality <= 7):
             return None
         if cascade.explosion_score < 4:
             return None
@@ -237,7 +237,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             gainz_rsi_oversold: float = 40.0,
             trade_shares: bool = False,
             contracts: int = 1,
-            target_delta: float = 0.50):
+            target_delta: float = 0.50,
+            cascade_size_low: int = 2,
+            cascade_size_mid: int = 4,
+            cascade_size_high: int = 6):
     """Run the agent for one trading day."""
     today = date.today()
     journal_file = JOURNAL_DIR / f"{today.isoformat()}.json"
@@ -416,14 +419,14 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             opt_type = "call" if "call" in trigger["direction"] else "put"
                             contract = get_0dte_chain(symbol, option_type=opt_type, target_delta=target_delta)
                             if contract:
-                                # Cascade-tier contract sizing: 1 for E4-5, 2 for E6-7, 3 for E8+
+                                # Cascade-tier contract sizing
                                 explosion = trigger.get("explosion", 4)
                                 if explosion >= 8:
-                                    num_contracts = contracts * 3
+                                    num_contracts = contracts * cascade_size_high
                                 elif explosion >= 6:
-                                    num_contracts = contracts * 2
+                                    num_contracts = contracts * cascade_size_mid
                                 else:
-                                    num_contracts = contracts
+                                    num_contracts = contracts * cascade_size_low
 
                                 order = trader.place_options_trade(
                                     occ_symbol=contract["occ_symbol"],
@@ -573,6 +576,12 @@ def main():
                         help="Number of option contracts per trade (default: 1)")
     parser.add_argument("--target-delta", type=float, default=0.50,
                         help="Target delta for 0DTE option selection (default: 0.50 = ATM)")
+    parser.add_argument("--cascade-size-low", type=int, default=2,
+                        help="Contracts for E 4-5 tier (default: 2)")
+    parser.add_argument("--cascade-size-mid", type=int, default=4,
+                        help="Contracts for E 6-7 tier (default: 4)")
+    parser.add_argument("--cascade-size-high", type=int, default=6,
+                        help="Contracts for E 8+ tier (default: 6)")
     args = parser.parse_args()
 
     paper_trade = not args.no_paper
@@ -600,7 +609,10 @@ def main():
                             gainz_rsi_oversold=args.gainz_rsi_oversold,
                             trade_shares=args.shares,
                             contracts=args.contracts,
-                            target_delta=args.target_delta)
+                            target_delta=args.target_delta,
+                            cascade_size_low=args.cascade_size_low,
+                            cascade_size_mid=args.cascade_size_mid,
+                            cascade_size_high=args.cascade_size_high)
                     # After market close, sleep until next day 9:25 AM
                     tomorrow_925 = (now + timedelta(days=1)).replace(hour=9, minute=25, second=0)
                     sleep_sec = (tomorrow_925 - get_et_now()).total_seconds()
@@ -628,7 +640,10 @@ def main():
                 gainz_rsi_oversold=args.gainz_rsi_oversold,
                 trade_shares=args.shares,
                 contracts=args.contracts,
-                target_delta=args.target_delta)
+                target_delta=args.target_delta,
+                cascade_size_low=args.cascade_size_low,
+                cascade_size_mid=args.cascade_size_mid,
+                cascade_size_high=args.cascade_size_high)
 
 
 if __name__ == "__main__":

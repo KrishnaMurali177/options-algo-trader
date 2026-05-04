@@ -165,10 +165,17 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                gainz_rsi_overbought: float = 65.0,
                gainz_rsi_oversold: float = 35.0,
                cascade_sizing: bool = False,
+               cascade_size_low: int = 2,
+               cascade_size_mid: int = 4,
+               cascade_size_high: int = 6,
                simulate_options: bool = True,
                option_delta: float = 0.50,
                option_gamma: float = 0.05,
-               premium_atr_pct: float = 0.40) -> list[dict]:
+               premium_atr_pct: float = 0.40,
+               slippage: float = 0.0,
+               vix: float = 20.0,
+               prior_bars: pd.DataFrame | None = None,
+               dynamic_or: bool = False) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
     Uses the EXACT same analyzers as the live agent:
@@ -195,6 +202,28 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
     if range_width <= 0:
         return []
 
+    # ── Dynamic Opening Range: use 30-min quick OR if breakout is decisive by 10:00 ──
+    # This allows scanning from 10:00 on strong-trend mornings instead of waiting until 10:30+
+    effective_scan_start = scan_start
+    if dynamic_or:
+        quick_or_bars = day_bars.between_time("09:30", "09:59")
+        if len(quick_or_bars) >= 6:
+            quick_high = float(quick_or_bars["High"].max())
+            quick_low = float(quick_or_bars["Low"].min())
+            quick_width = quick_high - quick_low
+            # Check if the 10:00 bar already broke out of the 30-min range decisively
+            bars_at_10 = day_bars.between_time("10:00", "10:04")
+            if len(bars_at_10) > 0 and quick_width > 0:
+                price_at_10 = float(bars_at_10["Close"].iloc[-1])
+                # Decisive = price moved >50% of quick range beyond the range boundary
+                if price_at_10 > quick_high + quick_width * 0.5 or \
+                   price_at_10 < quick_low - quick_width * 0.5:
+                    # Use 30-min OR and allow earlier scanning
+                    range_high = quick_high
+                    range_low = quick_low
+                    range_width = quick_width
+                    effective_scan_start = "10:00"
+
     # Post-OR bars (10:30 onward) — scan windows
     post_or = day_bars[day_bars.index > or_bars.index[-1]]
     if len(post_or) < 3:
@@ -205,9 +234,24 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
     stops_today = 0  # Track stop-outs for daily loss limit
 
     # Scan every bar (5 min) from scan_start to scan_end
-    scan_bars = post_or.between_time(scan_start, scan_end)
+    scan_bars = post_or.between_time(effective_scan_start if dynamic_or else scan_start, scan_end)
+
+    # ── Prepend prior days' bars for multi-day SMA context ──
+    if prior_bars is not None and len(prior_bars) > 0:
+        extended_bars = pd.concat([prior_bars, day_bars])
+    else:
+        extended_bars = day_bars
+    # Number of prior context bars (to offset indices into extended series)
+    n_prior = len(extended_bars) - len(day_bars)
 
     # ── Precompute cumulative series once for the whole day (perf optimization) ──
+    # Use extended_bars for SMA/MACD/ATR so they have multi-day context
+    ext_close = extended_bars["Close"].astype(float)
+    ext_high = extended_bars["High"].astype(float)
+    ext_low = extended_bars["Low"].astype(float)
+    ext_vol = extended_bars["Volume"].astype(float)
+
+    # day_* still references today-only for RSI (intraday) and scan indexing
     day_close = day_bars["Close"].astype(float)
     day_high = day_bars["High"].astype(float)
     day_low = day_bars["Low"].astype(float)
@@ -271,8 +315,10 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         # ── Build MarketIndicators from precomputed series (FAST) ──
         rsi_val = float(day_rsi.iloc[:n].iloc[-1]) if n >= 15 and not np.isnan(day_rsi.iloc[:n].iloc[-1]) else 50.0
         sma_20 = float(day_close.iloc[:n].iloc[-20:].mean()) if n >= 20 else price
-        sma_50 = float(day_close.iloc[:n].iloc[-50:].mean()) if n >= 50 else price
-        sma_200 = float(day_close.iloc[:n].iloc[-min(200, n):].mean()) if n >= 20 else price
+        # Use extended (multi-day) close series for SMA-50 and SMA-200
+        ext_n = n_prior + n  # total bars available in extended series
+        sma_50 = float(ext_close.iloc[:ext_n].iloc[-50:].mean()) if ext_n >= 50 else float(ext_close.iloc[:ext_n].mean())
+        sma_200 = float(ext_close.iloc[:ext_n].iloc[-200:].mean()) if ext_n >= 200 else float(ext_close.iloc[:ext_n].mean())
 
         bb_mid_val = float(day_bb_mid.iloc[:n].iloc[-1]) if n >= 20 and not np.isnan(day_bb_mid.iloc[:n].iloc[-1]) else price
         bb_std_val = float(day_bb_std.iloc[:n].iloc[-1]) if n >= 20 and not np.isnan(day_bb_std.iloc[:n].iloc[-1]) else 0.0
@@ -309,7 +355,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             timestamp=datetime.now(timezone.utc),
             current_price=price,
             timeframe="15min",
-            vix=20.0,
+            vix=vix,
             rsi_14=rsi_val,
             rsi_5min=rsi_val,
             sma_20=sma_20,
@@ -500,6 +546,8 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
 
             # Cap loss at premium paid (defined risk)
             option_pnl_per_contract = max(option_pnl_per_contract, -est_premium)
+            # Deduct slippage (round-trip: entry + exit)
+            option_pnl_per_contract -= slippage
             # P&L per contract (x100 multiplier)
             option_pnl_total = option_pnl_per_contract * 100
             pnl = option_pnl_per_contract  # per-contract P&L for reporting
@@ -510,14 +558,14 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         if outcome == "stop":
             stops_today += 1
 
-        # Cascade-tiered contracts: 1 for E 4-5, 2 for E 6-7, 3 for E 8+
+        # Cascade-tiered contracts
         if cascade_sizing:
             if explosion >= 8:
-                size = 3.0
+                size = float(cascade_size_high)
             elif explosion >= 6:
-                size = 2.0
+                size = float(cascade_size_mid)
             else:
-                size = 1.0
+                size = float(cascade_size_low)
         else:
             size = 1.0
 
@@ -566,13 +614,13 @@ def main():
     parser.add_argument("--days", type=int, default=30, help="Number of recent trading days")
     parser.add_argument("--max-chop", type=int, default=5, help="Max choppiness (golden: 5)")
     parser.add_argument("--multi", action="store_true", help="Allow multiple triggers per day")
-    parser.add_argument("--min-quality", type=int, default=4, help="Minimum quality score (golden: 4)")
+    parser.add_argument("--min-quality", type=int, default=3, help="Minimum quality score (golden: 3)")
     parser.add_argument("--max-quality", type=int, default=7, help="Maximum quality score (golden: 7)")
     parser.add_argument("--min-cascade", type=int, default=4, help="Minimum cascade proxy")
     parser.add_argument("--breakout-pct", type=float, default=0.25, help="Breakout percentage of range")
     parser.add_argument("--cooldown-bars", type=int, default=3, help="Cooldown period in bars")
     parser.add_argument("--scan-end", type=str, default="13:59", help="End time for scanning (HH:MM, golden: 13:59)")
-    parser.add_argument("--scan-start", type=str, default="11:00", help="Start time for scanning (HH:MM, golden: 11:00)")
+    parser.add_argument("--scan-start", type=str, default="10:30", help="Start time for scanning (HH:MM, golden: 10:30)")
     parser.add_argument("--target-mult-low", type=float, default=1.0, help="Target multiple for low explosion")
     parser.add_argument("--target-mult-mid", type=float, default=1.25, help="Target multiple for mid explosion")
     parser.add_argument("--target-mult-high", type=float, default=1.5, help="Target multiple for high explosion")
@@ -585,7 +633,15 @@ def main():
     parser.add_argument("--gainz-rsi-overbought", type=float, default=60.0, help="RSI threshold for Gainz SELL signal (golden: 60)")
     parser.add_argument("--gainz-rsi-oversold", type=float, default=40.0, help="RSI threshold for Gainz BUY signal (golden: 40)")
     parser.add_argument("--no-cascade-sizing", action="store_true",
-                        help="Disable cascade contract sizing (default: ON — 1ct E4-5, 2ct E6-7, 3ct E8+)")
+                        help="Disable cascade contract sizing (default: ON)")
+    parser.add_argument("--cascade-size-low", type=int, default=2,
+                        help="Contracts for E 4-5 tier (default: 2)")
+    parser.add_argument("--cascade-size-mid", type=int, default=4,
+                        help="Contracts for E 6-7 tier (default: 4)")
+    parser.add_argument("--cascade-size-high", type=int, default=6,
+                        help="Contracts for E 8+ tier (default: 6)")
+    parser.add_argument("--dynamic-or", action="store_true",
+                        help="Enable dynamic opening range (30-min quick OR when breakout is decisive by 10:00)")
     parser.add_argument("--research-mode", action="store_true",
                         help="Loose pre-golden defaults for exploration (chop 10, max-quality 8, no caps, 10:35 scan, no Gainz)")
     parser.add_argument("--shares", action="store_true",
@@ -596,6 +652,8 @@ def main():
                         help="Assumed gamma for 0DTE ATM option (default: 0.05)")
     parser.add_argument("--premium-atr-pct", type=float, default=0.40,
                         help="Estimated option premium as fraction of ATR (default: 0.40)")
+    parser.add_argument("--slippage", type=float, default=0.0,
+                        help="Per-contract slippage in $ (e.g., 0.05 for $5/contract). Deducted from each trade P&L.")
     args = parser.parse_args()
 
     if args.research_mode:
@@ -631,11 +689,49 @@ def main():
     trading_days = sorted(set(df.index.date))
     logger.info("Replaying %d trading days...", len(trading_days))
 
+    # ── Fetch historical VIX for realistic quality scoring ──
+    import yfinance as yf
+    logger.info("Fetching historical ^VIX data...")
+    try:
+        from datetime import timedelta
+        vix_start = str(trading_days[0] - timedelta(days=5))
+        vix_end = str(trading_days[-1] + timedelta(days=1))
+        vix_df = yf.download("^VIX", start=vix_start, end=vix_end, progress=False)
+        if isinstance(vix_df.columns, pd.MultiIndex):
+            vix_df.columns = vix_df.columns.get_level_values(0)
+        vix_map: dict[date, float] = {}
+        for idx, row in vix_df.iterrows():
+            vix_map[idx.date()] = float(row["Close"])
+        logger.info("  VIX data: %d days loaded", len(vix_map))
+    except Exception as e:
+        logger.warning("VIX fetch failed (%s), using default 20.0", e)
+        vix_map = {}
+
+    # ── Number of prior context bars for multi-day SMA (3 days ≈ 234 bars covers SMA-200) ──
+    PRIOR_DAYS_CONTEXT = 4  # prepend 4 prior trading days' bars for SMA-50/200 warmup
+
     all_triggers = []
-    for day in trading_days:
+    for idx, day in enumerate(trading_days):
         day_bars = df[df.index.date == day]
         if len(day_bars) < 24:
             continue
+
+        # Build prior_bars from preceding days in the dataset
+        prior_days = trading_days[max(0, idx - PRIOR_DAYS_CONTEXT):idx]
+        if prior_days:
+            prior_bars = df[pd.Series(df.index.date).isin(set(prior_days)).values]
+        else:
+            prior_bars = None
+
+        # Look up VIX for this day (fall back to most recent available or 20.0)
+        day_vix = vix_map.get(day, 20.0)
+        if day_vix == 20.0 and vix_map:
+            # Try previous trading day
+            for prev_day in reversed(trading_days[:idx]):
+                if prev_day in vix_map:
+                    day_vix = vix_map[prev_day]
+                    break
+
         triggers = replay_day(day_bars, day, max_chop=args.max_chop,
                               min_quality=args.min_quality, max_quality=args.max_quality,
                               min_cascade=args.min_cascade, breakout_pct=args.breakout_pct,
@@ -652,10 +748,17 @@ def main():
                               gainz_rsi_overbought=args.gainz_rsi_overbought,
                               gainz_rsi_oversold=args.gainz_rsi_oversold,
                               cascade_sizing=not args.no_cascade_sizing,
+                              cascade_size_low=args.cascade_size_low,
+                              cascade_size_mid=args.cascade_size_mid,
+                              cascade_size_high=args.cascade_size_high,
                               simulate_options=not args.shares,
                               option_delta=args.option_delta,
                               option_gamma=args.option_gamma,
-                              premium_atr_pct=args.premium_atr_pct)
+                              premium_atr_pct=args.premium_atr_pct,
+                              slippage=args.slippage,
+                              vix=day_vix,
+                              prior_bars=prior_bars,
+                              dynamic_or=args.dynamic_or)
         all_triggers.extend(triggers)
 
     # ── Results ──
@@ -753,10 +856,11 @@ def main():
     # ── Cascade tier breakdown (always shown — informs whether sizing helps) ──
     print(f"\n  Cascade Tier Breakdown:")
     print(f"    {'Tier':<14} {'N':>4} {'WR%':>6} {'PF':>5} {'TotPnL':>9} {'AvgPnL':>8}")
+    cl, cm, ch = args.cascade_size_low, args.cascade_size_mid, args.cascade_size_high
     tiers = [
-        ("E 4-5 (1ct)",  lambda e: e <= 5),
-        ("E 6-7 (2ct)",  lambda e: 6 <= e <= 7),
-        ("E 8+  (3ct)",  lambda e: e >= 8),
+        (f"E 4-5 ({cl}ct)",  lambda e: e <= 5),
+        (f"E 6-7 ({cm}ct)",  lambda e: 6 <= e <= 7),
+        (f"E 8+  ({ch}ct)",  lambda e: e >= 8),
     ]
     for label, pred in tiers:
         tier = [t for t in all_triggers if pred(t["explosion"])]

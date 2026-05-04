@@ -164,7 +164,11 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                gainz_body_ratio: float = 0.5,
                gainz_rsi_overbought: float = 65.0,
                gainz_rsi_oversold: float = 35.0,
-               cascade_sizing: bool = False) -> list[dict]:
+               cascade_sizing: bool = False,
+               simulate_options: bool = True,
+               option_delta: float = 0.50,
+               option_gamma: float = 0.05,
+               premium_atr_pct: float = 0.40) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
     Uses the EXACT same analyzers as the live agent:
@@ -467,19 +471,61 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
 
         pnl = (exit_price - entry) if direction == "buy_call" else (entry - exit_price)
 
+        # ── 0DTE Option P&L approximation ──
+        underlying_move = pnl  # signed move in underlying
+        if simulate_options:
+            # Estimate premium: ATR * premium_atr_pct (rough ATM 0DTE premium)
+            est_premium = atr_val * premium_atr_pct
+            if est_premium < 0.10:
+                est_premium = 0.10  # floor
+
+            # Delta-gamma approximation: Δpremium ≈ δ × Δprice + 0.5 × γ × Δprice²
+            abs_move = abs(underlying_move)
+            delta_pnl = option_delta * abs_move
+            gamma_pnl = 0.5 * option_gamma * abs_move ** 2
+
+            # Theta decay for 0DTE: estimate remaining fraction of day
+            # Entry bar timestamp gives us minutes since 9:30
+            entry_minutes = (ts.hour * 60 + ts.minute) - (9 * 60 + 30)
+            total_minutes = 390  # 9:30 to 16:00
+            remaining_frac = max(0, (total_minutes - entry_minutes) / total_minutes)
+            # 0DTE theta is aggressive — assume full daily theta ≈ 60-80% of premium
+            # Decay proportional to sqrt of remaining time (accelerates near close)
+            theta_decay = est_premium * 0.70 * (1.0 - remaining_frac ** 0.5)
+
+            if underlying_move > 0:  # winner direction
+                option_pnl_per_contract = delta_pnl + gamma_pnl - theta_decay
+            else:  # loser direction
+                option_pnl_per_contract = -(delta_pnl + gamma_pnl) - theta_decay
+
+            # Cap loss at premium paid (defined risk)
+            option_pnl_per_contract = max(option_pnl_per_contract, -est_premium)
+            # P&L per contract (x100 multiplier)
+            option_pnl_total = option_pnl_per_contract * 100
+            pnl = option_pnl_per_contract  # per-contract P&L for reporting
+        else:
+            option_pnl_total = None
+            est_premium = None
+
         if outcome == "stop":
             stops_today += 1
 
-        # Cascade-tiered size: 1x for E 4-5, 1.5x for E 6-7, 2x for E 8+
+        # Cascade-tiered contracts: 1 for E 4-5, 2 for E 6-7, 3 for E 8+
         if cascade_sizing:
             if explosion >= 8:
-                size = 2.0
+                size = 3.0
             elif explosion >= 6:
-                size = 1.5
+                size = 2.0
             else:
                 size = 1.0
         else:
             size = 1.0
+
+        # Scale option P&L by number of contracts
+        if simulate_options and option_pnl_total is not None:
+            option_pnl_total_sized = option_pnl_total * size
+        else:
+            option_pnl_total_sized = option_pnl_total
 
         triggers.append({
             "date": str(trade_date),
@@ -497,9 +543,14 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             "exit_price": round(exit_price, 2),
             "outcome": outcome,
             "pnl": round(pnl, 4),
+            "underlying_move": round(underlying_move, 4),
+            "option_pnl_100x": round(option_pnl_total, 2) if option_pnl_total is not None else None,
+            "option_pnl_sized": round(option_pnl_total_sized, 2) if option_pnl_total_sized is not None else None,
+            "est_premium": round(est_premium, 2) if est_premium is not None else None,
             "size": size,
             "sized_pnl": round(pnl * size, 4),
             "is_winner": pnl > 0,
+            "mode": "0dte_option" if simulate_options else "shares",
         })
 
     return triggers
@@ -520,23 +571,31 @@ def main():
     parser.add_argument("--min-cascade", type=int, default=4, help="Minimum cascade proxy")
     parser.add_argument("--breakout-pct", type=float, default=0.25, help="Breakout percentage of range")
     parser.add_argument("--cooldown-bars", type=int, default=3, help="Cooldown period in bars")
-    parser.add_argument("--scan-end", type=str, default="13:59", help="End time for scanning (HH:MM)")
+    parser.add_argument("--scan-end", type=str, default="13:59", help="End time for scanning (HH:MM, golden: 13:59)")
+    parser.add_argument("--scan-start", type=str, default="11:00", help="Start time for scanning (HH:MM, golden: 11:00)")
     parser.add_argument("--target-mult-low", type=float, default=1.0, help="Target multiple for low explosion")
     parser.add_argument("--target-mult-mid", type=float, default=1.25, help="Target multiple for mid explosion")
     parser.add_argument("--target-mult-high", type=float, default=1.5, help="Target multiple for high explosion")
     parser.add_argument("--no-regime-guard", action="store_true", help="Disable regime guardrails")
-    parser.add_argument("--scan-start", type=str, default="11:30", help="Start time for scanning (HH:MM, golden: 11:30)")
     parser.add_argument("--max-trades-per-day", type=int, default=3, help="Max trades per day (0=unlimited, golden: 3)")
     parser.add_argument("--max-stops-per-day", type=int, default=2, help="Stop trading after N stop-outs (0=unlimited, golden: 2)")
     parser.add_argument("--no-gainz-exit", action="store_true",
                         help="Disable GainzAlgoV2 reversal early-exit (golden: enabled)")
     parser.add_argument("--gainz-body-ratio", type=float, default=0.5, help="Min candle body/range ratio for Gainz signal (golden: 0.5)")
-    parser.add_argument("--gainz-rsi-overbought", type=float, default=65.0, help="RSI threshold for Gainz SELL signal (golden: 65)")
-    parser.add_argument("--gainz-rsi-oversold", type=float, default=35.0, help="RSI threshold for Gainz BUY signal (golden: 35)")
-    parser.add_argument("--cascade-sizing", action="store_true",
-                        help="Tier position size by cascade: 1x (E 4-5), 1.5x (E 6-7), 2x (E 8+) — backtest showed this hurts PF")
+    parser.add_argument("--gainz-rsi-overbought", type=float, default=60.0, help="RSI threshold for Gainz SELL signal (golden: 60)")
+    parser.add_argument("--gainz-rsi-oversold", type=float, default=40.0, help="RSI threshold for Gainz BUY signal (golden: 40)")
+    parser.add_argument("--no-cascade-sizing", action="store_true",
+                        help="Disable cascade contract sizing (default: ON — 1ct E4-5, 2ct E6-7, 3ct E8+)")
     parser.add_argument("--research-mode", action="store_true",
                         help="Loose pre-golden defaults for exploration (chop 10, max-quality 8, no caps, 10:35 scan, no Gainz)")
+    parser.add_argument("--shares", action="store_true",
+                        help="Simulate share P&L instead of 0DTE options (default: options)")
+    parser.add_argument("--option-delta", type=float, default=0.50,
+                        help="Assumed delta for 0DTE ATM option (default: 0.50)")
+    parser.add_argument("--option-gamma", type=float, default=0.05,
+                        help="Assumed gamma for 0DTE ATM option (default: 0.05)")
+    parser.add_argument("--premium-atr-pct", type=float, default=0.40,
+                        help="Estimated option premium as fraction of ATR (default: 0.40)")
     args = parser.parse_args()
 
     if args.research_mode:
@@ -592,12 +651,18 @@ def main():
                               gainz_body_ratio=args.gainz_body_ratio,
                               gainz_rsi_overbought=args.gainz_rsi_overbought,
                               gainz_rsi_oversold=args.gainz_rsi_oversold,
-                              cascade_sizing=args.cascade_sizing)
+                              cascade_sizing=not args.no_cascade_sizing,
+                              simulate_options=not args.shares,
+                              option_delta=args.option_delta,
+                              option_gamma=args.option_gamma,
+                              premium_atr_pct=args.premium_atr_pct)
         all_triggers.extend(triggers)
 
     # ── Results ──
     print(f"\n{'═' * 70}")
     print(f"  SWEET SPOT REPLAY: {args.symbol} — {len(trading_days)} days")
+    mode_label = "SHARES" if args.shares else f"0DTE OPTIONS (Δ={args.option_delta}, γ={args.option_gamma})"
+    print(f"  Mode: {mode_label}")
     print(f"  Filter: Quality {args.min_quality}-{args.max_quality}, Cascade ≥ {args.min_cascade}, Chop ≤ {args.max_chop}, Regime Guard: {'ON' if not args.no_regime_guard else 'OFF'}")
     print(f"  Analyzers: OpeningRange + RecentMomentum + MomentumCascade (exact replica)")
     print(f"{'═' * 70}")
@@ -608,7 +673,7 @@ def main():
 
     wins = [t for t in all_triggers if t["is_winner"]]
     losses = [t for t in all_triggers if not t["is_winner"]]
-    pnl_field = "sized_pnl" if args.cascade_sizing else "pnl"
+    pnl_field = "sized_pnl" if not args.no_cascade_sizing else "pnl"
     total_pnl = sum(t[pnl_field] for t in all_triggers)
     avg_pnl = total_pnl / len(all_triggers)
     win_rate = len(wins) / len(all_triggers) * 100
@@ -618,7 +683,7 @@ def main():
     gross_loss = abs(sum(t[pnl_field] for t in losses))
     pf = gross_profit / gross_loss if gross_loss > 0 else float("inf")
 
-    sizing_label = " (cascade-sized)" if args.cascade_sizing else ""
+    sizing_label = " (cascade-sized)" if not args.no_cascade_sizing else ""
     print(f"\n  Triggers:        {len(all_triggers)} ({len(all_triggers)/len(trading_days):.1f}/day)")
     print(f"  Win Rate:        {win_rate:.1f}% ({len(wins)}/{len(all_triggers)})")
     print(f"  Profit Factor:   {pf:.2f}")
@@ -689,9 +754,9 @@ def main():
     print(f"\n  Cascade Tier Breakdown:")
     print(f"    {'Tier':<14} {'N':>4} {'WR%':>6} {'PF':>5} {'TotPnL':>9} {'AvgPnL':>8}")
     tiers = [
-        ("E 4-5 (1x)",   lambda e: e <= 5),
-        ("E 6-7 (1.5x)", lambda e: 6 <= e <= 7),
-        ("E 8+  (2x)",   lambda e: e >= 8),
+        ("E 4-5 (1ct)",  lambda e: e <= 5),
+        ("E 6-7 (2ct)",  lambda e: 6 <= e <= 7),
+        ("E 8+  (3ct)",  lambda e: e >= 8),
     ]
     for label, pred in tiers:
         tier = [t for t in all_triggers if pred(t["explosion"])]
@@ -716,12 +781,31 @@ def main():
         print(f"    {o:<12} {c:>3} ({c/len(all_triggers)*100:.0f}%)")
 
     # Trade log
-    print(f"\n  {'Date':<12} {'Time':<6} {'Dir':<5} {'Q':>2} {'E':>2} {'C':>2} {'Mult':>5} {'Entry':>8} {'Exit':>8} {'P&L':>8} {'Outcome':<8}")
-    print(f"  {'─'*12} {'─'*6} {'─'*5} {'─'*2} {'─'*2} {'─'*2} {'─'*5} {'─'*8} {'─'*8} {'─'*8} {'─'*8}")
-    for t in all_triggers:
-        d = "CALL" if "call" in t["direction"] else "PUT"
-        w = "✅" if t["is_winner"] else "❌"
-        print(f"  {t['date']:<12} {t['time']:<6} {d:<5} {t['quality']:>2} {t['explosion']:>2} {t['chop']:>2} {t['target_mult']:>4.2f}x ${t['entry']:>7.2f} ${t['exit_price']:>7.2f} ${t['pnl']:>+7.2f} {t['outcome']:<8} {w}")
+    if not args.shares:
+        print(f"\n  {'Date':<12} {'Time':<6} {'Dir':<5} {'Q':>2} {'E':>2} {'C':>2} {'Ct':>3} {'Entry':>8} {'Exit':>8} {'Δ$':>7} {'Opt$/ct':>8} {'Tot$':>8} {'Outcome':<8}")
+        print(f"  {'─'*12} {'─'*6} {'─'*5} {'─'*2} {'─'*2} {'─'*2} {'─'*3} {'─'*8} {'─'*8} {'─'*7} {'─'*8} {'─'*8} {'─'*8}")
+        for t in all_triggers:
+            d = "CALL" if "call" in t["direction"] else "PUT"
+            w = "✅" if t["is_winner"] else "❌"
+            opt_pnl = t.get("option_pnl_100x")
+            opt_sized = t.get("option_pnl_sized")
+            opt_str = f"${opt_pnl:>+7.0f}" if opt_pnl is not None else "    N/A"
+            tot_str = f"${opt_sized:>+7.0f}" if opt_sized is not None else "    N/A"
+            ct = int(t["size"])
+            print(f"  {t['date']:<12} {t['time']:<6} {d:<5} {t['quality']:>2} {t['explosion']:>2} {t['chop']:>2} {ct:>3} ${t['entry']:>7.2f} ${t['exit_price']:>7.2f} ${t['underlying_move']:>+5.2f} {opt_str} {tot_str} {t['outcome']:<8} {w}")
+        # Options summary
+        total_opt_pnl = sum(t.get("option_pnl_100x", 0) or 0 for t in all_triggers)
+        total_opt_sized = sum(t.get("option_pnl_sized", 0) or 0 for t in all_triggers)
+        print(f"\n  Total Option P&L (per contract, ×100 multiplier): ${total_opt_pnl:+,.0f}")
+        if not args.no_cascade_sizing:
+            print(f"  Total Option P&L (cascade-sized, ×100 multiplier): ${total_opt_sized:+,.0f}")
+    else:
+        print(f"\n  {'Date':<12} {'Time':<6} {'Dir':<5} {'Q':>2} {'E':>2} {'C':>2} {'Mult':>5} {'Entry':>8} {'Exit':>8} {'P&L':>8} {'Outcome':<8}")
+        print(f"  {'─'*12} {'─'*6} {'─'*5} {'─'*2} {'─'*2} {'─'*2} {'─'*5} {'─'*8} {'─'*8} {'─'*8} {'─'*8}")
+        for t in all_triggers:
+            d = "CALL" if "call" in t["direction"] else "PUT"
+            w = "✅" if t["is_winner"] else "❌"
+            print(f"  {t['date']:<12} {t['time']:<6} {d:<5} {t['quality']:>2} {t['explosion']:>2} {t['chop']:>2} {t['target_mult']:>4.2f}x ${t['entry']:>7.2f} ${t['exit_price']:>7.2f} ${t['pnl']:>+7.2f} {t['outcome']:<8} {w}")
 
 
 if __name__ == "__main__":

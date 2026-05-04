@@ -230,11 +230,14 @@ def check_sweet_spot(symbol: str, max_chop: int = 5) -> dict | None:
 
 def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             max_trades_per_day: int = 3, max_stops_per_day: int = 2,
-            scan_start_min: int = 120,
+            scan_start_min: int = 90,
             gainz_exit: bool = True,
             gainz_body_ratio: float = 0.5,
-            gainz_rsi_overbought: float = 65.0,
-            gainz_rsi_oversold: float = 35.0):
+            gainz_rsi_overbought: float = 60.0,
+            gainz_rsi_oversold: float = 40.0,
+            trade_shares: bool = False,
+            contracts: int = 1,
+            target_delta: float = 0.50):
     """Run the agent for one trading day."""
     today = date.today()
     journal_file = JOURNAL_DIR / f"{today.isoformat()}.json"
@@ -251,14 +254,16 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             logger.error("Paper trader init failed: %s — running journal-only", e)
 
     logger.info("═══ Sweet Spot Agent: %s — %s ═══", symbol, today)
-    logger.info("Settings: qty=%d, max_chop=%d, max_trades=%d, max_stops=%d, scan_start=%dmin, paper=%s",
-                qty, max_chop, max_trades_per_day, max_stops_per_day, scan_start_min, bool(trader))
+    logger.info("Settings: qty=%d, max_chop=%d, max_trades=%d, max_stops=%d, scan_start=%dmin, paper=%s, mode=%s",
+                qty, max_chop, max_trades_per_day, max_stops_per_day, scan_start_min, bool(trader),
+                "shares" if trade_shares else f"0DTE options (contracts={contracts}, delta={target_delta})")
 
     last_trigger = None
     scan_count = 0
     trades_today = 0
     stops_today = 0
-    open_directions: dict[str, str] = {}  # symbol → "buy_call" / "buy_put"
+    open_directions: dict[str, str] = {}  # symbol/occ_symbol → "buy_call" / "buy_put"
+    open_options: dict[str, dict] = {}  # occ_symbol → {entry_premium, stop_price, target_price, direction}
 
     while True:
         now = get_et_now()
@@ -295,6 +300,53 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             break
                     journal_file.write_text(json.dumps(triggers, indent=2, default=str))
                     open_directions.pop(sym, None)
+
+        # ── Options stop/target monitoring (underlying-based, since no bracket for options) ──
+        if not trade_shares and trader and open_options:
+            try:
+                current_price_bars = yf.download(symbol, period="1d", interval="5m", progress=False)
+                if isinstance(current_price_bars.columns, pd.MultiIndex):
+                    current_price_bars.columns = current_price_bars.columns.get_level_values(0)
+                if len(current_price_bars) > 0:
+                    underlying_price = float(current_price_bars["Close"].iloc[-1])
+                    for occ_sym, opt_info in list(open_options.items()):
+                        should_close = False
+                        close_reason = ""
+                        if "call" in opt_info["direction"]:
+                            if underlying_price <= opt_info["stop_price"]:
+                                should_close = True
+                                close_reason = "stop"
+                            elif underlying_price >= opt_info["target_price"]:
+                                should_close = True
+                                close_reason = "target"
+                        else:  # put
+                            if underlying_price >= opt_info["stop_price"]:
+                                should_close = True
+                                close_reason = "stop"
+                            elif underlying_price <= opt_info["target_price"]:
+                                should_close = True
+                                close_reason = "target"
+
+                        if should_close:
+                            logger.info("⚡ OPTIONS %s: closing %s (%s at $%.2f)",
+                                        close_reason.upper(), occ_sym, opt_info["direction"], underlying_price)
+                            close_result = trader.close_options_position(occ_sym)
+                            for trig in triggers:
+                                if trig.get("occ_symbol") == occ_sym and not trig.get("closed"):
+                                    trig["exit_reason"] = close_reason
+                                    trig["exit_time"] = get_et_now().isoformat()
+                                    trig["underlying_exit_price"] = underlying_price
+                                    if close_result:
+                                        trig["close_order_id"] = close_result["order_id"]
+                                    trig["closed"] = True
+                                    break
+                            journal_file.write_text(json.dumps(triggers, indent=2, default=str))
+                            open_options.pop(occ_sym, None)
+                            open_directions.pop(occ_sym, None)
+                            if close_reason == "stop":
+                                stops_today += 1
+            except Exception as e:
+                logger.warning("Options monitoring failed: %s", e)
 
         # Stop opening NEW trades after 2:00 PM (still monitor existing for exits)
         if now.hour >= 14:
@@ -344,19 +396,79 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
 
                 if trader:
                     try:
-                        order = trader.place_sweet_spot_trade(
-                            symbol=symbol,
-                            direction=trigger["direction"],
-                            qty=qty,
-                            entry=None,  # Market for immediate fill
-                            stop=trigger["stop"],
-                            target=trigger["target"],
-                            time_in_force="day",
-                        )
-                        trigger["order_id"] = order["order_id"]
+                        if trade_shares:
+                            # Legacy: trade shares with bracket order
+                            order = trader.place_sweet_spot_trade(
+                                symbol=symbol,
+                                direction=trigger["direction"],
+                                qty=qty,
+                                entry=None,  # Market for immediate fill
+                                stop=trigger["stop"],
+                                target=trigger["target"],
+                                time_in_force="day",
+                            )
+                            trigger["order_id"] = order["order_id"]
+                            trigger["trade_mode"] = "shares"
+                            open_directions[symbol] = trigger["direction"]
+                        else:
+                            # 0DTE options: fetch chain, pick contract, buy-to-open
+                            from src.utils.alpaca_data import get_0dte_chain
+                            opt_type = "call" if "call" in trigger["direction"] else "put"
+                            contract = get_0dte_chain(symbol, option_type=opt_type, target_delta=target_delta)
+                            if contract:
+                                # Cascade-tier contract sizing: 1 for E4-5, 2 for E6-7, 3 for E8+
+                                explosion = trigger.get("explosion", 4)
+                                if explosion >= 8:
+                                    num_contracts = contracts * 3
+                                elif explosion >= 6:
+                                    num_contracts = contracts * 2
+                                else:
+                                    num_contracts = contracts
+
+                                order = trader.place_options_trade(
+                                    occ_symbol=contract["occ_symbol"],
+                                    direction=trigger["direction"],
+                                    qty=num_contracts,
+                                    limit_price=contract["mid"],  # Limit at mid for better fill
+                                    time_in_force="day",
+                                )
+                                trigger["order_id"] = order["order_id"]
+                                trigger["occ_symbol"] = contract["occ_symbol"]
+                                trigger["option_strike"] = contract["strike"]
+                                trigger["option_delta"] = contract["delta"]
+                                trigger["option_premium"] = contract["mid"]
+                                trigger["trade_mode"] = "0dte_option"
+                                trigger["num_contracts"] = num_contracts
+
+                                # Track for stop/target monitoring (underlying-based)
+                                open_options[contract["occ_symbol"]] = {
+                                    "entry_premium": contract["mid"],
+                                    "stop_price": trigger["stop"],
+                                    "target_price": trigger["target"],
+                                    "direction": trigger["direction"],
+                                    "delta": contract["delta"],
+                                }
+                                open_directions[contract["occ_symbol"]] = trigger["direction"]
+                                logger.info("  📝 0DTE %s order: %s strike=$%.2f Δ=%.2f premium=$%.2f × %d contracts",
+                                            opt_type.upper(), contract["occ_symbol"],
+                                            contract["strike"], contract["delta"], contract["mid"], num_contracts)
+                            else:
+                                logger.warning("  ⚠️ No 0DTE contract found — falling back to shares")
+                                order = trader.place_sweet_spot_trade(
+                                    symbol=symbol,
+                                    direction=trigger["direction"],
+                                    qty=qty,
+                                    entry=None,
+                                    stop=trigger["stop"],
+                                    target=trigger["target"],
+                                    time_in_force="day",
+                                )
+                                trigger["order_id"] = order["order_id"]
+                                trigger["trade_mode"] = "shares_fallback"
+                                open_directions[symbol] = trigger["direction"]
+
                         journal_file.write_text(json.dumps(triggers, indent=2, default=str))
-                        logger.info("  📝 Order placed: %s", order["order_id"][:12])
-                        open_directions[symbol] = trigger["direction"]
+                        logger.info("  📝 Order placed: %s", trigger.get("order_id", "?")[:12])
                     except Exception as e:
                         logger.error("  ⚠️ Order failed: %s", e)
 
@@ -444,17 +556,23 @@ def main():
     parser.add_argument("--max-chop", type=int, default=5, help="Max choppiness (default: 5)")
     parser.add_argument("--max-trades-per-day", type=int, default=3, help="Max trades per day (default: 3)")
     parser.add_argument("--max-stops-per-day", type=int, default=2, help="Halt after N stop-outs (default: 2)")
-    parser.add_argument("--scan-start-min", type=int, default=120, help="Minutes after open to start scanning (default: 120 = 11:30)")
+    parser.add_argument("--scan-start-min", type=int, default=90, help="Minutes after open to start scanning (default: 90 = 11:00)")
     parser.add_argument("--daemon", action="store_true", help="Run continuously (restarts daily)")
     parser.add_argument("--no-paper", action="store_true", help="Journal only, no paper orders")
     parser.add_argument("--no-gainz-exit", action="store_true",
                         help="Disable GainzAlgoV2 reversal early-exit (default: enabled)")
     parser.add_argument("--gainz-body-ratio", type=float, default=0.5,
                         help="Min candle body/range ratio for Gainz signal (default: 0.5)")
-    parser.add_argument("--gainz-rsi-overbought", type=float, default=65.0,
-                        help="RSI threshold for Gainz SELL signal (default: 65)")
-    parser.add_argument("--gainz-rsi-oversold", type=float, default=35.0,
-                        help="RSI threshold for Gainz BUY signal (default: 35)")
+    parser.add_argument("--gainz-rsi-overbought", type=float, default=60.0,
+                        help="RSI threshold for Gainz SELL signal (default: 60)")
+    parser.add_argument("--gainz-rsi-oversold", type=float, default=40.0,
+                        help="RSI threshold for Gainz BUY signal (default: 40)")
+    parser.add_argument("--shares", action="store_true",
+                        help="Trade shares instead of 0DTE options (default: options)")
+    parser.add_argument("--contracts", type=int, default=1,
+                        help="Number of option contracts per trade (default: 1)")
+    parser.add_argument("--target-delta", type=float, default=0.50,
+                        help="Target delta for 0DTE option selection (default: 0.50 = ATM)")
     args = parser.parse_args()
 
     paper_trade = not args.no_paper
@@ -479,7 +597,10 @@ def main():
                             gainz_exit=not args.no_gainz_exit,
                             gainz_body_ratio=args.gainz_body_ratio,
                             gainz_rsi_overbought=args.gainz_rsi_overbought,
-                            gainz_rsi_oversold=args.gainz_rsi_oversold)
+                            gainz_rsi_oversold=args.gainz_rsi_oversold,
+                            trade_shares=args.shares,
+                            contracts=args.contracts,
+                            target_delta=args.target_delta)
                     # After market close, sleep until next day 9:25 AM
                     tomorrow_925 = (now + timedelta(days=1)).replace(hour=9, minute=25, second=0)
                     sleep_sec = (tomorrow_925 - get_et_now()).total_seconds()
@@ -504,7 +625,10 @@ def main():
                 gainz_exit=not args.no_gainz_exit,
                 gainz_body_ratio=args.gainz_body_ratio,
                 gainz_rsi_overbought=args.gainz_rsi_overbought,
-                gainz_rsi_oversold=args.gainz_rsi_oversold)
+                gainz_rsi_oversold=args.gainz_rsi_oversold,
+                trade_shares=args.shares,
+                contracts=args.contracts,
+                target_delta=args.target_delta)
 
 
 if __name__ == "__main__":

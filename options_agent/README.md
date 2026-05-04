@@ -408,7 +408,7 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 | **Cascade (explosion) ≥** | 4 | Minimum momentum cascade score |
 | **Max choppiness** | **5** | Strict chop filter — rejects noisy days |
 | **Max trades per day** | **3** | Caps exposure; 4+ trades/day historically loses money |
-| **Max stops per day** | **2** | Daily loss limit — halts after 2 stop-outs to prevent catastrophic days |
+| **Max stops per day** | **1** | Daily loss limit — halts after 1 stop-out to prevent catastrophic days |
 | **Scan start** | **11:00 AM ET** | 90 min after open — balanced between early-entry noise and missed setups |
 | **Scan end** | 2:00 PM ET | No late-day entries (theta drag on 0DTE) |
 | **Entry confirmation** | Price in upper/lower 25% of OR range | Prevents entering from mid-range |
@@ -493,7 +493,7 @@ python scripts/run_sweet_spot_agent.py --shares --qty 10
 
 # Override defaults
 python scripts/run_sweet_spot_agent.py --daemon --max-chop 5 --max-trades-per-day 3 \
-  --max-stops-per-day 2 --scan-start-min 90
+  --max-stops-per-day 1 --scan-start-min 90
 
 # Disable Gainz early exit (revert to baseline behavior)
 python scripts/run_sweet_spot_agent.py --no-gainz-exit

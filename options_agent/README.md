@@ -399,12 +399,12 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 
 ## 🤖 Sweet Spot Live Agent & Replay Testing
 
-### Golden Parameters (validated via 1-year replay testing)
+### Golden Parameters (validated via 3-year replay testing)
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | **Mode** | **0DTE Options** | Trades 0DTE ATM options by default (`--shares` for legacy share trading) |
-| **Quality range** | 4–7 | Sweet spot — not chasing extremes |
+| **Quality range** | **3–7** | Loosened from 4–7 — Q3 signals that pass cascade+chop filters are profitable |
 | **Cascade (explosion) ≥** | 4 | Minimum momentum cascade score |
 | **Max choppiness** | **5** | Strict chop filter — rejects noisy days |
 | **Max trades per day** | **3** | Caps exposure; 4+ trades/day historically loses money |
@@ -413,7 +413,7 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 | **Scan end** | 2:00 PM ET | No late-day entries (theta drag on 0DTE) |
 | **Entry confirmation** | Price in upper/lower 25% of OR range | Prevents entering from mid-range |
 | **Cascade-scaled targets** | E≥8→1.5R, E≥6→1.25R, else 1.0R | Stronger momentum = wider target |
-| **Cascade contract sizing** | **ON** — 1ct E4-5, 2ct E6-7, 3ct E8+ | Loads up on high-conviction setups |
+| **Cascade contract sizing** | **ON** — 2ct E4-5, 4ct E6-7, 6ct E8+ | Loads up on high-conviction setups |
 | **Cooldown** | 3 bars (15 min) | Between consecutive triggers |
 | **Stop** | Range midpoint | (range_high + range_low) / 2 |
 | **Regime guard** | ON | Blocks counter-trend trades (SMA20 vs SMA50) |
@@ -421,28 +421,28 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 | **Option delta** | **0.50** (ATM) | Target delta for 0DTE contract selection |
 | **Base contracts** | **1** | Per trade (scaled by cascade tier) |
 
-**1-Year Replay Results (SPY, 250 days, 0DTE Options):**
+**3-Year Replay Results (SPY, 751 days, 0DTE Options):**
 
 | Metric | Value |
 |--------|-------|
-| Triggers | 191 (0.8/day) |
-| Win Rate | **57.6%** |
-| Profit Factor | **3.61** |
-| Total P&L (underlying) | +$57.22 (cascade-sized) |
-| Total Option P&L (per contract, ×100) | **+$4,585** |
-| Total Option P&L (cascade-sized, ×100) | **+$5,722** |
-| Avg P&L/Trade | +$0.30 |
-| Avg Winner | +$0.72 |
-| Avg Loser | −$0.27 |
-| R:R Ratio | 2.66 |
-| Sharpe Ratio (annualized) | **4.14** |
-| Sortino Ratio | **15.93** |
-| Max Drawdown | $2.91 (5.1% of peak) |
-| Calmar Ratio | **19.63** |
-| Exit mix (gainz / target / stop / time_stop) | 49% / 19% / 17% / 15% |
+| Triggers | 506 (0.7/day) |
+| Win Rate | **55.3%** |
+| Profit Factor | **3.29** |
+| Total P&L (cascade-sized) | +$256.36 |
+| Total Option P&L (per contract, ×100) | **+$10,722** |
+| Total Option P&L (cascade-sized, ×100) | **+$25,636** |
+| Avg P&L/Trade | +$0.51 |
+| Avg Winner | +$1.32 |
+| Avg Loser | −$0.50 |
+| R:R Ratio | 2.65 |
+| Sharpe Ratio (annualized) | **3.74** |
+| Sortino Ratio | **12.62** |
+| Max Drawdown | $7.85 (3.1% of peak) |
+| Calmar Ratio | **32.64** |
+| Longest Underwater | 51 days |
 
 > **Note:** Option P&L uses a delta-gamma approximation with 0DTE theta decay modeling.
-> Cascade sizing applies 1/2/3 contracts for E4-5/E6-7/E8+ tiers respectively.
+> Cascade sizing applies 2/4/6 contracts for E4-5/E6-7/E8+ tiers respectively.
 
 ### Replay Sweet Spot (historical simulation)
 

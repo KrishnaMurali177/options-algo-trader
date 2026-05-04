@@ -403,35 +403,46 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
+| **Mode** | **0DTE Options** | Trades 0DTE ATM options by default (`--shares` for legacy share trading) |
 | **Quality range** | 4–7 | Sweet spot — not chasing extremes |
 | **Cascade (explosion) ≥** | 4 | Minimum momentum cascade score |
 | **Max choppiness** | **5** | Strict chop filter — rejects noisy days |
 | **Max trades per day** | **3** | Caps exposure; 4+ trades/day historically loses money |
 | **Max stops per day** | **2** | Daily loss limit — halts after 2 stop-outs to prevent catastrophic days |
-| **Scan start** | **11:30 AM ET** | Skips 10:35–11:29 false breakout zone |
-| **Scan end** | 2:00 PM ET | No late-day entries |
+| **Scan start** | **11:00 AM ET** | 90 min after open — balanced between early-entry noise and missed setups |
+| **Scan end** | 2:00 PM ET | No late-day entries (theta drag on 0DTE) |
 | **Entry confirmation** | Price in upper/lower 25% of OR range | Prevents entering from mid-range |
 | **Cascade-scaled targets** | E≥8→1.5R, E≥6→1.25R, else 1.0R | Stronger momentum = wider target |
+| **Cascade contract sizing** | **ON** — 1ct E4-5, 2ct E6-7, 3ct E8+ | Loads up on high-conviction setups |
 | **Cooldown** | 3 bars (15 min) | Between consecutive triggers |
 | **Stop** | Range midpoint | (range_high + range_low) / 2 |
 | **Regime guard** | ON | Blocks counter-trend trades (SMA20 vs SMA50) |
-| **GainzAlgoV2 early exit** | **ON** (RSI 65/35, body 0.5) | Closes position on opposing reversal candle — converts marginal time-stop trades into earlier exits |
+| **GainzAlgoV2 early exit** | **ON** (RSI 60/40, body 0.5) | Closes position on opposing reversal candle — faster exits for 0DTE premium preservation |
+| **Option delta** | **0.50** (ATM) | Target delta for 0DTE contract selection |
+| **Base contracts** | **1** | Per trade (scaled by cascade tier) |
 
-**1-Year Replay Results (SPY, 250 days):**
+**1-Year Replay Results (SPY, 250 days, 0DTE Options):**
 
-| Metric | Baseline | + Gainz Exit |
-|--------|----------|--------------|
-| Triggers | 153 (0.6/day) | 154 (0.6/day) |
-| Win Rate | 58.2% | **63.6%** |
-| Profit Factor | 1.56 | **1.81** |
-| Total P&L | +$49.37 | **+$62.41** |
-| Avg P&L/Trade | +$0.32 | **+$0.41** |
-| Avg Winner | +$1.54 | +$1.42 |
-| Avg Loser | −$1.37 | −$1.37 |
-| R:R Ratio | 1.12 | 1.03 |
-| Exit mix (time_stop / target / stop / gainz) | 57% / 22% / 21% / — | 33% / 22% / 15% / **30%** |
+| Metric | Value |
+|--------|-------|
+| Triggers | 191 (0.8/day) |
+| Win Rate | **57.6%** |
+| Profit Factor | **3.61** |
+| Total P&L (underlying) | +$57.22 (cascade-sized) |
+| Total Option P&L (per contract, ×100) | **+$4,585** |
+| Total Option P&L (cascade-sized, ×100) | **+$5,722** |
+| Avg P&L/Trade | +$0.30 |
+| Avg Winner | +$0.72 |
+| Avg Loser | −$0.27 |
+| R:R Ratio | 2.66 |
+| Sharpe Ratio (annualized) | **4.14** |
+| Sortino Ratio | **15.93** |
+| Max Drawdown | $2.91 (5.1% of peak) |
+| Calmar Ratio | **19.63** |
+| Exit mix (gainz / target / stop / time_stop) | 49% / 19% / 17% / 15% |
 
-GainzAlgo defaults (RSI 65/35, body 0.5) chosen via a 25-combo threshold sweep — top of the leaderboard for both PF and WR. Disable with `--no-gainz-exit`.
+> **Note:** Option P&L uses a delta-gamma approximation with 0DTE theta decay modeling.
+> Cascade sizing applies 1/2/3 contracts for E4-5/E6-7/E8+ tiers respectively.
 
 ### Replay Sweet Spot (historical simulation)
 
@@ -440,21 +451,20 @@ Replays the agent logic bar-by-bar on recent 5-min data — the most realistic t
 ```bash
 cd options_agent
 
-# Golden parameters (recommended) — with Gainz early exit
-python scripts/replay_sweet_spot.py --days 365 --max-chop 5 --min-quality 4 --max-quality 7 \
-  --max-stops-per-day 2 --max-trades-per-day 3 --scan-start 11:30 \
-  --gainz-exit --gainz-rsi-overbought 65 --gainz-rsi-oversold 35 --gainz-body-ratio 0.5
+# Golden parameters (recommended) — 0DTE options with cascade sizing (all defaults)
+python scripts/replay_sweet_spot.py --days 365
 
-# Baseline (no Gainz exit) — for A/B comparison
-python scripts/replay_sweet_spot.py --days 365 --max-chop 5 --min-quality 4 --max-quality 7 \
-  --max-stops-per-day 2 --max-trades-per-day 3 --scan-start 11:30
+# Disable cascade sizing (flat 1 contract per trade)
+python scripts/replay_sweet_spot.py --days 365 --no-cascade-sizing
+
+# Legacy share mode (no options P&L modeling)
+python scripts/replay_sweet_spot.py --days 365 --shares
 
 # Last 30 trading days (default, uses Alpaca 5-min data)
-python scripts/replay_sweet_spot.py --days 30 --max-chop 5 --gainz-exit
+python scripts/replay_sweet_spot.py --days 30
 
 # Specific symbol
-python scripts/replay_sweet_spot.py --symbol QQQ --days 365 --max-chop 5 \
-  --max-stops-per-day 2 --max-trades-per-day 3 --scan-start 11:30 --gainz-exit
+python scripts/replay_sweet_spot.py --symbol QQQ --days 365
 
 # Sweep Gainz thresholds across 25 RSI/body combos (finds the sweet zone)
 python scripts/sweep_gainz_thresholds.py --days 365
@@ -469,24 +479,27 @@ Runs autonomously during market hours, scanning every 5 minutes and placing brac
 ```bash
 cd options_agent
 
-# Single day run (golden parameters — Gainz exit ON by default)
+# Single day run (golden parameters — 0DTE options, cascade sizing, Gainz exit ON)
 python scripts/run_sweet_spot_agent.py
 
 # Daemon mode (restarts daily, runs Mon–Fri)
 python scripts/run_sweet_spot_agent.py --daemon
 
-# Custom share quantity
-python scripts/run_sweet_spot_agent.py --daemon --qty 10
+# Multiple base contracts (cascade sizing will scale: 2ct base → 2/4/6 by tier)
+python scripts/run_sweet_spot_agent.py --daemon --contracts 2
+
+# Legacy share trading mode
+python scripts/run_sweet_spot_agent.py --shares --qty 10
 
 # Override defaults
 python scripts/run_sweet_spot_agent.py --daemon --max-chop 5 --max-trades-per-day 3 \
-  --max-stops-per-day 2 --scan-start-min 120
+  --max-stops-per-day 2 --scan-start-min 90
 
 # Disable Gainz early exit (revert to baseline behavior)
 python scripts/run_sweet_spot_agent.py --no-gainz-exit
 
 # Tune Gainz thresholds
-python scripts/run_sweet_spot_agent.py --gainz-rsi-overbought 70 --gainz-rsi-oversold 30 \
+python scripts/run_sweet_spot_agent.py --gainz-rsi-overbought 65 --gainz-rsi-oversold 35 \
   --gainz-body-ratio 0.6
 
 # Journal-only mode (no paper orders, just logs triggers)

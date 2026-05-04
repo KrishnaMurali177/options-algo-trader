@@ -1,0 +1,19 @@
+{
+  "symbol": "AAPL",
+  "current_price": 190.0,
+  "vix": 15.0,
+  "rsi_14": 55.0,
+  "sma_20": 188.0,
+  "sma_50": 185.0,
+  "sma_200": 175.0,
+  "bb_upper": 195.0,
+  "bb_middle": 188.0,
+  "bb_lower": 181.0,
+  "macd": 1.5,
+  "macd_signal": 1.0,
+  "macd_histogram": 0.5,
+  "atr_14": 3.2,
+  "next_earnings_date": "2026-07-25",
+  "days_to_earnings": 100
+}
+

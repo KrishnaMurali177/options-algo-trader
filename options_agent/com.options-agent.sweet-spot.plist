@@ -1,0 +1,42 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.options-agent.sweet-spot</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/kmural14/PycharmProjects/AppGenie/venv/bin/python</string>
+        <string>/Users/kmural14/PycharmProjects/AppGenie/options_agent/scripts/run_sweet_spot_agent.py</string>
+        <string>--symbol</string>
+        <string>SPY</string>
+        <string>--qty</string>
+        <string>10</string>
+        <string>--max-chop</string>
+        <string>5</string>
+    </array>
+    <key>WorkingDirectory</key>
+    <string>/Users/kmural14/PycharmProjects/AppGenie/options_agent</string>
+    <key>StartCalendarInterval</key>
+    <array>
+        <!-- Monday through Friday at 9:25 AM -->
+        <dict><key>Weekday</key><integer>1</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>25</integer></dict>
+        <dict><key>Weekday</key><integer>2</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>25</integer></dict>
+        <dict><key>Weekday</key><integer>3</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>25</integer></dict>
+        <dict><key>Weekday</key><integer>4</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>25</integer></dict>
+        <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>9</integer><key>Minute</key><integer>25</integer></dict>
+    </array>
+    <key>StandardOutPath</key>
+    <string>/Users/kmural14/PycharmProjects/AppGenie/options_agent/logs/agent_stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/kmural14/PycharmProjects/AppGenie/options_agent/logs/agent_stderr.log</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key>
+        <string>/usr/local/bin:/usr/bin:/bin</string>
+    </dict>
+    <key>RunAtLoad</key>
+    <false/>
+</dict>
+</plist>
+

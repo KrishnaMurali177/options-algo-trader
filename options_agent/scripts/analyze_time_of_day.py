@@ -45,7 +45,7 @@ def collect_trades(df: pd.DataFrame, trading_days: list, symbol: str,
             scan_end="13:59", scan_start="11:30",
             target_mult_low=1.0, target_mult_mid=1.25, target_mult_high=1.5,
             regime_guard=True, symbol=symbol,
-            max_trades_per_day=3, max_stops_per_day=2,
+            max_trades_per_day=3, max_stops_per_day=1,
             gainz_exit=gainz_on, gainz_body_ratio=0.5,
             gainz_rsi_overbought=65.0, gainz_rsi_oversold=35.0,
         )

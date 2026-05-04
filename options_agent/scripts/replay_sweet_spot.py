@@ -159,7 +159,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                regime_guard: bool = True,
                symbol: str = "SPY",
                max_trades_per_day: int = 3,
-               max_stops_per_day: int = 2,
+               max_stops_per_day: int = 1,
                gainz_exit: bool = True,
                gainz_body_ratio: float = 0.5,
                gainz_rsi_overbought: float = 65.0,
@@ -626,7 +626,7 @@ def main():
     parser.add_argument("--target-mult-high", type=float, default=1.5, help="Target multiple for high explosion")
     parser.add_argument("--no-regime-guard", action="store_true", help="Disable regime guardrails")
     parser.add_argument("--max-trades-per-day", type=int, default=3, help="Max trades per day (0=unlimited, golden: 3)")
-    parser.add_argument("--max-stops-per-day", type=int, default=2, help="Stop trading after N stop-outs (0=unlimited, golden: 2)")
+    parser.add_argument("--max-stops-per-day", type=int, default=1, help="Stop trading after N stop-outs (0=unlimited, golden: 1)")
     parser.add_argument("--no-gainz-exit", action="store_true",
                         help="Disable GainzAlgoV2 reversal early-exit (golden: enabled)")
     parser.add_argument("--gainz-body-ratio", type=float, default=0.5, help="Min candle body/range ratio for Gainz signal (golden: 0.5)")

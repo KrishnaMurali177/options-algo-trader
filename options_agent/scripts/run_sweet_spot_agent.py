@@ -229,7 +229,7 @@ def check_sweet_spot(symbol: str, max_chop: int = 5) -> dict | None:
 
 
 def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
-            max_trades_per_day: int = 3, max_stops_per_day: int = 2,
+            max_trades_per_day: int = 3, max_stops_per_day: int = 1,
             scan_start_min: int = 90,
             gainz_exit: bool = True,
             gainz_body_ratio: float = 0.5,
@@ -558,7 +558,7 @@ def main():
     parser.add_argument("--qty", type=int, default=1, help="Shares per trade (default: 1)")
     parser.add_argument("--max-chop", type=int, default=5, help="Max choppiness (default: 5)")
     parser.add_argument("--max-trades-per-day", type=int, default=3, help="Max trades per day (default: 3)")
-    parser.add_argument("--max-stops-per-day", type=int, default=2, help="Halt after N stop-outs (default: 2)")
+    parser.add_argument("--max-stops-per-day", type=int, default=1, help="Halt after N stop-outs (default: 1)")
     parser.add_argument("--scan-start-min", type=int, default=90, help="Minutes after open to start scanning (default: 90 = 11:00)")
     parser.add_argument("--daemon", action="store_true", help="Run continuously (restarts daily)")
     parser.add_argument("--no-paper", action="store_true", help="Journal only, no paper orders")

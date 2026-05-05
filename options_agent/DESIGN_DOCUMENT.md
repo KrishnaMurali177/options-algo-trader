@@ -837,5 +837,224 @@ class RiskAssessment(BaseModel):
 
 ---
 
+## 15. Sweet Spot Live Agent — Workflow & Decision Logic
+
+> **Added:** May 5, 2026 | **Script:** `scripts/run_sweet_spot_agent.py`
+
+### 15.1 Daily Workflow
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    DAILY STARTUP                              │
+│  • Wait for market open (9:30 ET)                           │
+│  • Initialize: trades_today=0, stops_today=0                │
+│  • Load/create journal file (sweet_spot_journal/YYYY-MM-DD) │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│              WAIT FOR SCAN WINDOW                             │
+│  • Wait until 10:30 ET (scan_start_min=60 after open)       │
+│  • Opening Range forms during 9:30–10:29 (12 bars × 5min)  │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│           MAIN SCAN LOOP (every 5 minutes)                   │
+│                                                              │
+│  ┌─ CHECK DAILY LIMITS ─────────────────────────────────┐   │
+│  │  • trades_today >= 3? → stop scanning, monitor only   │   │
+│  │  • stops_today >= 1? → HALT (daily loss limit)        │   │
+│  └───────────────────────────────────────────────────────┘   │
+│                                                              │
+│  ┌─ CHECK TIME CUTOFF ──────────────────────────────────┐   │
+│  │  • now.hour >= 14 (2:00 PM)? → no new entries         │   │
+│  │    → monitor open positions only until they close      │   │
+│  └───────────────────────────────────────────────────────┘   │
+│                                                              │
+│  ┌─ CHECK COOLDOWN ─────────────────────────────────────┐   │
+│  │  • Last trigger < 15 min ago? → skip                  │   │
+│  └───────────────────────────────────────────────────────┘   │
+│                                                              │
+│  ┌─ EVALUATE SWEET SPOT ────────────────────────────────┐   │
+│  │  (see §15.2 Decision Logic below)                     │   │
+│  │  ALL PASS? → Return trigger dict → EXECUTE TRADE      │   │
+│  │  ANY FAIL? → Return None → sleep 5 min → loop         │   │
+│  └───────────────────────────────────────────────────────┘   │
+│                                                              │
+└──────────────────────┬──────────────────────────────────────┘
+                       │ trigger found
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│              EXECUTE TRADE                                    │
+│                                                              │
+│  1. Compute execution levels:                               │
+│     • Entry = current price                                 │
+│     • Stop = (range_high + range_low) / 2 (midpoint)        │
+│     • Risk = |entry - stop|                                 │
+│     • Target = entry ± risk × mult                          │
+│       (E≥8→1.5R, E≥6→1.25R, else 1.0R)                     │
+│                                                              │
+│  2. Determine contract count:                               │
+│     • Cascade sizing: 3 contracts flat (all tiers)          │
+│                                                              │
+│  3. Place order via Alpaca:                                 │
+│     • 0DTE ATM option (delta ≈ 0.50)                        │
+│     • Bracket order: stop + limit (target)                  │
+│                                                              │
+│  4. Log to journal, trades_today += 1                       │
+│                                                              │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│           POSITION MONITORING (every 5 min)                  │
+│                                                              │
+│  ┌─ GAINZ ALGO V2 (early exit) ────────────────────────┐   │
+│  │  Check last completed 5-min bar:                      │   │
+│  │  • CALL + RSI ≥ 70 + bearish body ≥ 70% → SELL       │   │
+│  │  • PUT + RSI ≤ 30 + bullish body ≥ 70% → BUY back    │   │
+│  │  → close_position() immediately, cancel bracket       │   │
+│  └───────────────────────────────────────────────────────┘   │
+│                                                              │
+│  ┌─ BRACKET MONITORING ─────────────────────────────────┐   │
+│  │  • Target hit? → WIN (bracket limit filled)           │   │
+│  │  • Stop hit? → LOSS → stops_today += 1                │   │
+│  └───────────────────────────────────────────────────────┘   │
+│                                                              │
+│  ┌─ TIME STOP ──────────────────────────────────────────┐   │
+│  │  • 3:30 PM ET: close any remaining positions          │   │
+│  │  • Buffer: 15 min before broker's 3:45 forced close   │   │
+│  │  • 0DTE expires at 4:00 PM (SPY/QQQ/IWM/DIA)         │   │
+│  └───────────────────────────────────────────────────────┘   │
+│                                                              │
+│  Continue until all positions closed                         │
+│                                                              │
+└──────────────────────┬──────────────────────────────────────┘
+                       │
+                       ▼
+┌─────────────────────────────────────────────────────────────┐
+│                    END OF DAY                                 │
+│  • Save final journal                                       │
+│  • Log daily summary (trades, P&L, outcomes)                │
+│  • If --daemon: sleep until next trading day 9:25 AM        │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 15.2 Decision Logic (Entry Criteria)
+
+All 10 conditions must pass for a trigger to fire:
+
+```
+ENTRY CRITERIA (ALL must pass):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+ #  Gate                    Threshold              Source
+─── ─────────────────────── ────────────────────── ──────────────────────────
+ 1  Time window             10:30 AM – 2:00 PM ET  Clock check
+ 2  OR Momentum direction   |M| ≥ 25              OpeningRangeAnalyzer
+ 3  Regime guard            Not counter-trend       SMA20 vs SMA50 + RSI
+ 4  Quality score           3 ≤ Q ≤ 7              compute_quality_score()
+ 5  Explosion score         E ≥ 4                  MomentumCascadeDetector
+ 6  Choppiness              C ≤ 5                  compute_choppiness()
+ 7  Entry confirmation      Price in upper/lower    OR range high/low ± 25%
+                            25% of OR range
+ 8  Cooldown                ≥ 15 min since last     Timestamp delta
+ 9  Daily trade cap         < 3 trades today        Counter
+10  Daily loss cap          < 1 stop-out today      Counter
+```
+
+**Signal evaluation pipeline (executed in order):**
+
+1. **MarketAnalyzer.analyze(symbol, "15min")**
+   - Fetches live 5-min bars from yfinance
+   - Computes: RSI-14, SMA-20/50/200, MACD, ATR-14, Bollinger Bands, ZLEMA-8/21, VIX
+
+2. **OpeningRangeAnalyzer.analyze(indicators)**
+   - Uses 9:30–10:29 bars (opening range)
+   - 7 weighted signals → momentum score M ∈ [−100, +100]
+   - Direction: M ≥ 25 → CALL, M ≤ −25 → PUT, else SKIP
+
+3. **RecentMomentumAnalyzer.analyze(indicators)**
+   - Last 30 min of 5-min bars
+   - Outputs: direction (bullish/bearish/neutral) + momentum score
+
+4. **Regime Guard**
+   - PUT blocked if SMA20 > SMA50 AND RSI ≤ 70
+   - CALL blocked if SMA20 < SMA50 AND RSI ≥ 30
+   - Exception: extreme RSI allows counter-trend (oversold bounce / overbought reversal)
+
+5. **compute_quality_score()**
+   - 13 possible points (11 signals + 2 penalties)
+   - Sweet spot range: 3–7 (not too low = weak, not too high = chasing)
+
+6. **MomentumCascadeDetector.analyze()**
+   - 6 signals → explosion score E ∈ [0, 10]
+   - Requires E ≥ 4 (minimum institutional momentum)
+
+7. **compute_choppiness(bars)**
+   - 4 components: Kaufman CI + reversal rate + bar range ratio + max streak
+   - Score C ∈ [0, 10]; requires C ≤ 5 (strict = trending day only)
+
+8. **Entry Confirmation**
+   - CALL: price must be in upper 25% of OR range (near breakout)
+   - PUT: price must be in lower 25% of OR range (near breakdown)
+   - Prevents mid-range entries with no directional edge
+
+### 15.3 Exit Logic
+
+```
+EXIT LOGIC (first condition to trigger wins):
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+Priority  Exit Type        Condition                          Action
+────────  ───────────────  ─────────────────────────────────  ──────────────────────
+   1      TARGET HIT       Price reaches entry ± R×mult       Bracket limit fills
+   2      STOP HIT         Price reaches range midpoint       Bracket stop fills
+   3      GAINZ EXIT       RSI extreme + strong opposing      Market close immediately
+                           candle (body ≥ 70% of range)
+   4      TIME STOP        3:30 PM ET reached                 Market close at bar close
+   5      EOD / BROKER     3:45 PM broker forced close        Automatic (safety net)
+```
+
+**GainzAlgoV2 thresholds (golden defaults):**
+- RSI overbought: 70 (triggers SELL for CALL positions)
+- RSI oversold: 30 (triggers BUY for PUT positions)
+- Min body ratio: 0.7 (candle body must be ≥ 70% of high-low range)
+- Both conditions must be true simultaneously on a single completed 5-min bar
+
+### 15.4 Replay vs Live Agent Differences
+
+| Aspect | Replay (backtest) | Live Agent |
+|--------|-------------------|------------|
+| Data source | Alpaca historical 5-min bars | yfinance live 5-min bars |
+| VIX | Historical daily lookup | Live daily VIX |
+| Order execution | Simulated walk-forward | Real Alpaca paper/live bracket orders |
+| Time stop | Checks bar timestamp ≥ 15:30 | Broker closes 0DTE at 3:45; agent exits ~3:30 |
+| Gainz exit | Precomputed RSI series | Live bar RSI computation |
+| Position tracking | Instant fill assumed | Real fill monitoring via Alpaca API |
+| Slippage | Configurable (default $0) | Real market bid-ask spread |
+| Multi-day SMA | 4 prior days prepended | MarketAnalyzer fetches sufficient history |
+
+### 15.5 Golden Parameters Summary
+
+| Parameter | Value | Validated By |
+|-----------|-------|--------------|
+| Scan window | 10:30–14:00 ET | 2-yr replay: later entries lose money |
+| Quality range | 3–7 | Q < 3 = insufficient signal; Q > 7 = chasing |
+| Min explosion | 4 | E < 4 = no institutional momentum |
+| Max choppiness | 5 | C > 5 = whipsaw environment |
+| Max trades/day | 3 | 4+ trades/day historically net negative |
+| Max stops/day | 1 | Prevents catastrophic multi-stop days |
+| Cooldown | 15 min (3 bars) | Avoids duplicate entries on same signal |
+| Stop level | Range midpoint | Balanced: not too tight, not too loose |
+| Target multiplier | 1.0R / 1.25R / 1.5R | Scaled by explosion strength |
+| Cascade sizing | 3/3/3 flat | Middle tier (E6-7) underperforms; flat avoids bias |
+| Time stop | 3:30 PM ET | 15-min buffer before broker's 3:45 forced close |
+| Gainz RSI | 70/30, body 0.7 | Stricter = fewer premature exits |
+| Option delta | 0.50 (ATM) | Maximum gamma exposure for 0DTE |
+
+---
+
 *End of Design Document*
 

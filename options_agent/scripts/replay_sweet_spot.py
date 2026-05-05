@@ -420,6 +420,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             or_confirmed=abs(or_momentum) >= 40,
             recent_dir=recent_dir,
             recent_momentum=recent_momentum,
+            zlema_trend=indicators.zlema_trend,
         )
         quality = quality_result.score
 

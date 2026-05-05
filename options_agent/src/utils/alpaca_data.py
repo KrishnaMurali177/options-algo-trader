@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -86,12 +86,18 @@ def fetch_bars(
         DataFrame with columns: Open, High, Low, Close, Volume
         Index: DatetimeIndex in US/Eastern timezone.
     """
+    from alpaca.data.enums import DataFeed
     from alpaca.data.requests import StockBarsRequest
     from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
 
     cache = _cache_path(symbol, interval, days_back)
 
-    if not force_refresh and _is_cache_fresh(cache):
+    # Short windows (≤5d) are live-dashboard reads — tighten TTL to ~1 min so the
+    # last bar reflects the current session. Longer windows are for backtesting
+    # and can stay at the 12h default.
+    max_age_hours = 1 / 60 if days_back <= 5 else 12
+
+    if not force_refresh and _is_cache_fresh(cache, max_age_hours=max_age_hours):
         logger.info("Loading cached %s %s data (%d days) from %s", symbol, interval, days_back, cache)
         df = pd.read_parquet(cache)
         df.index = pd.to_datetime(df.index)
@@ -111,7 +117,7 @@ def fetch_bars(
     if timeframe is None:
         raise ValueError(f"Unsupported interval: {interval}. Use: {list(tf_map)}")
 
-    end = datetime.now()
+    end = datetime.now(timezone.utc)
     start = end - timedelta(days=days_back)
 
     logger.info(
@@ -122,11 +128,15 @@ def fetch_bars(
     client = _get_client()
 
     # Alpaca may return a lot of data; fetch in one request (they handle pagination)
+    # Free Alpaca subscriptions can't query recent SIP data; IEX is the
+    # free real-time feed. Volume reflects IEX's slice only, but price
+    # levels are accurate for liquid names like SPY.
     request = StockBarsRequest(
         symbol_or_symbols=symbol,
         timeframe=timeframe,
         start=start,
         end=end,
+        feed=DataFeed.IEX,
     )
     bars = client.get_stock_bars(request)
     df = bars.df

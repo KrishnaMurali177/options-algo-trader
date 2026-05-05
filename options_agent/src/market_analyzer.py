@@ -12,6 +12,7 @@ import yfinance as yf
 from src.models.market_data import MarketIndicators, MarketRegime
 
 logger = logging.getLogger(__name__)
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 
 
 class MarketAnalyzer:

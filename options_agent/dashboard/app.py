@@ -494,9 +494,9 @@ def _mock_fetch(symbol: str, timeframe: str = "daily") -> dict:
 
 # ── Live data fetchers ────────────────────────────────────────────
 
-@st.cache_data(ttl=300, show_spinner="Fetching market data…")
+@st.cache_data(ttl=60, show_spinner="Fetching market data…")
 def fetch_indicators(symbol: str, timeframe: str = "daily") -> dict:
-    """Fetch live market indicators via the MarketAnalyzer (cached 5 min)."""
+    """Fetch live market indicators via the MarketAnalyzer (cached 1 min)."""
     analyzer = MarketAnalyzer()
     ind = analyzer.analyze(symbol, timeframe=timeframe)
     regime = analyzer.classify_regime(ind)

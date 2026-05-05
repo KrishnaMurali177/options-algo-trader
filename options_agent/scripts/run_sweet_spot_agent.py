@@ -33,6 +33,7 @@ import sys
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
@@ -89,6 +90,7 @@ LOG_DIR.mkdir(exist_ok=True)
 JOURNAL_DIR = Path(__file__).resolve().parent.parent / "sweet_spot_journal"
 JOURNAL_DIR.mkdir(exist_ok=True)
 
+logging.Formatter.converter = lambda secs: datetime.fromtimestamp(secs, tz=ZoneInfo("US/Eastern")).timetuple()
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -126,12 +128,12 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True) 
         indicators = analyzer.analyze(symbol, timeframe="15min")
 
         or_analyzer = OpeningRangeAnalyzer()
-        or_result = or_analyzer.analyze(symbol)
-        or_direction = or_result.direction if or_result else "neutral"
+        or_result = or_analyzer.analyze(indicators)
+        or_direction = or_result.breakout_direction if or_result else "neutral"
         or_momentum = or_result.momentum_score if or_result else 0
 
         rc_analyzer = RecentMomentumAnalyzer()
-        rc_result = rc_analyzer.analyze(symbol)
+        rc_result = rc_analyzer.analyze(indicators)
         recent_dir = rc_result.direction if rc_result else "neutral"
         recent_momentum = rc_result.momentum_score if rc_result else 0
 

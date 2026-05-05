@@ -43,6 +43,7 @@ load_dotenv()
 import pandas as pd
 import yfinance as yf
 
+from src.utils.alpaca_data import fetch_bars as alpaca_fetch_bars
 from src.market_analyzer import MarketAnalyzer
 from src.opening_range import OpeningRangeAnalyzer
 from src.recent_momentum import RecentMomentumAnalyzer
@@ -56,9 +57,7 @@ def _check_gainz_exit(symbol: str, direction: str, body_ratio: float,
                       rsi_overbought: float, rsi_oversold: float) -> bool:
     """Return True if the latest completed 5-min bar fires an opposing Gainz signal."""
     try:
-        bars = yf.download(symbol, period="1d", interval="5m", progress=False)
-        if isinstance(bars.columns, pd.MultiIndex):
-            bars.columns = bars.columns.get_level_values(0)
+        bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
         if len(bars) < 16:
             return False
         # Use the last completed bar (penultimate row — last row may be in-progress)
@@ -90,7 +89,6 @@ LOG_DIR.mkdir(exist_ok=True)
 JOURNAL_DIR = Path(__file__).resolve().parent.parent / "sweet_spot_journal"
 JOURNAL_DIR.mkdir(exist_ok=True)
 
-logging.Formatter.converter = lambda secs: datetime.fromtimestamp(secs, tz=ZoneInfo("US/Eastern")).timetuple()
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -163,6 +161,7 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True) 
             or_confirmed=abs(or_momentum) >= 40,
             recent_dir=recent_dir,
             recent_momentum=recent_momentum,
+            zlema_trend=indicators.zlema_trend,
         )
         quality = quality_result.score
 
@@ -171,9 +170,7 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True) 
             or_momentum=or_momentum, recent_momentum=recent_momentum,
         )
 
-        bars = yf.download(symbol, period="1d", interval="5m", progress=False)
-        if isinstance(bars.columns, pd.MultiIndex):
-            bars.columns = bars.columns.get_level_values(0)
+        bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
         chop = compute_choppiness(bars)
 
         # Sweet spot criteria
@@ -317,12 +314,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                     journal_file.write_text(json.dumps(triggers, indent=2, default=str))
                     open_directions.pop(sym, None)
 
-        # ── Options stop/target monitoring (underlying-based, since no bracket for options) ──
+        # ── Options stop/target/time-stop monitoring (underlying-based, since no bracket for options) ──
         if not trade_shares and trader and open_options:
             try:
-                current_price_bars = yf.download(symbol, period="1d", interval="5m", progress=False)
-                if isinstance(current_price_bars.columns, pd.MultiIndex):
-                    current_price_bars.columns = current_price_bars.columns.get_level_values(0)
+                current_price_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
                 if len(current_price_bars) > 0:
                     underlying_price = float(current_price_bars["Close"].iloc[-1])
                     for occ_sym, opt_info in list(open_options.items()):
@@ -342,6 +337,11 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             elif underlying_price <= opt_info["target_price"]:
                                 should_close = True
                                 close_reason = "target"
+
+                        # Time stop: close at 15:30 ET (15 min before broker's 3:45 forced close)
+                        if not should_close and now.hour == 15 and now.minute >= 30:
+                            should_close = True
+                            close_reason = "time_stop"
 
                         if should_close:
                             logger.info("⚡ OPTIONS %s: closing %s (%s at $%.2f)",
@@ -366,6 +366,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
 
         # Stop opening NEW trades after 2:00 PM (still monitor existing for exits)
         if now.hour >= 14:
+            # After 15:30, if no open positions, we're done for the day
+            if now.hour == 15 and now.minute >= 30 and not open_directions:
+                logger.info("Time stop reached (15:30 ET) and no open positions. Done for today.")
+                break
             if not open_directions:
                 break
             time.sleep(300)

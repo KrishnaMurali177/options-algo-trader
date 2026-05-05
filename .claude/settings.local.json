@@ -1,8 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(PYTHONIOENCODING=utf-8 venv/Scripts/python.exe scripts/replay_sweet_spot.py --days 180 --max-chop 5 --min-quality 4 --max-quality 7 --max-stops-per-day 2 --max-trades-per-day 3 --scan-start 11:30 --gainz-exit)",
-      "Bash(PYTHONIOENCODING=utf-8 venv/Scripts/python.exe scripts/replay_sweet_spot.py --symbol IWM --days 365 --max-chop 5 --min-quality 4 --max-quality 7 --max-stops-per-day 2 --max-trades-per-day 3 --scan-start 11:30 --gainz-exit --gainz-rsi-overbought 65 --gainz-rsi-oversold 35 --gainz-body-ratio 0.5)"
-    ]
-  }
-}

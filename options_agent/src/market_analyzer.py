@@ -74,6 +74,33 @@ class MarketAnalyzer:
 
         current_price = float(df["Close"].astype(float).iloc[-1])
 
+        # ── Try to get a more current real-time price ──
+        if is_intraday:
+            try:
+                from alpaca.data.historical import StockHistoricalDataClient
+                from alpaca.data.requests import StockLatestTradeRequest
+                from dotenv import load_dotenv
+                load_dotenv()
+                import os as _os
+                _ak = _os.environ.get("ALPACA_API_KEY", "")
+                _sk = _os.environ.get("ALPACA_SECRET_KEY", "")
+                if _ak and _sk:
+                    _client = StockHistoricalDataClient(_ak, _sk, raw_data=False)
+                    _req = StockLatestTradeRequest(symbol_or_symbols=symbol)
+                    _trade = _client.get_stock_latest_trade(_req)
+                    if symbol in _trade:
+                        current_price = float(_trade[symbol].price)
+                        logger.info("Real-time price for %s: $%.2f (latest trade)", symbol, current_price)
+            except Exception as _e:
+                # Fall back to yfinance fast_info
+                try:
+                    _ticker = yf.Ticker(symbol)
+                    _last = _ticker.fast_info.get("lastPrice") or _ticker.fast_info.get("last_price")
+                    if _last and _last > 0:
+                        current_price = float(_last)
+                except Exception:
+                    pass  # keep bar-based price
+
         # ── For intraday: fetch daily data for regime indicators, 5-min for trade signals ──
         if is_intraday:
             # Daily data for regime-scale indicators (SMAs, Bollinger, MACD)

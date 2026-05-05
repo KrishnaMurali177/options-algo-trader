@@ -161,13 +161,13 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                max_trades_per_day: int = 3,
                max_stops_per_day: int = 1,
                gainz_exit: bool = True,
-               gainz_body_ratio: float = 0.5,
-               gainz_rsi_overbought: float = 65.0,
-               gainz_rsi_oversold: float = 35.0,
+               gainz_body_ratio: float = 0.7,
+               gainz_rsi_overbought: float = 70.0,
+               gainz_rsi_oversold: float = 30.0,
                cascade_sizing: bool = False,
-               cascade_size_low: int = 2,
-               cascade_size_mid: int = 4,
-               cascade_size_high: int = 6,
+               cascade_size_low: int = 3,
+               cascade_size_mid: int = 3,
+               cascade_size_high: int = 3,
                simulate_options: bool = True,
                option_delta: float = 0.50,
                option_gamma: float = 0.05,
@@ -629,17 +629,17 @@ def main():
     parser.add_argument("--max-stops-per-day", type=int, default=1, help="Stop trading after N stop-outs (0=unlimited, golden: 1)")
     parser.add_argument("--no-gainz-exit", action="store_true",
                         help="Disable GainzAlgoV2 reversal early-exit (golden: enabled)")
-    parser.add_argument("--gainz-body-ratio", type=float, default=0.5, help="Min candle body/range ratio for Gainz signal (golden: 0.5)")
-    parser.add_argument("--gainz-rsi-overbought", type=float, default=60.0, help="RSI threshold for Gainz SELL signal (golden: 60)")
-    parser.add_argument("--gainz-rsi-oversold", type=float, default=40.0, help="RSI threshold for Gainz BUY signal (golden: 40)")
+    parser.add_argument("--gainz-body-ratio", type=float, default=0.7, help="Min candle body/range ratio for Gainz signal (golden: 0.7)")
+    parser.add_argument("--gainz-rsi-overbought", type=float, default=70.0, help="RSI threshold for Gainz SELL signal (golden: 70)")
+    parser.add_argument("--gainz-rsi-oversold", type=float, default=30.0, help="RSI threshold for Gainz BUY signal (golden: 30)")
     parser.add_argument("--no-cascade-sizing", action="store_true",
                         help="Disable cascade contract sizing (default: ON)")
-    parser.add_argument("--cascade-size-low", type=int, default=2,
-                        help="Contracts for E 4-5 tier (default: 2)")
-    parser.add_argument("--cascade-size-mid", type=int, default=4,
-                        help="Contracts for E 6-7 tier (default: 4)")
-    parser.add_argument("--cascade-size-high", type=int, default=6,
-                        help="Contracts for E 8+ tier (default: 6)")
+    parser.add_argument("--cascade-size-low", type=int, default=3,
+                        help="Contracts for E 4-5 tier (default: 3)")
+    parser.add_argument("--cascade-size-mid", type=int, default=3,
+                        help="Contracts for E 6-7 tier (default: 3)")
+    parser.add_argument("--cascade-size-high", type=int, default=3,
+                        help="Contracts for E 8+ tier (default: 3)")
     parser.add_argument("--dynamic-or", action="store_true",
                         help="Enable dynamic opening range (30-min quick OR when breakout is decisive by 10:00)")
     parser.add_argument("--research-mode", action="store_true",

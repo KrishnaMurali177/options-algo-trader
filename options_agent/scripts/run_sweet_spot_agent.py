@@ -119,7 +119,7 @@ def is_past_or(min_after_open: int = 65) -> bool:
     return minutes_since_open >= min_after_open
 
 
-def check_sweet_spot(symbol: str, max_chop: int = 5) -> dict | None:
+def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True) -> dict | None:
     """Evaluate sweet spot conditions. Returns trigger dict or None."""
     try:
         analyzer = MarketAnalyzer()
@@ -138,6 +138,15 @@ def check_sweet_spot(symbol: str, max_chop: int = 5) -> dict | None:
         direction = "buy_call" if or_momentum >= 25 else "buy_put" if or_momentum <= -25 else None
         if direction is None:
             return None
+
+        # Regime guard: block counter-trend trades unless RSI extreme (mirror of replay logic)
+        if regime_guard:
+            bullish_regime = indicators.sma_20 > indicators.sma_50
+            bearish_regime = indicators.sma_20 < indicators.sma_50
+            if direction == "buy_put" and bullish_regime and indicators.rsi_14 <= 70:
+                return None
+            if direction == "buy_call" and bearish_regime and indicators.rsi_14 >= 30:
+                return None
 
         quality_result = compute_quality_score(
             direction=direction,
@@ -230,17 +239,18 @@ def check_sweet_spot(symbol: str, max_chop: int = 5) -> dict | None:
 
 def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             max_trades_per_day: int = 3, max_stops_per_day: int = 1,
-            scan_start_min: int = 90,
+            scan_start_min: int = 60,
             gainz_exit: bool = True,
-            gainz_body_ratio: float = 0.5,
-            gainz_rsi_overbought: float = 60.0,
-            gainz_rsi_oversold: float = 40.0,
+            gainz_body_ratio: float = 0.7,
+            gainz_rsi_overbought: float = 70.0,
+            gainz_rsi_oversold: float = 30.0,
             trade_shares: bool = False,
             contracts: int = 1,
             target_delta: float = 0.50,
-            cascade_size_low: int = 2,
-            cascade_size_mid: int = 4,
-            cascade_size_high: int = 6):
+            cascade_size_low: int = 3,
+            cascade_size_mid: int = 3,
+            cascade_size_high: int = 3,
+            regime_guard: bool = True):
     """Run the agent for one trading day."""
     today = date.today()
     journal_file = JOURNAL_DIR / f"{today.isoformat()}.json"
@@ -257,8 +267,9 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             logger.error("Paper trader init failed: %s — running journal-only", e)
 
     logger.info("═══ Sweet Spot Agent: %s — %s ═══", symbol, today)
-    logger.info("Settings: qty=%d, max_chop=%d, max_trades=%d, max_stops=%d, scan_start=%dmin, paper=%s, mode=%s",
-                qty, max_chop, max_trades_per_day, max_stops_per_day, scan_start_min, bool(trader),
+    logger.info("Settings: qty=%d, max_chop=%d, max_trades=%d, max_stops=%d, scan_start=%dmin, regime_guard=%s, paper=%s, mode=%s",
+                qty, max_chop, max_trades_per_day, max_stops_per_day, scan_start_min,
+                "ON" if regime_guard else "OFF", bool(trader),
                 "shares" if trade_shares else f"0DTE options (contracts={contracts}, delta={target_delta})")
 
     last_trigger = None
@@ -376,7 +387,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             break
 
         scan_count += 1
-        trigger = check_sweet_spot(symbol, max_chop=max_chop)
+        trigger = check_sweet_spot(symbol, max_chop=max_chop, regime_guard=regime_guard)
 
         if trigger:
             # Deduplicate (15 min cooldown)
@@ -559,29 +570,31 @@ def main():
     parser.add_argument("--max-chop", type=int, default=5, help="Max choppiness (default: 5)")
     parser.add_argument("--max-trades-per-day", type=int, default=3, help="Max trades per day (default: 3)")
     parser.add_argument("--max-stops-per-day", type=int, default=1, help="Halt after N stop-outs (default: 1)")
-    parser.add_argument("--scan-start-min", type=int, default=90, help="Minutes after open to start scanning (default: 90 = 11:00)")
+    parser.add_argument("--scan-start-min", type=int, default=60, help="Minutes after open to start scanning (default: 60 = 10:30)")
     parser.add_argument("--daemon", action="store_true", help="Run continuously (restarts daily)")
     parser.add_argument("--no-paper", action="store_true", help="Journal only, no paper orders")
     parser.add_argument("--no-gainz-exit", action="store_true",
                         help="Disable GainzAlgoV2 reversal early-exit (default: enabled)")
-    parser.add_argument("--gainz-body-ratio", type=float, default=0.5,
-                        help="Min candle body/range ratio for Gainz signal (default: 0.5)")
-    parser.add_argument("--gainz-rsi-overbought", type=float, default=60.0,
-                        help="RSI threshold for Gainz SELL signal (default: 60)")
-    parser.add_argument("--gainz-rsi-oversold", type=float, default=40.0,
-                        help="RSI threshold for Gainz BUY signal (default: 40)")
+    parser.add_argument("--gainz-body-ratio", type=float, default=0.7,
+                        help="Min candle body/range ratio for Gainz signal (default: 0.7)")
+    parser.add_argument("--gainz-rsi-overbought", type=float, default=70.0,
+                        help="RSI threshold for Gainz SELL signal (default: 70)")
+    parser.add_argument("--gainz-rsi-oversold", type=float, default=30.0,
+                        help="RSI threshold for Gainz BUY signal (default: 30)")
     parser.add_argument("--shares", action="store_true",
                         help="Trade shares instead of 0DTE options (default: options)")
     parser.add_argument("--contracts", type=int, default=1,
                         help="Number of option contracts per trade (default: 1)")
     parser.add_argument("--target-delta", type=float, default=0.50,
                         help="Target delta for 0DTE option selection (default: 0.50 = ATM)")
-    parser.add_argument("--cascade-size-low", type=int, default=2,
-                        help="Contracts for E 4-5 tier (default: 2)")
-    parser.add_argument("--cascade-size-mid", type=int, default=4,
-                        help="Contracts for E 6-7 tier (default: 4)")
-    parser.add_argument("--cascade-size-high", type=int, default=6,
-                        help="Contracts for E 8+ tier (default: 6)")
+    parser.add_argument("--cascade-size-low", type=int, default=3,
+                        help="Contracts for E 4-5 tier (default: 3)")
+    parser.add_argument("--cascade-size-mid", type=int, default=3,
+                        help="Contracts for E 6-7 tier (default: 3)")
+    parser.add_argument("--cascade-size-high", type=int, default=3,
+                        help="Contracts for E 8+ tier (default: 3)")
+    parser.add_argument("--no-regime-guard", action="store_true",
+                        help="Disable regime guard (default: ON — blocks counter-trend trades unless RSI extreme)")
     args = parser.parse_args()
 
     paper_trade = not args.no_paper
@@ -612,7 +625,8 @@ def main():
                             target_delta=args.target_delta,
                             cascade_size_low=args.cascade_size_low,
                             cascade_size_mid=args.cascade_size_mid,
-                            cascade_size_high=args.cascade_size_high)
+                            cascade_size_high=args.cascade_size_high,
+                            regime_guard=not args.no_regime_guard)
                     # After market close, sleep until next day 9:25 AM
                     tomorrow_925 = (now + timedelta(days=1)).replace(hour=9, minute=25, second=0)
                     sleep_sec = (tomorrow_925 - get_et_now()).total_seconds()
@@ -643,7 +657,8 @@ def main():
                 target_delta=args.target_delta,
                 cascade_size_low=args.cascade_size_low,
                 cascade_size_mid=args.cascade_size_mid,
-                cascade_size_high=args.cascade_size_high)
+                cascade_size_high=args.cascade_size_high,
+                regime_guard=not args.no_regime_guard)
 
 
 if __name__ == "__main__":

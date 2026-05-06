@@ -434,7 +434,11 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             # 0DTE options: fetch chain, pick contract, buy-to-open
                             from src.utils.alpaca_data import get_0dte_chain
                             opt_type = "call" if "call" in trigger["direction"] else "put"
-                            contract = get_0dte_chain(symbol, option_type=opt_type, target_delta=target_delta)
+                            contract = get_0dte_chain(
+                                symbol, option_type=opt_type,
+                                target_delta=target_delta,
+                                spot_price=trigger.get("price"),
+                            )
                             if contract:
                                 # Cascade-tier contract sizing
                                 explosion = trigger.get("explosion", 4)

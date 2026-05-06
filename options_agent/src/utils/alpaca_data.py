@@ -205,6 +205,7 @@ def get_0dte_chain(
     option_type: str = "call",
     target_delta: float = 0.50,
     delta_tolerance: float = 0.15,
+    spot_price: float | None = None,
 ) -> dict | None:
     """Fetch today's 0DTE options chain and pick the contract closest to target_delta.
 
@@ -213,6 +214,8 @@ def get_0dte_chain(
         option_type: "call" or "put".
         target_delta: Desired delta magnitude (default 0.50 = ATM).
         delta_tolerance: Acceptable delta range around target.
+        spot_price: Underlying spot. Used as ATM proxy when greeks are unavailable.
+            Fetched via Alpaca latest-trade if not provided.
 
     Returns:
         Dict with contract details (occ_symbol, strike, expiration, delta, bid, ask, mid,
@@ -312,7 +315,62 @@ def get_0dte_chain(
             "Selected 0DTE %s: %s strike=$%.2f delta=%.2f mid=$%.2f",
             option_type, best["occ_symbol"], best["strike"], best["delta"], best["mid"],
         )
+        return best
+
+    # ── Fallback: greeks unavailable on paper feed → rank by strike proximity to spot
+    # (ATM ≈ delta 0.5 by construction; only used when no contract had a usable delta)
+    if spot_price is None:
+        try:
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockLatestTradeRequest
+            stock_client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
+            trade_resp = stock_client.get_stock_latest_trade(
+                StockLatestTradeRequest(symbol_or_symbols=symbol)
+            )
+            if symbol in trade_resp:
+                spot_price = float(trade_resp[symbol].price)
+        except Exception as e:
+            logger.warning("Spot fetch for %s fallback failed: %s", symbol, e)
+
+    if not spot_price or spot_price <= 0:
+        logger.warning("No 0DTE %s contract near delta %.2f for %s (no spot for fallback)",
+                       option_type, target_delta, symbol)
+        return None
+
+    best_strike_diff = float("inf")
+    for contract in contracts:
+        occ = contract.symbol
+        snap = snapshots.get(occ)
+        bid = float(snap.latest_quote.bid_price) if snap and snap.latest_quote else 0.0
+        ask = float(snap.latest_quote.ask_price) if snap and snap.latest_quote else 0.0
+        mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else 0.0
+        if mid <= 0.01:
+            continue
+        strike = float(contract.strike_price)
+        strike_diff = abs(strike - spot_price)
+        if strike_diff < best_strike_diff:
+            best_strike_diff = strike_diff
+            best = {
+                "occ_symbol": occ,
+                "underlying": symbol,
+                "strike": strike,
+                "expiration": str(contract.expiration_date),
+                "option_type": option_type,
+                "delta": 0.50,  # ATM proxy
+                "gamma": 0.0,
+                "theta": 0.0,
+                "iv": 0.0,
+                "bid": bid,
+                "ask": ask,
+                "mid": mid,
+            }
+
+    if best:
+        logger.info(
+            "Selected 0DTE %s by strike proximity (greeks unavailable): %s strike=$%.2f spot=$%.2f mid=$%.2f",
+            option_type, best["occ_symbol"], best["strike"], spot_price, best["mid"],
+        )
     else:
-        logger.warning("No 0DTE %s contract near delta %.2f for %s", option_type, target_delta, symbol)
+        logger.warning("No 0DTE %s contract for %s (all illiquid)", option_type, symbol)
 
     return best

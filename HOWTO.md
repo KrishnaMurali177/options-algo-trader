@@ -7,14 +7,17 @@
 
 ## Quick Start
 
+**Mac/Linux:**
 ```bash
-# 1. Start the Streamlit dashboard (no credentials needed)
 ./run.sh dashboard
-# Opens at http://localhost:8501
-
-# 2. Stop everything
-./run.sh down
 ```
+
+**Windows:**
+```cmd
+run.bat dashboard
+```
+
+Opens at http://localhost:8501
 
 ## All Commands
 

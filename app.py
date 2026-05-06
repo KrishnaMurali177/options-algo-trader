@@ -2,9 +2,12 @@
 
 import os
 import sys
-import runpy
 
-os.chdir(os.path.join(os.path.dirname(os.path.abspath(__file__)), "options_agent"))
-sys.path.insert(0, os.getcwd())
+_root = os.path.join(os.path.dirname(os.path.abspath(__file__)), "options_agent")
+os.chdir(_root)
+if _root not in sys.path:
+    sys.path.insert(0, _root)
 
-runpy.run_path("dashboard/app.py", run_name="__main__")
+_app_path = os.path.join(_root, "dashboard", "app.py")
+with open(_app_path) as _f:
+    exec(compile(_f.read(), _app_path, "exec"), {"__file__": _app_path, "__name__": "__main__"})

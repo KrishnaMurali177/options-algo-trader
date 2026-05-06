@@ -11,3 +11,5 @@
 - [2026-05-05] Created: requirements.txt — Root-level requirements for Streamlit Cloud (no pandas-ta, unused)
 - [2026-05-05] Created: packages.txt — System dependencies for Streamlit Cloud
 - [2026-05-05] Created: .streamlit/config.toml — Streamlit theme config at repo root
+- [2026-05-05] Modified: app.py — Fixed entrypoint for Streamlit Cloud (exec with correct __file__)
+- [2026-05-05] Modified: options_agent/src/momentum_cascade.py — Added missing _analyze_synthesized fallback method

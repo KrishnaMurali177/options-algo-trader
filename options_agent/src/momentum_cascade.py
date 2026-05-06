@@ -78,6 +78,67 @@ class MomentumCascadeDetector:
             logger.warning("Live cascade analysis failed (%s) — using synthesized", exc)
             return self._analyze_synthesized(indicators, quality_score, or_momentum, recent_momentum)
 
+    def _analyze_synthesized(
+        self,
+        indicators: MarketIndicators,
+        quality_score: int,
+        or_momentum: int,
+        recent_momentum: int,
+    ) -> CascadeResult:
+        """Fallback analysis using only indicators (no bar data)."""
+        signals = []
+        score = 0
+
+        signals.append({"name": "No intraday bars", "score": 0, "desc": "Using indicator-only estimation"})
+
+        vol_ratio = getattr(indicators, 'volume_ratio', 1.0)
+        if vol_ratio and vol_ratio >= 2.0:
+            score += 2
+            signals.append({"name": "Volume CLIMAX", "score": 2, "desc": f"Volume {vol_ratio:.1f}× avg"})
+        elif vol_ratio and vol_ratio >= 1.5:
+            score += 1
+            signals.append({"name": "Volume surge", "score": 1, "desc": f"Volume {vol_ratio:.1f}× avg"})
+
+        if quality_score >= 8:
+            score += 2
+            signals.append({"name": "Elite quality", "score": 2, "desc": f"Quality {quality_score}/11"})
+        elif quality_score >= 7:
+            score += 1
+            signals.append({"name": "High quality", "score": 1, "desc": f"Quality {quality_score}/11"})
+
+        both_bearish = or_momentum <= -40 and recent_momentum <= -40
+        both_bullish = or_momentum >= 40 and recent_momentum >= 40
+        if both_bearish or both_bullish:
+            score += 2
+            dir_label = "BEARISH" if both_bearish else "BULLISH"
+            signals.append({"name": f"Dual momentum {dir_label}", "score": 2,
+                            "desc": f"OR ({or_momentum:+d}) + recent ({recent_momentum:+d})"})
+        elif abs(or_momentum) >= 40 or abs(recent_momentum) >= 40:
+            score += 1
+            signals.append({"name": "Single strong momentum", "score": 1,
+                            "desc": f"OR ({or_momentum:+d}), recent ({recent_momentum:+d})"})
+
+        zlema_trend = getattr(indicators, 'zlema_trend', None)
+        if zlema_trend:
+            direction_bearish = recent_momentum < 0
+            direction_bullish = recent_momentum > 0
+            if (zlema_trend == "bearish" and direction_bearish) or (zlema_trend == "bullish" and direction_bullish):
+                score += 1
+                signals.append({"name": "ZLEMA trend aligned", "score": 1,
+                                "desc": f"Zero-Lag EMA confirms {zlema_trend} trend"})
+
+        score = max(0, min(10, score))
+        strike_offset = 2 if score >= 8 else 1 if score >= 6 else 0
+        urgency = "⚡ HIGH" if score >= 7 else "🔔 WATCH" if score >= 4 else "⏳ WAIT"
+        summary = self._build_summary(score, urgency, False, vol_ratio >= 2.0 if vol_ratio else False, False, strike_offset)
+
+        return CascadeResult(
+            explosion_score=score, urgency=urgency,
+            acceleration_detected=False, volume_climax=vol_ratio >= 2.0 if vol_ratio else False,
+            cascade_breakdown=False, recommended_strike_offset=strike_offset,
+            signals=signals, summary=summary, data_source="synthesized",
+        )
+
     def _analyze_live(
         self,
         indicators: MarketIndicators,

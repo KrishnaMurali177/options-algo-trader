@@ -175,7 +175,8 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                slippage: float = 0.0,
                vix: float = 20.0,
                prior_bars: pd.DataFrame | None = None,
-               dynamic_or: bool = False) -> list[dict]:
+               dynamic_or: bool = False,
+               real_options: bool = False) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
     Uses the EXACT same analyzers as the live agent:
@@ -481,20 +482,25 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         # ── Walk forward to determine outcome ──
         future_bars = day_bars[day_bars.index > ts]
         outcome = "eod"
-        exit_price = float(future_bars["Close"].iloc[-1]) if len(future_bars) > 0 else price
+        if len(future_bars) > 0:
+            exit_price = float(future_bars["Close"].iloc[-1])
+            exit_ts = future_bars.index[-1]
+        else:
+            exit_price = price
+            exit_ts = ts
 
         for _, fb in future_bars.iterrows():
             fh, fl, fc = float(fb["High"]), float(fb["Low"]), float(fb["Close"])
             if direction == "buy_call":
                 if fl <= stop:
-                    outcome = "stop"; exit_price = stop; break
+                    outcome = "stop"; exit_price = stop; exit_ts = fb.name; break
                 if fh >= target:
-                    outcome = "target"; exit_price = target; break
+                    outcome = "target"; exit_price = target; exit_ts = fb.name; break
             else:
                 if fh >= stop:
-                    outcome = "stop"; exit_price = stop; break
+                    outcome = "stop"; exit_price = stop; exit_ts = fb.name; break
                 if fl <= target:
-                    outcome = "target"; exit_price = target; break
+                    outcome = "target"; exit_price = target; exit_ts = fb.name; break
 
             # GainzAlgoV2 reversal exit (opposing signal closes position at bar close)
             if gainz_exit:
@@ -508,19 +514,49 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                                   rsi_overbought=gainz_rsi_overbought,
                                   rsi_oversold=gainz_rsi_oversold)
                 if direction == "buy_call" and gz == "sell":
-                    outcome = "gainz_exit"; exit_price = fc; break
+                    outcome = "gainz_exit"; exit_price = fc; exit_ts = fb.name; break
                 if direction == "buy_put" and gz == "buy":
-                    outcome = "gainz_exit"; exit_price = fc; break
+                    outcome = "gainz_exit"; exit_price = fc; exit_ts = fb.name; break
 
             # Time stop 15:30
             if fb.name.strftime("%H:%M") >= "15:30":
-                outcome = "time_stop"; exit_price = fc; break
+                outcome = "time_stop"; exit_price = fc; exit_ts = fb.name; break
 
         pnl = (exit_price - entry) if direction == "buy_call" else (entry - exit_price)
 
-        # ── 0DTE Option P&L approximation ──
+        # ── 0DTE Option P&L: prefer REAL Alpaca bars, fall back to synth ──
         underlying_move = pnl  # signed move in underlying
-        if simulate_options:
+        priced_real = False
+        occ_symbol: str | None = None
+        if simulate_options and real_options:
+            try:
+                from src.utils.alpaca_options import (
+                    fetch_intraday_option_bars,
+                    option_close_at,
+                    resolve_atm_0dte,
+                )
+                opt_type = "call" if direction == "buy_call" else "put"
+                occ_symbol = resolve_atm_0dte(symbol, trade_date, opt_type, price)
+                if occ_symbol:
+                    opt_bars = fetch_intraday_option_bars(occ_symbol, trade_date, "5min")
+                    entry_premium = option_close_at(opt_bars, ts)
+                    exit_premium = option_close_at(opt_bars, exit_ts)
+                    if entry_premium and entry_premium > 0 and exit_premium is not None:
+                        # Long-option P&L is identical for call & put — direction
+                        # is encoded in which contract we bought.
+                        option_pnl_per_contract = exit_premium - entry_premium
+                        # Cap loss at premium paid (defined risk for long options)
+                        option_pnl_per_contract = max(option_pnl_per_contract, -entry_premium)
+                        option_pnl_per_contract -= slippage
+                        option_pnl_total = option_pnl_per_contract * 100
+                        est_premium = entry_premium
+                        pnl = option_pnl_per_contract
+                        priced_real = True
+            except Exception as e:
+                logger.debug("Real-options pricing failed for %s %s: %s — falling back to synth",
+                             symbol, ts, e)
+
+        if simulate_options and not priced_real:
             # Estimate premium: ATR * premium_atr_pct (rough ATM 0DTE premium)
             est_premium = atr_val * premium_atr_pct
             if est_premium < 0.10:
@@ -552,7 +588,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             # P&L per contract (x100 multiplier)
             option_pnl_total = option_pnl_per_contract * 100
             pnl = option_pnl_per_contract  # per-contract P&L for reporting
-        else:
+        elif not simulate_options:
             option_pnl_total = None
             est_premium = None
 
@@ -600,6 +636,9 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             "sized_pnl": round(pnl * size, 4),
             "is_winner": pnl > 0,
             "mode": "0dte_option" if simulate_options else "shares",
+            "occ_symbol": occ_symbol if simulate_options else None,
+            "pricing": ("real" if (simulate_options and priced_real)
+                        else "synth" if simulate_options else "shares"),
         })
 
     return triggers
@@ -655,6 +694,10 @@ def main():
                         help="Estimated option premium as fraction of ATR (default: 0.40)")
     parser.add_argument("--slippage", type=float, default=0.0,
                         help="Per-contract slippage in $ (e.g., 0.05 for $5/contract). Deducted from each trade P&L.")
+    parser.add_argument("--real-options", action="store_true",
+                        help="Price each trigger with REAL Alpaca historical 0DTE bars (requires API keys; "
+                             "falls back to synthesized greeks if a contract or bars are unavailable). "
+                             "Note: Alpaca options data starts ~Feb 2024.")
     args = parser.parse_args()
 
     if args.research_mode:
@@ -759,13 +802,19 @@ def main():
                               slippage=args.slippage,
                               vix=day_vix,
                               prior_bars=prior_bars,
-                              dynamic_or=args.dynamic_or)
+                              dynamic_or=args.dynamic_or,
+                              real_options=args.real_options)
         all_triggers.extend(triggers)
 
     # ── Results ──
     print(f"\n{'═' * 70}")
     print(f"  SWEET SPOT REPLAY: {args.symbol} — {len(trading_days)} days")
-    mode_label = "SHARES" if args.shares else f"0DTE OPTIONS (Δ={args.option_delta}, γ={args.option_gamma})"
+    if args.shares:
+        mode_label = "SHARES"
+    elif args.real_options:
+        mode_label = "0DTE OPTIONS (Alpaca historical bars; synth fallback)"
+    else:
+        mode_label = f"0DTE OPTIONS (synth Δ={args.option_delta}, γ={args.option_gamma})"
     print(f"  Mode: {mode_label}")
     print(f"  Filter: Quality {args.min_quality}-{args.max_quality}, Cascade ≥ {args.min_cascade}, Chop ≤ {args.max_chop}, Regime Guard: {'ON' if not args.no_regime_guard else 'OFF'}")
     print(f"  Analyzers: OpeningRange + RecentMomentum + MomentumCascade (exact replica)")
@@ -904,6 +953,10 @@ def main():
         print(f"\n  Total Option P&L (per contract, ×100 multiplier): ${total_opt_pnl:+,.0f}")
         if not args.no_cascade_sizing:
             print(f"  Total Option P&L (cascade-sized, ×100 multiplier): ${total_opt_sized:+,.0f}")
+        if args.real_options:
+            n_real = sum(1 for t in all_triggers if t.get("pricing") == "real")
+            n_synth = sum(1 for t in all_triggers if t.get("pricing") == "synth")
+            print(f"  Pricing source:  real={n_real}  synth_fallback={n_synth}")
     else:
         print(f"\n  {'Date':<12} {'Time':<6} {'Dir':<5} {'Q':>2} {'E':>2} {'C':>2} {'Mult':>5} {'Entry':>8} {'Exit':>8} {'P&L':>8} {'Outcome':<8}")
         print(f"  {'─'*12} {'─'*6} {'─'*5} {'─'*2} {'─'*2} {'─'*2} {'─'*5} {'─'*8} {'─'*8} {'─'*8} {'─'*8}")

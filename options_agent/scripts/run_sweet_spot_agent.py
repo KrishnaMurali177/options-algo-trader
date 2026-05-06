@@ -449,7 +449,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                     occ_symbol=contract["occ_symbol"],
                                     direction=trigger["direction"],
                                     qty=num_contracts,
-                                    limit_price=contract["mid"],  # Limit at mid for better fill
+                                    # No limit_price = market order (0DTE needs instant fill)
                                     time_in_force="day",
                                 )
                                 trigger["order_id"] = order["order_id"]

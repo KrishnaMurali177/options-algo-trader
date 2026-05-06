@@ -1,0 +1,28 @@
+services:
+  dashboard:
+    build: .
+    container_name: options-dashboard
+    ports:
+      - "8501:8501"
+    env_file:
+      - options_agent/.env
+    volumes:
+      - ./options_agent/logs:/app/logs
+      - ./options_agent/sweet_spot_journal:/app/sweet_spot_journal
+      - ./options_agent/backtest_results:/app/backtest_results
+      - ./options_agent/data_cache:/app/data_cache
+    restart: unless-stopped
+
+  agent:
+    build: .
+    container_name: options-agent
+    command: python scripts/run_sweet_spot_agent.py --daemon
+    env_file:
+      - options_agent/.env
+    volumes:
+      - ./options_agent/logs:/app/logs
+      - ./options_agent/sweet_spot_journal:/app/sweet_spot_journal
+      - ./options_agent/data_cache:/app/data_cache
+    restart: unless-stopped
+    profiles:
+      - live

@@ -44,3 +44,5 @@
 - [2026-05-01] Modified: docker-compose.yml — Added audit_logs volume mount for agent service
 - [2026-05-01] Modified: .gitignore — Added audit_logs/ directory
 - [2026-05-01] Created: tests/test_audit.py — Tests for AuditLogger (create, append, nested dir)
+- [2026-05-01] Created: REMAINING_FIXES_PLAN.md — Phases 6–11 plan for remaining issues from original audit
+- [2026-05-01] Created: CROSS_REPO_PLAN.md — Phases A–H plan for porting capabilities from options_analyzer

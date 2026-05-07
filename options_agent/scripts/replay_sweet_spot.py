@@ -1,24 +1,31 @@
 #!/usr/bin/env python
 """Replay Sweet Spot Agent — simulates the agent on recent historical days.
 
-Unlike the backtester (which evaluates only at 10:30 with 12 bars),
-this replays the FULL day checking every 5 minutes — exactly as the
-live agent would operate.
+Two modes:
+  --mode 0dte  (default)  Original intraday-only flow that buys 0DTE options at
+                          the trigger and exits same-day. Walks forward in 5-min
+                          bars for the rest of the trading day.
+  --mode swing            Reuses the same intraday trigger but BUYS A ~target-DTE
+                          option (default 90d) and HOLDS multi-day, gated by a
+                          daily-bar regime filter. Exits on underlying ATR-stop /
+                          ATR-target / N-day time stop.
 
-This is an EXACT REPLICA of the live sweet-spot agent logic:
-  - Uses OpeningRangeAnalyzer (with bars_5m= for replay)
-  - Uses RecentMomentumAnalyzer (with bars_5m= for replay)
-  - Uses MomentumCascadeDetector (with bars_5m= for replay)
-  - Uses compute_quality_score and compute_choppiness
-  - Same entry confirmation, target multipliers, and regime guard
+Both modes use the EXACT same trigger logic as the live agent:
+  - OpeningRangeAnalyzer / RecentMomentumAnalyzer / MomentumCascadeDetector
+  - compute_quality_score / compute_choppiness
+  - Same direction decision and intraday regime guard
 
 Usage:
     cd options_agent
-    python scripts/replay_sweet_spot.py --days 365             # Golden defaults (incl. decay-aware targets + real options)
-    python scripts/replay_sweet_spot.py --days 365 --no-gainz-exit   # Baseline (no Gainz)
-    python scripts/replay_sweet_spot.py --days 365 --no-decay-aware-targets  # Disable decay targets
-    python scripts/replay_sweet_spot.py --days 365 --no-real-options  # Use synth pricing instead of real Alpaca
-    python scripts/replay_sweet_spot.py --days 365 --research-mode   # Loose pre-golden defaults
+    # 0DTE (golden defaults — decay-aware targets + real Alpaca options):
+    python scripts/replay_sweet_spot.py --days 365
+    python scripts/replay_sweet_spot.py --days 365 --no-real-options
+
+    # Swing / ~3-month options (real Alpaca daily option bars + BS synth fallback):
+    python scripts/replay_sweet_spot.py --mode swing --days 365 --target-dte 90
+    python scripts/replay_sweet_spot.py --mode swing --days 365 --no-real-options
+    python scripts/replay_sweet_spot.py --mode swing --target-dte 90 --max-hold-days 45 \
+        --swing-stop-atr 1.5 --swing-target-atr 4.0
 """
 
 from __future__ import annotations
@@ -27,7 +34,7 @@ import argparse
 import logging
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import numpy as np
 import pandas as pd
@@ -41,6 +48,7 @@ from src.models.market_data import MarketIndicators
 from src.utils.choppiness import compute_choppiness
 from src.utils.quality_scorer import compute_quality_score
 from src.utils.gainz import gainz_signal
+from src.utils.bs_pricing import bs_price
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -186,7 +194,19 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                real_options: bool = False,
                decay_aware_targets: bool = False,
                decay_target_floor: float = 0.4,
-               decay_halflife_bars: int = 6) -> list[dict]:
+               decay_halflife_bars: int = 6,
+               # ── Swing (multi-day, ~90-DTE) mode ──
+               mode: str = "0dte",
+               forward_bars: pd.DataFrame | None = None,
+               daily_regime: str = "neutral",
+               daily_atr: float = 0.0,
+               target_dte: int = 90,
+               max_hold_days: int = 60,
+               swing_stop_atr: float = 1.5,
+               swing_target_atr: float = 4.0,
+               swing_iv: float = 0.18,
+               swing_rate: float = 0.045,
+               swing_div_yield: float = 0.013) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
     Uses the EXACT same analyzers as the live agent:
@@ -410,6 +430,15 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         else:
             continue
 
+        # ── Daily-bar regime gate (swing mode only) ──
+        # Long calls require a bullish daily regime; long puts require bearish.
+        # "neutral" daily regime blocks both sides — we only swing-trade with the trend.
+        if mode == "swing":
+            if direction == "buy_call" and daily_regime != "bull":
+                continue
+            if direction == "buy_put" and daily_regime != "bear":
+                continue
+
         # ── Regime guard (same as live agent dashboard guardrails) ──
         if regime_guard:
             rsi_val = indicators.rsi_14
@@ -480,7 +509,22 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         else:
             target_mult = target_mult_low
 
-        if direction == "buy_call":
+        if mode == "swing":
+            # Use DAILY ATR (not 5-min ATR) for stop/target — fall back to
+            # 5-min × 78 (sqrt-time scaling is overkill; bars/day works for SPY).
+            d_atr = daily_atr if daily_atr > 0 else atr_val * 78
+            entry = price
+            if direction == "buy_call":
+                stop = entry - swing_stop_atr * d_atr
+                target = entry + swing_target_atr * d_atr
+                risk = entry - stop
+            else:
+                stop = entry + swing_stop_atr * d_atr
+                target = entry - swing_target_atr * d_atr
+                risk = stop - entry
+            if risk <= 0:
+                continue
+        elif direction == "buy_call":
             entry = price
             mid = (range_high + range_low) / 2
             # Tighter stop: 60% from low toward high (instead of bare midpoint)
@@ -500,7 +544,13 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             target = entry - risk * target_mult
 
         # ── Walk forward to determine outcome ──
-        future_bars = day_bars[day_bars.index > ts]
+        if mode == "swing" and forward_bars is not None and not forward_bars.empty:
+            future_bars = forward_bars[forward_bars.index > ts]
+            # Time stop: cap walk-forward at max_hold_days calendar days
+            cutoff = ts + pd.Timedelta(days=max_hold_days)
+            future_bars = future_bars[future_bars.index <= cutoff]
+        else:
+            future_bars = day_bars[day_bars.index > ts]
 
         # ── Confirmation bar: require next bar to close in trade direction ──
         if confirmation_bar and len(future_bars) >= 1:
@@ -526,7 +576,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             future_bars = future_bars.iloc[1:]
             ts = conf_bar.name  # Update entry timestamp
 
-        outcome = "eod"
+        outcome = "max_hold" if mode == "swing" else "eod"
         if len(future_bars) > 0:
             exit_price = float(future_bars["Close"].iloc[-1])
             exit_ts = future_bars.index[-1]
@@ -605,7 +655,8 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                     outcome = "target"; exit_price = target; exit_ts = fb.name; break
 
             # GainzAlgoV2 reversal exit (opposing signal closes position at bar close)
-            if gainz_exit:
+            # Intraday-only — disabled in swing mode (5-min reversal noise on a 90-DTE trade)
+            if gainz_exit and mode == "0dte":
                 fo = float(fb["Open"])
                 try:
                     bar_rsi = float(day_rsi.loc[fb.name])
@@ -621,82 +672,125 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                     outcome = "gainz_exit"; exit_price = fc; exit_ts = fb.name; break
 
             # Stagnation exit: if after N bars trade hasn't moved 0.5R, cut it
-            bars_since_entry = len(day_bars[(day_bars.index > ts) & (day_bars.index <= fb.name)])
-            if bars_since_entry >= stagnation_bars:
-                current_pnl = (fc - entry) if direction == "buy_call" else (entry - fc)
-                if current_pnl < risk * stagnation_threshold:
-                    outcome = "stagnation"; exit_price = fc; exit_ts = fb.name; break
+            # Intraday-only — swing trades have a calendar-day cap instead.
+            if mode == "0dte":
+                bars_since_entry = len(day_bars[(day_bars.index > ts) & (day_bars.index <= fb.name)])
+                if bars_since_entry >= stagnation_bars:
+                    current_pnl = (fc - entry) if direction == "buy_call" else (entry - fc)
+                    if current_pnl < risk * stagnation_threshold:
+                        outcome = "stagnation"; exit_price = fc; exit_ts = fb.name; break
 
-            # Hard time stop 15:30
-            if fb.name.strftime("%H:%M") >= "15:30":
-                outcome = "time_stop"; exit_price = fc; exit_ts = fb.name; break
+                # Hard time stop 15:30 (0DTE only)
+                if fb.name.strftime("%H:%M") >= "15:30":
+                    outcome = "time_stop"; exit_price = fc; exit_ts = fb.name; break
 
         pnl = (exit_price - entry) if direction == "buy_call" else (entry - exit_price)
 
-        # ── 0DTE Option P&L: prefer REAL Alpaca bars, fall back to synth ──
+        # ── Option P&L: prefer REAL Alpaca bars, fall back to synth ──
         underlying_move = pnl  # signed move in underlying
         priced_real = False
         occ_symbol: str | None = None
+        exp_date: date | None = None
+        days_held = max(0.0, (exit_ts - ts).total_seconds() / 86400.0) if mode == "swing" else 0.0
         if simulate_options and real_options:
             try:
-                from src.utils.alpaca_options import (
-                    fetch_intraday_option_bars,
-                    option_close_at,
-                    resolve_atm_0dte,
-                )
-                opt_type = "call" if direction == "buy_call" else "put"
-                occ_symbol = resolve_atm_0dte(symbol, trade_date, opt_type, price)
-                if occ_symbol:
-                    opt_bars = fetch_intraday_option_bars(occ_symbol, trade_date, "5min")
-                    entry_premium = option_close_at(opt_bars, ts)
-                    exit_premium = option_close_at(opt_bars, exit_ts)
-                    if entry_premium and entry_premium > 0 and exit_premium is not None:
-                        # Long-option P&L is identical for call & put — direction
-                        # is encoded in which contract we bought.
-                        option_pnl_per_contract = exit_premium - entry_premium
-                        # Cap loss at premium paid (defined risk for long options)
-                        option_pnl_per_contract = max(option_pnl_per_contract, -entry_premium)
-                        option_pnl_per_contract -= slippage
-                        option_pnl_total = option_pnl_per_contract * 100
-                        est_premium = entry_premium
-                        pnl = option_pnl_per_contract
-                        priced_real = True
+                if mode == "swing":
+                    from src.utils.alpaca_options import (
+                        fetch_option_bars,
+                        option_close_at,
+                        resolve_atm_dated,
+                    )
+                    opt_type = "call" if direction == "buy_call" else "put"
+                    res = resolve_atm_dated(symbol, trade_date, opt_type, price,
+                                            target_dte=target_dte)
+                    if res:
+                        occ_symbol, exp_date = res
+                        # Daily option bars from trade_date through exit_date inclusive
+                        bar_start = pd.Timestamp(trade_date, tz="US/Eastern").to_pydatetime()
+                        end_date = exit_ts.date() if hasattr(exit_ts, "date") else trade_date
+                        bar_end = (pd.Timestamp(end_date, tz="US/Eastern") + pd.Timedelta(days=2)).to_pydatetime()
+                        opt_bars = fetch_option_bars(occ_symbol, bar_start, bar_end, interval="1day")
+                        entry_premium = option_close_at(opt_bars, ts)
+                        exit_premium = option_close_at(opt_bars, exit_ts)
+                        if entry_premium and entry_premium > 0 and exit_premium is not None:
+                            option_pnl_per_contract = exit_premium - entry_premium
+                            option_pnl_per_contract = max(option_pnl_per_contract, -entry_premium)
+                            option_pnl_per_contract -= slippage
+                            option_pnl_total = option_pnl_per_contract * 100
+                            est_premium = entry_premium
+                            pnl = option_pnl_per_contract
+                            priced_real = True
+                else:
+                    from src.utils.alpaca_options import (
+                        fetch_intraday_option_bars,
+                        option_close_at,
+                        resolve_atm_0dte,
+                    )
+                    opt_type = "call" if direction == "buy_call" else "put"
+                    occ_symbol = resolve_atm_0dte(symbol, trade_date, opt_type, price)
+                    if occ_symbol:
+                        opt_bars = fetch_intraday_option_bars(occ_symbol, trade_date, "5min")
+                        entry_premium = option_close_at(opt_bars, ts)
+                        exit_premium = option_close_at(opt_bars, exit_ts)
+                        if entry_premium and entry_premium > 0 and exit_premium is not None:
+                            # Long-option P&L is identical for call & put — direction
+                            # is encoded in which contract we bought.
+                            option_pnl_per_contract = exit_premium - entry_premium
+                            # Cap loss at premium paid (defined risk for long options)
+                            option_pnl_per_contract = max(option_pnl_per_contract, -entry_premium)
+                            option_pnl_per_contract -= slippage
+                            option_pnl_total = option_pnl_per_contract * 100
+                            est_premium = entry_premium
+                            pnl = option_pnl_per_contract
+                            priced_real = True
             except Exception as e:
                 logger.debug("Real-options pricing failed for %s %s: %s — falling back to synth",
                              symbol, ts, e)
 
         if simulate_options and not priced_real:
-            # Estimate premium: ATR * premium_atr_pct (rough ATM 0DTE premium)
-            est_premium = atr_val * premium_atr_pct
-            if est_premium < 0.10:
-                est_premium = 0.10  # floor
+            if mode == "swing":
+                # ── Black-Scholes synth for ~target_dte options ──
+                opt_type = "call" if direction == "buy_call" else "put"
+                strike = round(price)  # ATM, $1 strike grid (SPY-like)
+                entry_t = max(target_dte / 365.0, 1.0 / 365.0)
+                exit_t = max((target_dte - days_held) / 365.0, 0.0)
+                est_premium = bs_price(price, strike, entry_t, swing_iv, opt_type,
+                                       r=swing_rate, q=swing_div_yield)
+                if est_premium < 0.05:
+                    est_premium = 0.05  # floor
+                exit_prem = bs_price(exit_price, strike, exit_t, swing_iv, opt_type,
+                                     r=swing_rate, q=swing_div_yield)
+                option_pnl_per_contract = exit_prem - est_premium
+                option_pnl_per_contract = max(option_pnl_per_contract, -est_premium)
+                option_pnl_per_contract -= slippage
+                option_pnl_total = option_pnl_per_contract * 100
+                pnl = option_pnl_per_contract
+            else:
+                # ── 0DTE delta-gamma-theta synth (existing) ──
+                est_premium = atr_val * premium_atr_pct
+                if est_premium < 0.10:
+                    est_premium = 0.10  # floor
 
-            # Delta-gamma approximation: Δpremium ≈ δ × Δprice + 0.5 × γ × Δprice²
-            abs_move = abs(underlying_move)
-            delta_pnl = option_delta * abs_move
-            gamma_pnl = 0.5 * option_gamma * abs_move ** 2
+                # Delta-gamma approximation: Δpremium ≈ δ × Δprice + 0.5 × γ × Δprice²
+                abs_move = abs(underlying_move)
+                delta_pnl = option_delta * abs_move
+                gamma_pnl = 0.5 * option_gamma * abs_move ** 2
 
-            # Theta decay for 0DTE: estimate remaining fraction of day
-            # Entry bar timestamp gives us minutes since 9:30
-            entry_minutes = (ts.hour * 60 + ts.minute) - (9 * 60 + 30)
-            total_minutes = 390  # 9:30 to 16:00
-            remaining_frac = max(0, (total_minutes - entry_minutes) / total_minutes)
-            # 0DTE theta is aggressive — assume full daily theta ≈ 60-80% of premium
-            # Decay proportional to sqrt of remaining time (accelerates near close)
-            theta_decay = est_premium * 0.70 * (1.0 - remaining_frac ** 0.5)
+                # Theta decay for 0DTE: estimate remaining fraction of day
+                entry_minutes = (ts.hour * 60 + ts.minute) - (9 * 60 + 30)
+                total_minutes = 390  # 9:30 to 16:00
+                remaining_frac = max(0, (total_minutes - entry_minutes) / total_minutes)
+                theta_decay = est_premium * 0.70 * (1.0 - remaining_frac ** 0.5)
 
-            if underlying_move > 0:  # winner direction
-                option_pnl_per_contract = delta_pnl + gamma_pnl - theta_decay
-            else:  # loser direction
-                option_pnl_per_contract = -(delta_pnl + gamma_pnl) - theta_decay
+                if underlying_move > 0:  # winner direction
+                    option_pnl_per_contract = delta_pnl + gamma_pnl - theta_decay
+                else:  # loser direction
+                    option_pnl_per_contract = -(delta_pnl + gamma_pnl) - theta_decay
 
-            # Cap loss at premium paid (defined risk)
-            option_pnl_per_contract = max(option_pnl_per_contract, -est_premium)
-            # Deduct slippage (round-trip: entry + exit)
-            option_pnl_per_contract -= slippage
-            # P&L per contract (x100 multiplier)
-            option_pnl_total = option_pnl_per_contract * 100
-            pnl = option_pnl_per_contract  # per-contract P&L for reporting
+                option_pnl_per_contract = max(option_pnl_per_contract, -est_premium)
+                option_pnl_per_contract -= slippage
+                option_pnl_total = option_pnl_per_contract * 100
+                pnl = option_pnl_per_contract
         elif not simulate_options:
             option_pnl_total = None
             est_premium = None
@@ -742,6 +836,9 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             "target": round(target, 2),
             "target_mult": target_mult,
             "exit_price": round(exit_price, 2),
+            "exit_date": str(exit_ts.date()) if hasattr(exit_ts, "date") else str(trade_date),
+            "exit_time": exit_ts.strftime("%H:%M") if hasattr(exit_ts, "strftime") else "",
+            "days_held": round(days_held, 2) if mode == "swing" else 0.0,
             "outcome": outcome,
             "pnl": round(pnl, 4),
             "underlying_move": round(underlying_move, 4),
@@ -751,8 +848,12 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             "size": size,
             "sized_pnl": round(pnl * size, 4),
             "is_winner": pnl > 0,
-            "mode": "0dte_option" if simulate_options else "shares",
+            "mode": ("swing_option" if mode == "swing" else
+                     ("0dte_option" if simulate_options else "shares")),
             "occ_symbol": occ_symbol if simulate_options else None,
+            "expiration": exp_date.isoformat() if exp_date else None,
+            "target_dte": target_dte if mode == "swing" else None,
+            "daily_regime": daily_regime if mode == "swing" else None,
             "pricing": ("real" if (simulate_options and priced_real)
                         else "synth" if simulate_options else "shares"),
         })
@@ -846,6 +947,32 @@ def main():
                         help="Skip trading days where VIX > this level (0=disabled, default: 30)")
     parser.add_argument("--vix-spike-pct", type=float, default=20.0,
                         help="Skip days where VIX spiked >N%% day-over-day (0=disabled, default: 20)")
+    # ── Swing (multi-day, longer-dated) mode ─────────────────────────────────
+    parser.add_argument("--mode", choices=["0dte", "swing"], default="0dte",
+                        help="Trade horizon. '0dte' = original intraday-only/0DTE flow (default). "
+                             "'swing' = use the same intraday trigger but buy a ~target-DTE option, "
+                             "hold up to --max-hold-days, gated by daily-bar regime.")
+    parser.add_argument("--target-dte", type=int, default=90,
+                        help="Target days-to-expiration for swing-mode contracts (default: 90 ≈ 3 months). "
+                             "Resolver picks the listed expiration closest to this.")
+    parser.add_argument("--max-hold-days", type=int, default=60,
+                        help="Max calendar days to hold a swing trade before time-stop (default: 60).")
+    parser.add_argument("--swing-stop-atr", type=float, default=1.5,
+                        help="Underlying stop = N × daily ATR(14) for swing trades (default: 1.5).")
+    parser.add_argument("--swing-target-atr", type=float, default=4.0,
+                        help="Underlying target = N × daily ATR(14) for swing trades (default: 4.0).")
+    parser.add_argument("--swing-iv", type=float, default=0.18,
+                        help="Assumed annualized IV for BS synth pricing fallback (default: 0.18 ≈ SPY).")
+    parser.add_argument("--swing-rate", type=float, default=0.045,
+                        help="Risk-free rate for BS synth pricing (default: 0.045).")
+    parser.add_argument("--swing-div-yield", type=float, default=0.013,
+                        help="Dividend yield for BS synth pricing (default: 0.013 ≈ SPY).")
+    parser.add_argument("--no-daily-regime-gate", action="store_true",
+                        help="Disable daily-bar regime gate in swing mode (default: gate ON in swing).")
+    parser.add_argument("--daily-sma-fast", type=int, default=20,
+                        help="Daily SMA fast length for regime classification (default: 20).")
+    parser.add_argument("--daily-sma-slow", type=int, default=50,
+                        help="Daily SMA slow length for regime classification (default: 50).")
     args = parser.parse_args()
 
     if args.research_mode:
@@ -857,6 +984,21 @@ def main():
         args.no_gainz_exit = True
         args.no_decay_aware_targets = True
         logger.info("research-mode: loose defaults applied (chop 10, max-Q 8, scan from 10:35, no caps, no Gainz, no decay targets)")
+
+    if args.mode == "swing":
+        # Swing trades are multi-day — intraday-specific exits don't apply.
+        args.no_gainz_exit = True
+        args.no_decay_aware_targets = True
+        # Daily P&L caps and consecutive-loss streaks were 0DTE concepts; relax for swing.
+        # (User can re-enable explicitly via flags if desired.)
+        if args.max_consecutive_losses == 2:  # default value — only override if user didn't change it
+            args.max_consecutive_losses = 0
+        logger.info(
+            "swing-mode: target_dte=%d, max_hold=%d days, stop=%.1f×ATR, target=%.1f×ATR, "
+            "daily-regime-gate=%s, IV=%.2f",
+            args.target_dte, args.max_hold_days, args.swing_stop_atr, args.swing_target_atr,
+            "OFF" if args.no_daily_regime_gate else "ON", args.swing_iv,
+        )
 
     # Fetch data via Alpaca
     try:
@@ -900,6 +1042,48 @@ def main():
         logger.warning("VIX fetch failed (%s), using default 20.0", e)
         vix_map = {}
 
+    # ── Daily-bar regime + ATR map for swing mode ────────────────────────────
+    # Pulled from yfinance with enough lookback to seed SMA-50 / ATR-14.
+    daily_regime_map: dict[date, str] = {}
+    daily_atr_map: dict[date, float] = {}
+    if args.mode == "swing" and not args.no_daily_regime_gate:
+        try:
+            sma_lookback = max(args.daily_sma_slow, 14) + 5
+            daily_start = str(trading_days[0] - timedelta(days=int(sma_lookback * 1.7)))
+            daily_end = str(trading_days[-1] + timedelta(days=1))
+            daily_df = yf.download(args.symbol, start=daily_start, end=daily_end,
+                                   interval="1d", progress=False)
+            if isinstance(daily_df.columns, pd.MultiIndex):
+                daily_df.columns = daily_df.columns.get_level_values(0)
+            daily_df.index = pd.to_datetime(daily_df.index)
+            d_close = daily_df["Close"].astype(float)
+            d_high = daily_df["High"].astype(float)
+            d_low = daily_df["Low"].astype(float)
+            d_sma_fast = d_close.rolling(args.daily_sma_fast).mean()
+            d_sma_slow = d_close.rolling(args.daily_sma_slow).mean()
+            d_tr = pd.concat([d_high - d_low,
+                              (d_high - d_close.shift()).abs(),
+                              (d_low - d_close.shift()).abs()], axis=1).max(axis=1)
+            d_atr = d_tr.rolling(14).mean()
+            for idx_d, _ in daily_df.iterrows():
+                d_only = idx_d.date()
+                fast = d_sma_fast.loc[idx_d]
+                slow = d_sma_slow.loc[idx_d]
+                atr_d = d_atr.loc[idx_d]
+                if pd.notna(fast) and pd.notna(slow):
+                    if fast > slow:
+                        daily_regime_map[d_only] = "bull"
+                    elif fast < slow:
+                        daily_regime_map[d_only] = "bear"
+                    else:
+                        daily_regime_map[d_only] = "neutral"
+                if pd.notna(atr_d):
+                    daily_atr_map[d_only] = float(atr_d)
+            logger.info("  Daily bars: %d days, regime=%d, ATR=%d",
+                        len(daily_df), len(daily_regime_map), len(daily_atr_map))
+        except Exception as e:
+            logger.warning("Daily-bar fetch failed (%s) — swing mode will skip the regime gate", e)
+
     # ── Number of prior context bars for multi-day SMA (3 days ≈ 234 bars covers SMA-200) ──
     PRIOR_DAYS_CONTEXT = 4  # prepend 4 prior trading days' bars for SMA-50/200 warmup
 
@@ -939,6 +1123,24 @@ def main():
                 if spike_pct > args.vix_spike_pct:
                     continue
 
+        # Swing mode needs forward bars across multiple days for the exit walk.
+        # Cap the slice at max_hold_days + buffer to keep memory/CPU bounded.
+        forward_bars = None
+        day_regime = "neutral"
+        day_d_atr = 0.0
+        if args.mode == "swing":
+            fwd_end = day + timedelta(days=int(args.max_hold_days * 1.5) + 2)
+            fwd_mask = (df.index.date > day) | (df.index.date == day)
+            forward_bars = df[fwd_mask & (df.index.date <= fwd_end)]
+            day_regime = daily_regime_map.get(day, "neutral")
+            # Daily ATR lookup: use this day's ATR; if missing, walk backward
+            day_d_atr = daily_atr_map.get(day, 0.0)
+            if day_d_atr == 0.0 and daily_atr_map:
+                for prev_day in reversed(trading_days[:idx]):
+                    if prev_day in daily_atr_map:
+                        day_d_atr = daily_atr_map[prev_day]
+                        break
+
         triggers = replay_day(day_bars, day, max_chop=args.max_chop,
                               min_quality=args.min_quality, max_quality=args.max_quality,
                               min_cascade=args.min_cascade, breakout_pct=args.breakout_pct,
@@ -974,7 +1176,18 @@ def main():
                               real_options=args.real_options and not args.no_real_options,
                               decay_aware_targets=not args.no_decay_aware_targets,
                               decay_target_floor=args.decay_target_floor,
-                              decay_halflife_bars=args.decay_halflife_bars)
+                              decay_halflife_bars=args.decay_halflife_bars,
+                              mode=args.mode,
+                              forward_bars=forward_bars,
+                              daily_regime=day_regime,
+                              daily_atr=day_d_atr,
+                              target_dte=args.target_dte,
+                              max_hold_days=args.max_hold_days,
+                              swing_stop_atr=args.swing_stop_atr,
+                              swing_target_atr=args.swing_target_atr,
+                              swing_iv=args.swing_iv,
+                              swing_rate=args.swing_rate,
+                              swing_div_yield=args.swing_div_yield)
         all_triggers.extend(triggers)
 
     # ── Results ──
@@ -982,6 +1195,11 @@ def main():
     print(f"  SWEET SPOT REPLAY: {args.symbol} — {len(trading_days)} days")
     if args.shares:
         mode_label = "SHARES"
+    elif args.mode == "swing":
+        pricing_src = ("Alpaca daily option bars; BS synth fallback"
+                       if args.real_options and not args.no_real_options
+                       else f"BS synth (IV={args.swing_iv:.2f}, r={args.swing_rate:.3f})")
+        mode_label = f"SWING OPTIONS ~{args.target_dte}-DTE  ({pricing_src})"
     elif args.real_options and not args.no_real_options:
         mode_label = "0DTE OPTIONS (Alpaca historical bars; synth fallback)"
     else:
@@ -989,7 +1207,12 @@ def main():
     print(f"  Mode: {mode_label}")
     print(f"  Filter: Quality {args.min_quality}-{args.max_quality}, Cascade ≥ {args.min_cascade}, Chop ≤ {args.max_chop}, Regime Guard: {'ON' if not args.no_regime_guard else 'OFF'}")
     print(f"  Analyzers: OpeningRange + RecentMomentum + MomentumCascade (exact replica)")
-    if not args.no_decay_aware_targets:
+    if args.mode == "swing":
+        gate_label = "ON" if not args.no_daily_regime_gate else "OFF"
+        print(f"  Daily Regime Gate: {gate_label} (SMA{args.daily_sma_fast}/{args.daily_sma_slow})  "
+              f"Stop: {args.swing_stop_atr}×dATR  Target: {args.swing_target_atr}×dATR  "
+              f"Max Hold: {args.max_hold_days}d")
+    elif not args.no_decay_aware_targets:
         print(f"  Decay-Aware Targets: ON (floor={args.decay_target_floor}, halflife={args.decay_halflife_bars} bars / {args.decay_halflife_bars*5} min)")
     else:
         print(f"  Decay-Aware Targets: OFF")
@@ -1110,7 +1333,29 @@ def main():
         print(f"    {o:<12} {c:>3} ({c/len(all_triggers)*100:.0f}%)")
 
     # Trade log
-    if not args.shares:
+    if args.mode == "swing":
+        print(f"\n  {'EntryDate':<11} {'Dir':<4} {'Reg':<4} {'Q':>2} {'E':>2} {'Ct':>3} "
+              f"{'Held':>5} {'Expiry':<11} {'UndIn':>8} {'UndOut':>8} {'Prem':>7} "
+              f"{'Opt$/ct':>9} {'Tot$':>9} {'Outcome':<10}")
+        print(f"  {'─'*11} {'─'*4} {'─'*4} {'─'*2} {'─'*2} {'─'*3} {'─'*5} {'─'*11} "
+              f"{'─'*8} {'─'*8} {'─'*7} {'─'*9} {'─'*9} {'─'*10}")
+        for t in all_triggers:
+            d = "CALL" if "call" in t["direction"] else "PUT"
+            w = "✅" if t["is_winner"] else "❌"
+            reg = (t.get("daily_regime") or "—")[:4]
+            opt_pnl = t.get("option_pnl_100x")
+            opt_sized = t.get("option_pnl_sized")
+            opt_str = f"${opt_pnl:>+8.0f}" if opt_pnl is not None else "     N/A"
+            tot_str = f"${opt_sized:>+8.0f}" if opt_sized is not None else "     N/A"
+            prem = t.get("est_premium")
+            prem_str = f"${prem:>5.2f}" if prem is not None else "    —"
+            ct = int(t["size"])
+            held = t.get("days_held", 0)
+            expiry = t.get("expiration") or "—"
+            print(f"  {t['date']:<11} {d:<4} {reg:<4} {t['quality']:>2} {t['explosion']:>2} "
+                  f"{ct:>3} {held:>4.1f}d {expiry:<11} ${t['entry']:>7.2f} ${t['exit_price']:>7.2f} "
+                  f"{prem_str} {opt_str} {tot_str} {t['outcome']:<10} {w}")
+    elif not args.shares:
         print(f"\n  {'Date':<12} {'Time':<6} {'Dir':<5} {'Q':>2} {'E':>2} {'C':>2} {'Ct':>3} {'Entry':>8} {'Exit':>8} {'Δ$':>7} {'Opt$/ct':>8} {'Tot$':>8} {'Outcome':<8}")
         print(f"  {'─'*12} {'─'*6} {'─'*5} {'─'*2} {'─'*2} {'─'*2} {'─'*3} {'─'*8} {'─'*8} {'─'*7} {'─'*8} {'─'*8} {'─'*8}")
         for t in all_triggers:

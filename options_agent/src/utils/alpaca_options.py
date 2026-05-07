@@ -127,6 +127,94 @@ def resolve_atm_0dte(symbol: str, trade_date: date, option_type: str, spot: floa
     return best["symbol"]
 
 
+# ── Dated (multi-week / multi-month) contract resolution ─────────────────────
+
+def _expirations_cache_path(symbol: str, start: date, end: date, option_type: str) -> Path:
+    return _CACHE_DIR / f"opt_exps_{symbol}_{start.isoformat()}_{end.isoformat()}_{option_type}.json"
+
+
+def list_expirations_in_window(
+    symbol: str, option_type: str, window_start: date, window_end: date
+) -> list[date]:
+    """Return distinct expiration dates available in [window_start, window_end].
+
+    Uses Alpaca's expiration_date_gte/lte filters. Cached as JSON.
+    """
+    cache = _expirations_cache_path(symbol, window_start, window_end, option_type)
+    if cache.exists():
+        try:
+            return sorted({date.fromisoformat(s) for s in json.loads(cache.read_text())})
+        except Exception:
+            cache.unlink(missing_ok=True)
+
+    from alpaca.trading.enums import AssetStatus, ContractType
+    from alpaca.trading.requests import GetOptionContractsRequest
+
+    client = _trading_client()
+    ctype = ContractType.CALL if option_type == "call" else ContractType.PUT
+    exps: set[date] = set()
+
+    for status in (AssetStatus.ACTIVE, AssetStatus.INACTIVE):
+        page_token = None
+        while True:
+            req = GetOptionContractsRequest(
+                underlying_symbols=[symbol],
+                expiration_date_gte=window_start,
+                expiration_date_lte=window_end,
+                type=ctype,
+                status=status,
+                limit=10000,
+                page_token=page_token,
+            )
+            try:
+                resp = client.get_option_contracts(req)
+            except Exception as e:
+                logger.warning("Expirations listing %s [%s..%s] failed: %s",
+                               symbol, window_start, window_end, e)
+                break
+            for c in (resp.option_contracts or []):
+                try:
+                    exps.add(c.expiration_date if isinstance(c.expiration_date, date)
+                             else date.fromisoformat(str(c.expiration_date)))
+                except Exception:
+                    continue
+            page_token = getattr(resp, "next_page_token", None)
+            if not page_token:
+                break
+
+    out_sorted = sorted(exps)
+    cache.write_text(json.dumps([d.isoformat() for d in out_sorted]))
+    return out_sorted
+
+
+def resolve_atm_dated(
+    symbol: str,
+    trade_date: date,
+    option_type: str,
+    spot: float,
+    target_dte: int = 90,
+    dte_window: int = 14,
+) -> tuple[str, date] | None:
+    """Find an ATM contract with expiration closest to trade_date + target_dte.
+
+    Searches expirations within ±dte_window calendar days of the target. Picks
+    the expiration closest to target, then the strike closest to spot.
+    Returns (occ_symbol, expiration_date) or None if nothing in range.
+    """
+    target_exp = trade_date + timedelta(days=target_dte)
+    window_start = target_exp - timedelta(days=dte_window)
+    window_end = target_exp + timedelta(days=dte_window)
+    exps = list_expirations_in_window(symbol, option_type, window_start, window_end)
+    if not exps:
+        return None
+    best_exp = min(exps, key=lambda d: abs((d - target_exp).days))
+    contracts = list_contracts(symbol, best_exp, option_type)
+    if not contracts:
+        return None
+    best = min(contracts, key=lambda c: abs(c["strike"] - spot))
+    return best["symbol"], best_exp
+
+
 # ── Bars ─────────────────────────────────────────────────────────────────────
 
 def _bars_cache_path(occ: str, interval: str) -> Path:

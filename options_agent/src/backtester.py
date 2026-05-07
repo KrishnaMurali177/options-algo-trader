@@ -537,12 +537,12 @@ class IntradayBacktester:
         offset = range_width * self.entry_offset_pct
 
         if self.use_optimized_exits:
-            # BACKTEST-OPTIMIZED: tighter stop at midpoint, 0.75R/1.5R targets
+            # BACKTEST-OPTIMIZED: tighter stop at 60% of range, 0.75R/1.5R targets
             range_mid = (range_high + range_low) / 2
             if direction == "call":
                 entry_trigger = range_high + offset
                 entry_price = round(entry_trigger + atr * self.atr_buffer, 2)
-                stop_loss = round(range_mid - atr * 0.02, 2)
+                stop_loss = round(range_mid + 0.10 * (range_high - range_low) - atr * 0.02, 2)
                 risk = entry_price - stop_loss
                 if risk <= 0: risk = atr * 0.3
                 target_1 = round(entry_price + risk * 0.75, 2)
@@ -550,7 +550,7 @@ class IntradayBacktester:
             else:
                 entry_trigger = range_low - offset
                 entry_price = round(entry_trigger - atr * self.atr_buffer, 2)
-                stop_loss = round(range_mid + atr * 0.02, 2)
+                stop_loss = round(range_mid - 0.10 * (range_high - range_low) + atr * 0.02, 2)
                 risk = stop_loss - entry_price
                 if risk <= 0: risk = atr * 0.3
                 target_1 = round(entry_price - risk * 0.75, 2)

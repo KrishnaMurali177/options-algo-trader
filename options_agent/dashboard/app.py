@@ -1133,6 +1133,14 @@ if _auto_refresh_active:
         f"**Status:** 🟢 Active — refreshing every **{_refresh_interval_min} min**  \n"
         "🔔 Browser alerts enabled for high-quality signals."
     )
+    st.sidebar.markdown(
+        "**Sweet Spot Tiers** (golden defaults)  \n"
+        "🔴 **Prime** — Q 3–7 · Explosion **≥ 7** (critical alert)  \n"
+        "🟡 **Strong** — Q 3–7 · Explosion **4–6**  \n"
+        "🟢 **Standard** — Q 3–7 · Explosion **2–3**  \n"
+        "<span style='font-size: 11px; color: #8E8E93;'>Plus: chop ≤ 5 · VIX ≤ 30 · regime + OR confirmed</span>",
+        unsafe_allow_html=True,
+    )
     # On auto-refresh ticks (count > 0), auto-analyze without clicking
     if _refresh_count and _refresh_count > 0 and "result" in st.session_state:
         # Clear data cache so we get fresh candle data
@@ -1339,39 +1347,69 @@ _cascade = _cascade_detector.analyze(
     bars_5m=_replay_bars,
 )
 
-# ── Browser notification for high-quality signals (15-min auto-monitor) ──
+# ── Browser notification: gated by live-agent golden defaults ──
+# Mirrors check_sweet_spot() in scripts/run_sweet_spot_agent.py:
+#   quality 3-7 · explosion ≥ 2 · chop ≤ 5 · VIX ≤ 30 · regime guard
+#   · |OR momentum| ≥ 25 (matching dir) · price in upper/lower 25% of OR
+# Time window NOT enforced — alerts fire across the full market day.
 if _auto_refresh_active:
-    _notify_quality = max(call_quality, put_quality)
-    _notify_direction = "Buy Put" if put_quality > call_quality else "Buy Call"
+    _notify_direction_key = "buy_put" if put_quality > call_quality else "buy_call"
+    _notify_quality = put_quality if _notify_direction_key == "buy_put" else call_quality
+    _notify_direction = "Buy Put" if _notify_direction_key == "buy_put" else "Buy Call"
     _notify_price = ind_dict.get("current_price", 0)
-    _notify_symbol = ind_dict.get("symbol", "")
+    _notify_symbol = ind_dict.get("symbol", "") or sym
 
-    # Track last notification to avoid repeating the same alert
     _prev_alert = st.session_state.get("_last_alert_key", "")
     _alert_key = f"{_notify_symbol}_{_notify_quality}_{_cascade.explosion_score}_{datetime.now(timezone.utc).strftime('%H%M')}"
 
-    if _alert_key != _prev_alert:
-        if 4 <= _notify_quality <= 8 and _cascade.explosion_score >= 3:
-            # Check eligibility (regime guard) before notifying
-            _sweet_strategy_key = "buy_put" if put_quality > call_quality else "buy_call"
-            _sweet_rsi = ind_dict.get("rsi_5min") or ind_dict.get("rsi_14", 50)
-            # Inline regime check (same logic as strategy eligibility)
-            if _sweet_strategy_key == "buy_put":
-                _sweet_eligible = not (regime == MarketRegime.LOW_VOL_BULLISH and _sweet_rsi <= 70)
-                _sweet_eligible = _sweet_eligible and _sweet_rsi >= 20
-            else:
-                _sweet_eligible = not (regime in (MarketRegime.TRENDING_BEARISH, MarketRegime.HIGH_VOL_BEARISH) and _sweet_rsi >= 30)
-                _sweet_eligible = _sweet_eligible and _sweet_rsi <= 80
-            if _sweet_eligible:
-                send_browser_notification(
-                    title=f"🎯 {_notify_symbol} SWEET SPOT — {_notify_direction}",
-                    body=(
-                        f"Quality {_notify_quality}/13 (optimal) + Explosion {_cascade.explosion_score}/10 | "
-                        f"${_notify_price:.2f} | Best R:R entry zone"
-                    ),
-                    urgency="critical" if _cascade.explosion_score >= 7 else "normal",
-                )
-                st.session_state["_last_alert_key"] = _alert_key
+    # Golden-default gates (all must pass)
+    _g_quality = 3 <= _notify_quality <= 7
+    _g_cascade = _cascade.explosion_score >= 2
+    _g_chop = _chop_result is None or _chop_result.chop_score <= max_chop_score
+    _g_vix = ind_dict.get("vix", 0) <= 30
+
+    # OR direction must match trade direction with momentum ≥ 25
+    if _notify_direction_key == "buy_call":
+        _g_or = _or_momentum >= 25
+    else:
+        _g_or = _or_momentum <= -25
+
+    # 25% confirmation: price in upper/lower 25% of OR range (or beyond)
+    _range_high = _or_result.range_high if _or_result else _notify_price
+    _range_low = _or_result.range_low if _or_result else _notify_price
+    _range_width = _range_high - _range_low
+    _breakout_threshold = _range_width * 0.25
+    if _notify_direction_key == "buy_call":
+        _g_confirm = _notify_price >= (_range_high - _breakout_threshold)
+    else:
+        _g_confirm = _notify_price <= (_range_low + _breakout_threshold)
+
+    # Regime guard (matches agent: SMA20 vs SMA50 + RSI extreme override)
+    _g_rsi = ind_dict.get("rsi_14", 50)
+    _bullish_regime = ind_dict.get("sma_20", 0) > ind_dict.get("sma_50", 0)
+    _bearish_regime = ind_dict.get("sma_20", 0) < ind_dict.get("sma_50", 0)
+    if _notify_direction_key == "buy_put" and _bullish_regime and _g_rsi <= 70:
+        _g_regime = False
+    elif _notify_direction_key == "buy_call" and _bearish_regime and _g_rsi >= 30:
+        _g_regime = False
+    else:
+        _g_regime = True
+
+    _golden_pass = (
+        _g_quality and _g_cascade and _g_chop and _g_vix
+        and _g_or and _g_confirm and _g_regime
+    )
+
+    if _alert_key != _prev_alert and _golden_pass:
+        send_browser_notification(
+            title=f"🎯 {_notify_symbol} SWEET SPOT — {_notify_direction}",
+            body=(
+                f"Quality {_notify_quality}/13 + Explosion {_cascade.explosion_score}/10 | "
+                f"${_notify_price:.2f} | Golden defaults — entry zone confirmed"
+            ),
+            urgency="critical" if _cascade.explosion_score >= 7 else "normal",
+        )
+        st.session_state["_last_alert_key"] = _alert_key
 
 # Pick the strategy with higher quality; tie goes to regime-based pick
 if call_quality > put_quality:

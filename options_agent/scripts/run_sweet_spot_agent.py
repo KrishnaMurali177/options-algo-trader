@@ -112,8 +112,8 @@ def is_market_hours() -> bool:
     return now.hour * 60 + now.minute >= 9 * 60 + 30 and now.hour < 16
 
 
-def is_past_or(min_after_open: int = 65) -> bool:
-    """Wait until at least 65 min after open (10:35) for OR to form."""
+def is_past_or(min_after_open: int = 60) -> bool:
+    """Wait until at least 60 min after open (10:30) for OR to form."""
     now = get_et_now()
     minutes_since_open = (now.hour * 60 + now.minute) - (9 * 60 + 30)
     return minutes_since_open >= min_after_open
@@ -176,7 +176,7 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True) 
         # Sweet spot criteria
         if not (3 <= quality <= 7):
             return None
-        if cascade.explosion_score < 4:
+        if cascade.explosion_score < 2:
             return None
         if chop.chop_score > max_chop:
             return None
@@ -197,18 +197,20 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True) 
         if cascade.explosion_score >= 8:
             target_mult = 1.5  # Explosive — let it run
         elif cascade.explosion_score >= 6:
-            target_mult = 1.25  # Strong — extended target
+            target_mult = 1.5  # Strong — extended target (was 1.25, tightened-stop golden)
         else:
             target_mult = 1.0  # Moderate — standard 1R
 
         if direction == "buy_call":
             entry = range_high + range_width * 0.10
-            stop = (range_high + range_low) / 2
+            mid = (range_high + range_low) / 2
+            stop = mid + 0.10 * (range_high - range_low)  # Tighter: 60% of range (was midpoint)
             risk = entry - stop
             target_1 = entry + risk * target_mult
         else:
             entry = range_low - range_width * 0.10
-            stop = (range_high + range_low) / 2
+            mid = (range_high + range_low) / 2
+            stop = mid - 0.10 * (range_high - range_low)  # Tighter: 60% of range (was midpoint)
             risk = stop - entry
             target_1 = entry - risk * target_mult
 
@@ -238,6 +240,7 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True) 
 
 def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             max_trades_per_day: int = 3, max_stops_per_day: int = 1,
+            max_consecutive_losses: int = 2,
             scan_start_min: int = 60,
             gainz_exit: bool = True,
             gainz_body_ratio: float = 0.7,
@@ -249,7 +252,9 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             cascade_size_low: int = 3,
             cascade_size_mid: int = 3,
             cascade_size_high: int = 3,
-            regime_guard: bool = True):
+            regime_guard: bool = True,
+            vix_max: float = 30.0,
+            vix_spike_pct: float = 20.0):
     """Run the agent for one trading day."""
     today = date.today()
     journal_file = JOURNAL_DIR / f"{today.isoformat()}.json"
@@ -271,10 +276,34 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                 "ON" if regime_guard else "OFF", bool(trader),
                 "shares" if trade_shares else f"0DTE options (contracts={contracts}, delta={target_delta})")
 
+    # ── VIX sit-out filter (golden: skip if VIX > 30 or spiked > 20% day-over-day) ──
+    if vix_max > 0 or vix_spike_pct > 0:
+        try:
+            vix_df = yf.download('^VIX', period='5d', interval='1d', progress=False)
+            if isinstance(vix_df.columns, pd.MultiIndex):
+                vix_df.columns = vix_df.columns.get_level_values(0)
+            vix_closes = vix_df['Close'].astype(float)
+            if len(vix_closes) >= 1:
+                current_vix = float(vix_closes.iloc[-1])
+                if vix_max > 0 and current_vix > vix_max:
+                    logger.info("🚫 VIX SIT-OUT: VIX=%.1f > %.0f. Skipping today.", current_vix, vix_max)
+                    return
+                if vix_spike_pct > 0 and len(vix_closes) >= 2:
+                    prev_vix = float(vix_closes.iloc[-2])
+                    if prev_vix > 0:
+                        spike = (current_vix - prev_vix) / prev_vix * 100
+                        if spike > vix_spike_pct:
+                            logger.info("🚫 VIX SPIKE SIT-OUT: VIX spiked %.1f%% (%.1f→%.1f). Skipping today.",
+                                        spike, prev_vix, current_vix)
+                            return
+        except Exception as e:
+            logger.warning("VIX sit-out check failed: %s — proceeding anyway", e)
+
     last_trigger = None
     scan_count = 0
     trades_today = 0
     stops_today = 0
+    consecutive_losses = 0
     open_directions: dict[str, str] = {}  # symbol/occ_symbol → "buy_call" / "buy_put"
     open_options: dict[str, dict] = {}  # occ_symbol → {entry_premium, stop_price, target_price, direction}
 
@@ -323,20 +352,78 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                     for occ_sym, opt_info in list(open_options.items()):
                         should_close = False
                         close_reason = ""
+
+                        # ── Decay-aware target (golden: ON, halflife=6 bars, floor=0.4) ──
+                        effective_target = opt_info["target_price"]
+                        if "entry_time" in opt_info:
+                            minutes_in_trade = (now - opt_info["entry_time"]).total_seconds() / 60
+                            bars_elapsed = max(1, int(minutes_in_trade / 5))
+                            decay_halflife = 6  # bars (30 min)
+                            decay_floor = 0.4
+                            decay_factor = max(decay_floor, 0.5 ** (bars_elapsed / decay_halflife))
+                            original_dist = opt_info.get("original_target_dist", 0)
+                            if original_dist > 0:
+                                entry_underlying = opt_info.get("entry_underlying", underlying_price)
+                                decayed_dist = original_dist * decay_factor
+                                if "call" in opt_info["direction"]:
+                                    effective_target = entry_underlying + decayed_dist
+                                else:
+                                    effective_target = entry_underlying - decayed_dist
+
                         if "call" in opt_info["direction"]:
                             if underlying_price <= opt_info["stop_price"]:
                                 should_close = True
                                 close_reason = "stop"
-                            elif underlying_price >= opt_info["target_price"]:
+                            elif underlying_price >= effective_target:
                                 should_close = True
-                                close_reason = "target"
+                                close_reason = "decay_target"
                         else:  # put
                             if underlying_price >= opt_info["stop_price"]:
                                 should_close = True
                                 close_reason = "stop"
-                            elif underlying_price <= opt_info["target_price"]:
+                            elif underlying_price <= effective_target:
                                 should_close = True
-                                close_reason = "target"
+                                close_reason = "decay_target"
+
+                        # ── Theta-breakeven exit: if profitable but theta will eat it ──
+                        if not should_close and "entry_time" in opt_info:
+                            minutes_in_trade = (now - opt_info["entry_time"]).total_seconds() / 60
+                            bars_elapsed = max(1, int(minutes_in_trade / 5))
+                            entry_underlying = opt_info.get("entry_underlying", underlying_price)
+                            current_pnl_raw = (underlying_price - entry_underlying) \
+                                if "call" in opt_info["direction"] \
+                                else (entry_underlying - underlying_price)
+                            if current_pnl_raw > 0 and bars_elapsed >= 2:
+                                # Compute theta burn over next 2 bars using sqrt decay model
+                                total_market_minutes = 390  # 9:30-16:00
+                                entry_time_et = opt_info["entry_time"]
+                                entry_min_since_open = (entry_time_et.hour * 60 + entry_time_et.minute) - (9 * 60 + 30)
+                                bar_minutes = entry_min_since_open + bars_elapsed * 5
+                                remaining_frac_now = max(0, (total_market_minutes - bar_minutes) / total_market_minutes)
+                                remaining_frac_next = max(0, (total_market_minutes - bar_minutes - 10) / total_market_minutes)
+                                premium = opt_info.get("entry_premium", 1.0)
+                                theta_now = premium * 0.70 * (1.0 - remaining_frac_now ** 0.5)
+                                theta_next = premium * 0.70 * (1.0 - remaining_frac_next ** 0.5)
+                                theta_burn_2bars = theta_next - theta_now
+                                option_delta = opt_info.get("delta", 0.50)
+                                option_profit_approx = option_delta * current_pnl_raw
+                                if theta_burn_2bars >= option_profit_approx * 0.8:
+                                    should_close = True
+                                    close_reason = "theta_exit"
+
+                        # Stagnation exit: if 50 min (10 bars) have passed and trade
+                        # hasn't moved 0.5R in its favor, cut it to avoid theta bleed
+                        if not should_close and "entry_time" in opt_info:
+                            minutes_in_trade = (now - opt_info["entry_time"]).total_seconds() / 60
+                            if minutes_in_trade >= 50:
+                                risk = abs(opt_info.get("entry_underlying", underlying_price) - opt_info["stop_price"])
+                                if risk > 0:
+                                    current_pnl = (underlying_price - opt_info.get("entry_underlying", underlying_price)) \
+                                        if "call" in opt_info["direction"] \
+                                        else (opt_info.get("entry_underlying", underlying_price) - underlying_price)
+                                    if current_pnl < risk * 0.5:
+                                        should_close = True
+                                        close_reason = "stagnation"
 
                         # Time stop: close at 15:30 ET (15 min before broker's 3:45 forced close)
                         if not should_close and now.hour == 15 and now.minute >= 30:
@@ -361,6 +448,9 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             open_directions.pop(occ_sym, None)
                             if close_reason == "stop":
                                 stops_today += 1
+                                consecutive_losses += 1
+                            elif close_reason == "target":
+                                consecutive_losses = 0
             except Exception as e:
                 logger.warning("Options monitoring failed: %s", e)
 
@@ -390,6 +480,9 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             continue
         if max_stops_per_day > 0 and stops_today >= max_stops_per_day:
             logger.info("Daily stop limit reached (%d/%d). Halting for protection.", stops_today, max_stops_per_day)
+            break
+        if max_consecutive_losses > 0 and consecutive_losses >= max_consecutive_losses:
+            logger.info("Streak breaker: %d consecutive losses. Halting for the day.", consecutive_losses)
             break
 
         scan_count += 1
@@ -469,8 +562,11 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                     "entry_premium": contract["mid"],
                                     "stop_price": trigger["stop"],
                                     "target_price": trigger["target"],
+                                    "original_target_dist": abs(trigger["target"] - trigger["entry"]),
                                     "direction": trigger["direction"],
                                     "delta": contract["delta"],
+                                    "entry_time": get_et_now(),
+                                    "entry_underlying": trigger.get("price", trigger["entry"]),
                                 }
                                 open_directions[contract["occ_symbol"]] = trigger["direction"]
                                 logger.info("  📝 0DTE %s order: %s strike=$%.2f Δ=%.2f premium=$%.2f × %d contracts",
@@ -580,6 +676,8 @@ def main():
     parser.add_argument("--max-chop", type=int, default=5, help="Max choppiness (default: 5)")
     parser.add_argument("--max-trades-per-day", type=int, default=3, help="Max trades per day (default: 3)")
     parser.add_argument("--max-stops-per-day", type=int, default=1, help="Halt after N stop-outs (default: 1)")
+    parser.add_argument("--max-consecutive-losses", type=int, default=2,
+                        help="Stop trading after N consecutive losses (default: 2)")
     parser.add_argument("--scan-start-min", type=int, default=60, help="Minutes after open to start scanning (default: 60 = 10:30)")
     parser.add_argument("--daemon", action="store_true", help="Run continuously (restarts daily)")
     parser.add_argument("--no-paper", action="store_true", help="Journal only, no paper orders")
@@ -605,6 +703,10 @@ def main():
                         help="Contracts for E 8+ tier (default: 3)")
     parser.add_argument("--no-regime-guard", action="store_true",
                         help="Disable regime guard (default: ON — blocks counter-trend trades unless RSI extreme)")
+    parser.add_argument("--vix-max", type=float, default=30.0,
+                        help="Skip trading days where VIX > this level (0=disabled, default: 30)")
+    parser.add_argument("--vix-spike-pct", type=float, default=20.0,
+                        help="Skip days where VIX spiked >N%% day-over-day (0=disabled, default: 20)")
     args = parser.parse_args()
 
     paper_trade = not args.no_paper
@@ -625,6 +727,7 @@ def main():
                     run_day(args.symbol, args.qty, args.max_chop, paper_trade,
                             max_trades_per_day=args.max_trades_per_day,
                             max_stops_per_day=args.max_stops_per_day,
+                            max_consecutive_losses=args.max_consecutive_losses,
                             scan_start_min=args.scan_start_min,
                             gainz_exit=not args.no_gainz_exit,
                             gainz_body_ratio=args.gainz_body_ratio,
@@ -636,7 +739,9 @@ def main():
                             cascade_size_low=args.cascade_size_low,
                             cascade_size_mid=args.cascade_size_mid,
                             cascade_size_high=args.cascade_size_high,
-                            regime_guard=not args.no_regime_guard)
+                            regime_guard=not args.no_regime_guard,
+                            vix_max=args.vix_max,
+                            vix_spike_pct=args.vix_spike_pct)
                     # After market close, sleep until next day 9:25 AM
                     tomorrow_925 = (now + timedelta(days=1)).replace(hour=9, minute=25, second=0)
                     sleep_sec = (tomorrow_925 - get_et_now()).total_seconds()
@@ -657,6 +762,7 @@ def main():
         run_day(args.symbol, args.qty, args.max_chop, paper_trade,
                 max_trades_per_day=args.max_trades_per_day,
                 max_stops_per_day=args.max_stops_per_day,
+                max_consecutive_losses=args.max_consecutive_losses,
                 scan_start_min=args.scan_start_min,
                 gainz_exit=not args.no_gainz_exit,
                 gainz_body_ratio=args.gainz_body_ratio,
@@ -668,7 +774,9 @@ def main():
                 cascade_size_low=args.cascade_size_low,
                 cascade_size_mid=args.cascade_size_mid,
                 cascade_size_high=args.cascade_size_high,
-                regime_guard=not args.no_regime_guard)
+                regime_guard=not args.no_regime_guard,
+                vix_max=args.vix_max,
+                vix_spike_pct=args.vix_spike_pct)
 
 
 if __name__ == "__main__":

@@ -130,13 +130,15 @@ def check_sweet_spot(symbol: str = "SPY", max_chop: int = 5) -> dict | None:
             
             if direction == "buy_call":
                 entry = range_high + range_width * 0.10
-                stop = (range_high + range_low) / 2
+                mid = (range_high + range_low) / 2
+                stop = mid + 0.10 * (range_high - range_low)  # Tighter: 60% of range
                 risk = entry - stop
                 target_1 = entry + risk * 0.75
                 target_2 = entry + risk * 1.5
             else:
                 entry = range_low - range_width * 0.10
-                stop = (range_high + range_low) / 2
+                mid = (range_high + range_low) / 2
+                stop = mid - 0.10 * (range_high - range_low)  # Tighter: 60% of range
                 risk = stop - entry
                 target_1 = entry - risk * 0.75
                 target_2 = entry - risk * 1.5

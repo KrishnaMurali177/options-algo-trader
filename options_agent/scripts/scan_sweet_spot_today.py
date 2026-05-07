@@ -267,8 +267,8 @@ for i in range(12, len(today_bars)):
     chop = compute_choppiness(bars_up_to)
     chop_sc = chop.chop_score
 
-    # ── Sweet Spot criteria (live agent: 3 <= Q <= 7, E >= 4, chop <= max) ──
-    is_sweet = 3 <= quality <= 7 and expl >= 4 and chop_sc <= args.max_chop
+    # ── Sweet Spot criteria (live agent: 3 <= Q <= 7, E >= 2, chop <= max) ──
+    is_sweet = 3 <= quality <= 7 and expl >= 2 and chop_sc <= args.max_chop
 
     # ── Entry confirmation: price in upper/lower 25% of OR range ──
     if is_sweet and or_result:
@@ -306,18 +306,20 @@ for i in range(12, len(today_bars)):
             if expl >= 8:
                 target_mult = 1.5
             elif expl >= 6:
-                target_mult = 1.25
+                target_mult = 1.5  # was 1.25
             else:
                 target_mult = 1.0
 
             if direction == "buy_call":
                 entry = range_high + range_width * 0.10
-                stop = (range_high + range_low) / 2
+                mid = (range_high + range_low) / 2
+                stop = mid + 0.10 * (range_high - range_low)  # Tighter: 60% of range
                 risk = entry - stop
                 target = entry + risk * target_mult
             else:
                 entry = range_low - range_width * 0.10
-                stop = (range_high + range_low) / 2
+                mid = (range_high + range_low) / 2
+                stop = mid - 0.10 * (range_high - range_low)  # Tighter: 60% of range
                 risk = stop - entry
                 target = entry - risk * target_mult
 

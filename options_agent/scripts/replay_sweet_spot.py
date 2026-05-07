@@ -14,8 +14,10 @@ This is an EXACT REPLICA of the live sweet-spot agent logic:
 
 Usage:
     cd options_agent
-    python scripts/replay_sweet_spot.py --days 365             # Golden defaults (live agent settings)
+    python scripts/replay_sweet_spot.py --days 365             # Golden defaults (incl. decay-aware targets + real options)
     python scripts/replay_sweet_spot.py --days 365 --no-gainz-exit   # Baseline (no Gainz)
+    python scripts/replay_sweet_spot.py --days 365 --no-decay-aware-targets  # Disable decay targets
+    python scripts/replay_sweet_spot.py --days 365 --no-real-options  # Use synth pricing instead of real Alpaca
     python scripts/replay_sweet_spot.py --days 365 --research-mode   # Loose pre-golden defaults
 """
 
@@ -154,12 +156,17 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                breakout_pct: float = 0.25, cooldown_bars: int = 3,
                scan_end: str = "13:59",
                scan_start: str = "11:30",
-               target_mult_low: float = 1.0, target_mult_mid: float = 1.25,
+               target_mult_low: float = 1.0, target_mult_mid: float = 1.5,
                target_mult_high: float = 1.5,
                regime_guard: bool = True,
                symbol: str = "SPY",
                max_trades_per_day: int = 3,
                max_stops_per_day: int = 1,
+               max_consecutive_losses: int = 2,
+               daily_loss_limit: float = 0.0,
+               confirmation_bar: bool = False,
+               stagnation_bars: int = 10,
+               stagnation_threshold: float = 0.5,
                gainz_exit: bool = True,
                gainz_body_ratio: float = 0.7,
                gainz_rsi_overbought: float = 70.0,
@@ -176,7 +183,10 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                vix: float = 20.0,
                prior_bars: pd.DataFrame | None = None,
                dynamic_or: bool = False,
-               real_options: bool = False) -> list[dict]:
+               real_options: bool = False,
+               decay_aware_targets: bool = False,
+               decay_target_floor: float = 0.4,
+               decay_halflife_bars: int = 6) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
     Uses the EXACT same analyzers as the live agent:
@@ -233,6 +243,8 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
     triggers = []
     last_trigger_idx = -999
     stops_today = 0  # Track stop-outs for daily loss limit
+    consecutive_losses = 0  # Track streak for streak breaker
+    daily_pnl_cumulative = 0.0  # Track cumulative daily P&L
 
     # Scan every bar (5 min) from scan_start to scan_end
     scan_bars = post_or.between_time(effective_scan_start if dynamic_or else scan_start, scan_end)
@@ -302,6 +314,10 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         if max_trades_per_day > 0 and len(triggers) >= max_trades_per_day:
             break
         if max_stops_per_day > 0 and stops_today >= max_stops_per_day:
+            break
+        if max_consecutive_losses > 0 and consecutive_losses >= max_consecutive_losses:
+            break
+        if daily_loss_limit > 0 and daily_pnl_cumulative <= -daily_loss_limit:
             break
 
         # Cooldown: skip if triggered within last N bars
@@ -466,14 +482,18 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
 
         if direction == "buy_call":
             entry = price
-            stop = (range_high + range_low) / 2
+            mid = (range_high + range_low) / 2
+            # Tighter stop: 60% from low toward high (instead of bare midpoint)
+            stop = mid + 0.10 * (range_high - range_low)
             risk = entry - stop
             if risk <= 0:
                 continue
             target = entry + risk * target_mult
         else:
             entry = price
-            stop = (range_high + range_low) / 2
+            mid = (range_high + range_low) / 2
+            # Tighter stop: 60% from high toward low (instead of bare midpoint)
+            stop = mid - 0.10 * (range_high - range_low)
             risk = stop - entry
             if risk <= 0:
                 continue
@@ -481,6 +501,31 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
 
         # ── Walk forward to determine outcome ──
         future_bars = day_bars[day_bars.index > ts]
+
+        # ── Confirmation bar: require next bar to close in trade direction ──
+        if confirmation_bar and len(future_bars) >= 1:
+            conf_bar = future_bars.iloc[0]
+            conf_close = float(conf_bar["Close"])
+            if direction == "buy_call" and conf_close <= entry:
+                continue  # Next bar didn't confirm bullish — skip
+            if direction == "buy_put" and conf_close >= entry:
+                continue  # Next bar didn't confirm bearish — skip
+            # Confirmed — shift entry to confirmation bar's close, adjust levels
+            entry = conf_close
+            if direction == "buy_call":
+                risk = entry - stop
+                if risk <= 0:
+                    continue
+                target = entry + risk * target_mult
+            else:
+                risk = stop - entry
+                if risk <= 0:
+                    continue
+                target = entry - risk * target_mult
+            # Future bars now start AFTER the confirmation bar
+            future_bars = future_bars.iloc[1:]
+            ts = conf_bar.name  # Update entry timestamp
+
         outcome = "eod"
         if len(future_bars) > 0:
             exit_price = float(future_bars["Close"].iloc[-1])
@@ -489,17 +534,74 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             exit_price = price
             exit_ts = ts
 
-        for _, fb in future_bars.iterrows():
+        # ── Precompute entry theta context for decay-aware targets ──
+        if decay_aware_targets and simulate_options:
+            entry_minutes_since_open = (ts.hour * 60 + ts.minute) - (9 * 60 + 30)
+            total_market_minutes = 390  # 9:30–16:00
+            # Premium at entry (same formula as synth pricing)
+            _dat_premium = atr_val * premium_atr_pct
+            if _dat_premium < 0.10:
+                _dat_premium = 0.10
+            # Original target distance in underlying terms
+            original_target_dist = abs(target - entry)
+
+        for bar_j, (_, fb) in enumerate(future_bars.iterrows()):
             fh, fl, fc = float(fb["High"]), float(fb["Low"]), float(fb["Close"])
+
+            # ── Decay-aware dynamic target: shrink target as theta erodes ──
+            # The idea: as time passes, theta eats premium. The underlying must
+            # move MORE just to offset theta. We flip this: shrink the *take-profit*
+            # target so we grab profits before theta eats them.
+            #
+            # Formula: effective_target_mult = target_mult × decay_factor
+            #   decay_factor = max(floor, 0.5^(bars_elapsed / halflife))
+            #   This decays the target exponentially — fast at first, then floor.
+            #
+            # Additionally: "theta breakeven exit" — if current P&L is positive but
+            # the projected theta burn over the next 2 bars exceeds remaining upside
+            # to the (now-decayed) target, take profit immediately.
+            if decay_aware_targets and simulate_options:
+                bars_elapsed = bar_j + 1
+                decay_factor = max(decay_target_floor,
+                                   0.5 ** (bars_elapsed / decay_halflife_bars))
+                decayed_dist = original_target_dist * decay_factor
+                if direction == "buy_call":
+                    effective_target = entry + decayed_dist
+                else:
+                    effective_target = entry - decayed_dist
+
+                # Check decayed target hit (instead of original)
+                if direction == "buy_call":
+                    if fh >= effective_target:
+                        outcome = "decay_target"; exit_price = effective_target; exit_ts = fb.name; break
+                else:
+                    if fl <= effective_target:
+                        outcome = "decay_target"; exit_price = effective_target; exit_ts = fb.name; break
+
+                # Theta breakeven exit: if in profit but theta will eat it in next 2 bars
+                current_pnl_raw = (fc - entry) if direction == "buy_call" else (entry - fc)
+                if current_pnl_raw > 0 and bars_elapsed >= 2:
+                    bar_minutes = entry_minutes_since_open + bars_elapsed * 5
+                    remaining_frac_now = max(0, (total_market_minutes - bar_minutes) / total_market_minutes)
+                    remaining_frac_next = max(0, (total_market_minutes - bar_minutes - 10) / total_market_minutes)
+                    # Theta burn over next 2 bars (sqrt decay model)
+                    theta_now = _dat_premium * 0.70 * (1.0 - remaining_frac_now ** 0.5)
+                    theta_next = _dat_premium * 0.70 * (1.0 - remaining_frac_next ** 0.5)
+                    theta_burn_2bars = theta_next - theta_now
+                    # Convert current underlying P&L to option-equivalent via delta
+                    option_profit_approx = option_delta * current_pnl_raw
+                    if theta_burn_2bars >= option_profit_approx * 0.8:
+                        outcome = "theta_exit"; exit_price = fc; exit_ts = fb.name; break
+
             if direction == "buy_call":
                 if fl <= stop:
                     outcome = "stop"; exit_price = stop; exit_ts = fb.name; break
-                if fh >= target:
+                if not decay_aware_targets and fh >= target:
                     outcome = "target"; exit_price = target; exit_ts = fb.name; break
             else:
                 if fh >= stop:
                     outcome = "stop"; exit_price = stop; exit_ts = fb.name; break
-                if fl <= target:
+                if not decay_aware_targets and fl <= target:
                     outcome = "target"; exit_price = target; exit_ts = fb.name; break
 
             # GainzAlgoV2 reversal exit (opposing signal closes position at bar close)
@@ -518,7 +620,14 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 if direction == "buy_put" and gz == "buy":
                     outcome = "gainz_exit"; exit_price = fc; exit_ts = fb.name; break
 
-            # Time stop 15:30
+            # Stagnation exit: if after N bars trade hasn't moved 0.5R, cut it
+            bars_since_entry = len(day_bars[(day_bars.index > ts) & (day_bars.index <= fb.name)])
+            if bars_since_entry >= stagnation_bars:
+                current_pnl = (fc - entry) if direction == "buy_call" else (entry - fc)
+                if current_pnl < risk * stagnation_threshold:
+                    outcome = "stagnation"; exit_price = fc; exit_ts = fb.name; break
+
+            # Hard time stop 15:30
             if fb.name.strftime("%H:%M") >= "15:30":
                 outcome = "time_stop"; exit_price = fc; exit_ts = fb.name; break
 
@@ -595,6 +704,13 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         if outcome == "stop":
             stops_today += 1
 
+        # ── Update daily risk trackers ──
+        daily_pnl_cumulative += pnl
+        if pnl <= 0:
+            consecutive_losses += 1
+        else:
+            consecutive_losses = 0
+
         # Cascade-tiered contracts
         if cascade_sizing:
             if explosion >= 8:
@@ -647,26 +763,44 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
 def main():
     parser = argparse.ArgumentParser(description="Replay Sweet Spot Agent on historical data")
     # Defaults match GOLDEN parameters (see README) — produces validated 1-yr SPY
-    # results: 154 trades, 63.6% WR, PF 1.81, +$62.41, Sharpe 1.98.
+    # results (real Alpaca options): 338 trades, 55.6% WR, PF 1.53, +$79.62, Sharpe 2.06.
+    # Tighter stops (60% of range), decay floor 0.4, mid-tier target 1.5R.
+    # Stagnation: 10 bars (50 min), no confirmation bar.
+    # Streak breaker: 2 consecutive losses → stop for day.
+    # Cascade ≥ 2 (lowered from 4 — E2-E3 trades profitable with other filters).
+    # Decay-aware targets (golden: ON, floor=0.4, halflife=6 bars/30min).
+    # Real options pricing (golden: ON, Alpaca historical 0DTE bars).
     # Override individual flags to explore. Use --research-mode to revert to
-    # loose pre-golden defaults (chop 10, no caps, 10:35 scan, no Gainz).
+    # loose pre-golden defaults (chop 10, no caps, 10:35 scan, no Gainz, no decay).
     parser.add_argument("--symbol", "-s", default="SPY")
     parser.add_argument("--days", type=int, default=30, help="Number of recent trading days")
     parser.add_argument("--max-chop", type=int, default=5, help="Max choppiness (golden: 5)")
     parser.add_argument("--multi", action="store_true", help="Allow multiple triggers per day")
     parser.add_argument("--min-quality", type=int, default=3, help="Minimum quality score (golden: 3)")
     parser.add_argument("--max-quality", type=int, default=7, help="Maximum quality score (golden: 7)")
-    parser.add_argument("--min-cascade", type=int, default=4, help="Minimum cascade proxy")
+    parser.add_argument("--min-cascade", type=int, default=2, help="Minimum cascade proxy (golden: 2, was 4)")
     parser.add_argument("--breakout-pct", type=float, default=0.25, help="Breakout percentage of range")
     parser.add_argument("--cooldown-bars", type=int, default=3, help="Cooldown period in bars")
     parser.add_argument("--scan-end", type=str, default="13:59", help="End time for scanning (HH:MM, golden: 13:59)")
     parser.add_argument("--scan-start", type=str, default="10:30", help="Start time for scanning (HH:MM, golden: 10:30)")
     parser.add_argument("--target-mult-low", type=float, default=1.0, help="Target multiple for low explosion")
-    parser.add_argument("--target-mult-mid", type=float, default=1.25, help="Target multiple for mid explosion")
+    parser.add_argument("--target-mult-mid", type=float, default=1.5, help="Target multiple for mid explosion (was 1.25, tightened-stop change: 1.5)")
     parser.add_argument("--target-mult-high", type=float, default=1.5, help="Target multiple for high explosion")
     parser.add_argument("--no-regime-guard", action="store_true", help="Disable regime guardrails")
     parser.add_argument("--max-trades-per-day", type=int, default=3, help="Max trades per day (0=unlimited, golden: 3)")
     parser.add_argument("--max-stops-per-day", type=int, default=1, help="Stop trading after N stop-outs (0=unlimited, golden: 1)")
+    parser.add_argument("--max-consecutive-losses", type=int, default=2,
+                        help="Stop trading after N consecutive losses in a day (0=disabled, golden: 2)")
+    parser.add_argument("--daily-loss-limit", type=float, default=0.0,
+                        help="Stop trading if cumulative daily P&L drops below -$X (0=disabled, golden: 0 — streak breaker sufficient)")
+    parser.add_argument("--no-confirmation-bar", action="store_true", default=True,
+                        help="Disable confirmation bar requirement (default: disabled — confirmation bar hurt performance)")
+    parser.add_argument("--confirmation-bar", action="store_true", default=False,
+                        help="Enable confirmation bar (require next bar to close in trade direction before entry)")
+    parser.add_argument("--stagnation-bars", type=int, default=10,
+                        help="Bars before stagnation exit fires (golden: 10 = 50 min, was 12)")
+    parser.add_argument("--stagnation-threshold", type=float, default=0.5,
+                        help="Minimum P&L as fraction of R to avoid stagnation exit (golden: 0.5)")
     parser.add_argument("--no-gainz-exit", action="store_true",
                         help="Disable GainzAlgoV2 reversal early-exit (golden: enabled)")
     parser.add_argument("--gainz-body-ratio", type=float, default=0.7, help="Min candle body/range ratio for Gainz signal (golden: 0.7)")
@@ -694,10 +828,24 @@ def main():
                         help="Estimated option premium as fraction of ATR (default: 0.40)")
     parser.add_argument("--slippage", type=float, default=0.0,
                         help="Per-contract slippage in $ (e.g., 0.05 for $5/contract). Deducted from each trade P&L.")
-    parser.add_argument("--real-options", action="store_true",
-                        help="Price each trigger with REAL Alpaca historical 0DTE bars (requires API keys; "
+    parser.add_argument("--real-options", action="store_true", default=True,
+                        help="Price each trigger with REAL Alpaca historical 0DTE bars (default: ON; "
                              "falls back to synthesized greeks if a contract or bars are unavailable). "
                              "Note: Alpaca options data starts ~Feb 2024.")
+    parser.add_argument("--no-real-options", action="store_true",
+                        help="Disable real Alpaca options pricing; use synthesized delta-gamma model instead.")
+    parser.add_argument("--no-decay-aware-targets", action="store_true",
+                        help="Disable time-decay-aware targets (golden: enabled). "
+                             "When enabled, take-profit shrinks as theta erodes "
+                             "(exponential decay with floor) and adds theta-breakeven exit.")
+    parser.add_argument("--decay-target-floor", type=float, default=0.4,
+                        help="Minimum decay factor for target (0.4 = target never shrinks below 40%% of original, was 0.3)")
+    parser.add_argument("--decay-halflife-bars", type=int, default=6,
+                        help="Bars (5-min each) for target to decay to 50%% (golden: 6 = 30 min)")
+    parser.add_argument("--vix-max", type=float, default=30.0,
+                        help="Skip trading days where VIX > this level (0=disabled, default: 30)")
+    parser.add_argument("--vix-spike-pct", type=float, default=20.0,
+                        help="Skip days where VIX spiked >N%% day-over-day (0=disabled, default: 20)")
     args = parser.parse_args()
 
     if args.research_mode:
@@ -707,7 +855,8 @@ def main():
         args.max_trades_per_day = 0
         args.max_stops_per_day = 0
         args.no_gainz_exit = True
-        logger.info("research-mode: loose defaults applied (chop 10, max-Q 8, scan from 10:35, no caps, no Gainz)")
+        args.no_decay_aware_targets = True
+        logger.info("research-mode: loose defaults applied (chop 10, max-Q 8, scan from 10:35, no caps, no Gainz, no decay targets)")
 
     # Fetch data via Alpaca
     try:
@@ -776,6 +925,20 @@ def main():
                     day_vix = vix_map[prev_day]
                     break
 
+        # ── VIX sit-out filter: skip days with extreme volatility ──
+        if args.vix_max > 0 and day_vix > args.vix_max:
+            continue
+        if args.vix_spike_pct > 0 and idx > 0:
+            prev_vix = None
+            for prev_day in reversed(trading_days[:idx]):
+                if prev_day in vix_map:
+                    prev_vix = vix_map[prev_day]
+                    break
+            if prev_vix and prev_vix > 0:
+                spike_pct = (day_vix - prev_vix) / prev_vix * 100
+                if spike_pct > args.vix_spike_pct:
+                    continue
+
         triggers = replay_day(day_bars, day, max_chop=args.max_chop,
                               min_quality=args.min_quality, max_quality=args.max_quality,
                               min_cascade=args.min_cascade, breakout_pct=args.breakout_pct,
@@ -787,6 +950,11 @@ def main():
                               symbol=args.symbol,
                               max_trades_per_day=args.max_trades_per_day,
                               max_stops_per_day=args.max_stops_per_day,
+                              max_consecutive_losses=args.max_consecutive_losses,
+                              daily_loss_limit=args.daily_loss_limit,
+                              confirmation_bar=args.confirmation_bar,
+                              stagnation_bars=args.stagnation_bars,
+                              stagnation_threshold=args.stagnation_threshold,
                               gainz_exit=not args.no_gainz_exit,
                               gainz_body_ratio=args.gainz_body_ratio,
                               gainz_rsi_overbought=args.gainz_rsi_overbought,
@@ -803,7 +971,10 @@ def main():
                               vix=day_vix,
                               prior_bars=prior_bars,
                               dynamic_or=args.dynamic_or,
-                              real_options=args.real_options)
+                              real_options=args.real_options and not args.no_real_options,
+                              decay_aware_targets=not args.no_decay_aware_targets,
+                              decay_target_floor=args.decay_target_floor,
+                              decay_halflife_bars=args.decay_halflife_bars)
         all_triggers.extend(triggers)
 
     # ── Results ──
@@ -811,13 +982,17 @@ def main():
     print(f"  SWEET SPOT REPLAY: {args.symbol} — {len(trading_days)} days")
     if args.shares:
         mode_label = "SHARES"
-    elif args.real_options:
+    elif args.real_options and not args.no_real_options:
         mode_label = "0DTE OPTIONS (Alpaca historical bars; synth fallback)"
     else:
         mode_label = f"0DTE OPTIONS (synth Δ={args.option_delta}, γ={args.option_gamma})"
     print(f"  Mode: {mode_label}")
     print(f"  Filter: Quality {args.min_quality}-{args.max_quality}, Cascade ≥ {args.min_cascade}, Chop ≤ {args.max_chop}, Regime Guard: {'ON' if not args.no_regime_guard else 'OFF'}")
     print(f"  Analyzers: OpeningRange + RecentMomentum + MomentumCascade (exact replica)")
+    if not args.no_decay_aware_targets:
+        print(f"  Decay-Aware Targets: ON (floor={args.decay_target_floor}, halflife={args.decay_halflife_bars} bars / {args.decay_halflife_bars*5} min)")
+    else:
+        print(f"  Decay-Aware Targets: OFF")
     print(f"{'═' * 70}")
 
     if not all_triggers:
@@ -953,7 +1128,7 @@ def main():
         print(f"\n  Total Option P&L (per contract, ×100 multiplier): ${total_opt_pnl:+,.0f}")
         if not args.no_cascade_sizing:
             print(f"  Total Option P&L (cascade-sized, ×100 multiplier): ${total_opt_sized:+,.0f}")
-        if args.real_options:
+        if args.real_options and not args.no_real_options:
             n_real = sum(1 for t in all_triggers if t.get("pricing") == "real")
             n_synth = sum(1 for t in all_triggers if t.get("pricing") == "synth")
             print(f"  Pricing source:  real={n_real}  synth_fallback={n_synth}")

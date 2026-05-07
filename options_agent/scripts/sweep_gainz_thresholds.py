@@ -40,7 +40,7 @@ def run_combo(df: pd.DataFrame, trading_days: list, rsi_ob: float, rsi_os: float
             max_chop=5, min_quality=4, max_quality=7, min_cascade=4,
             breakout_pct=0.25, cooldown_bars=3,
             scan_end="13:59", scan_start="11:30",
-            target_mult_low=1.0, target_mult_mid=1.25, target_mult_high=1.5,
+            target_mult_low=1.0, target_mult_mid=1.5, target_mult_high=1.5,
             regime_guard=True, symbol="SPY",
             max_trades_per_day=3, max_stops_per_day=1,
             gainz_exit=gainz_on,

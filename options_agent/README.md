@@ -268,7 +268,7 @@ If the recent 30-min data is unavailable, the system falls back to the 60-min op
 | Level | Formula |
 |-------|---------|
 | **Entry trigger** | $E = H_{active} - 0.10 \times (H_{active} - L_{active})$ &ensp;(10% inside range high) |
-| **Stop loss** | $S = \text{mid}(H_{active}, L_{active}) - 0.02 \times ATR_{14}$ |
+| **Stop loss** | $S = \text{mid}(H_{active}, L_{active}) + 0.10 \times (H_{active} - L_{active}) - 0.02 \times ATR_{14}$ |
 | **Risk per unit** | $R = \|E - S\|$ &ensp;(floor: $0.3 \times ATR_{14}$) |
 | **Profit target 1** | $T_1 = E + 0.75\,R$ |
 | **Profit target 2** | $T_2 = E + 1.5\,R$ |
@@ -278,7 +278,7 @@ If the recent 30-min data is unavailable, the system falls back to the 60-min op
 | Level | Formula |
 |-------|---------|
 | **Entry trigger** | $E = L_{active} + 0.10 \times (H_{active} - L_{active})$ &ensp;(10% inside range low) |
-| **Stop loss** | $S = \text{mid}(H_{active}, L_{active}) + 0.02 \times ATR_{14}$ |
+| **Stop loss** | $S = \text{mid}(H_{active}, L_{active}) - 0.10 \times (H_{active} - L_{active}) + 0.02 \times ATR_{14}$ |
 | **Risk per unit** | $R = \|S - E\|$ &ensp;(floor: $0.3 \times ATR_{14}$) |
 | **Profit target 1** | $T_1 = E - 0.75\,R$ |
 | **Profit target 2** | $T_2 = E - 1.5\,R$ |
@@ -405,23 +405,83 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 |-----------|-------|-------|
 | **Mode** | **0DTE Options** | Trades 0DTE ATM options by default (`--shares` for legacy share trading) |
 | **Quality range** | **3–7** | Loosened from 4–7 — Q3 signals that pass cascade+chop filters are profitable |
-| **Cascade (explosion) ≥** | 4 | Minimum momentum cascade score |
+| **Cascade (explosion) ≥** | 2 | Lowered from 4 — E2-E3 trades profitable when quality+chop+regime filters pass. Validated: Sharpe 1.34→2.06, PF 1.30→1.53, DD 49.5%→23.5% |
 | **Max choppiness** | **5** | Strict chop filter — rejects noisy days |
 | **Max trades per day** | **3** | Caps exposure; 4+ trades/day historically loses money |
 | **Max stops per day** | **1** | Daily loss limit — halts after 1 stop-out to prevent catastrophic days |
+| **Max consecutive losses** | **2** | Streak breaker — stops trading after 2 consecutive losses in a day. Validated: Sharpe 1.23→1.34, PF 1.27→1.30 |
 | **Scan start** | **10:30 AM ET** | 60 min after open — matches replay validation window; OR closes at 10:30 |
 | **Scan end** | 2:00 PM ET | No late-day entries (theta drag on 0DTE) |
 | **Entry confirmation** | Price in upper/lower 25% of OR range | Prevents entering from mid-range |
-| **Cascade-scaled targets** | E≥8→1.5R, E≥6→1.25R, else 1.0R | Stronger momentum = wider target |
-| **Cascade contract sizing** | **ON** — 3ct flat across E4-5 / E6-7 / E8+ | Flat 3/3/3 — middle tier underperforms, so equal sizing avoids degrading PF |
+| **Cascade-scaled targets** | E≥8→1.5R, E≥6→1.5R, else 1.0R | Mid-tier target raised from 1.25R to 1.5R (validated: PF 1.16→1.23) |
+| **Cascade contract sizing** | **ON** — 3ct flat across E2-5 / E6-7 / E8+ | Flat 3/3/3 — equal sizing across all tiers |
 | **Cooldown** | 3 bars (15 min) | Between consecutive triggers |
-| **Stop** | Range midpoint | (range_high + range_low) / 2 |
+| **Stop** | 60% of range (mid + 10% width) | Tighter than bare midpoint — validated: Sharpe 0.76→1.07, DD 89.7%→63.7% |
 | **Regime guard** | ON | Blocks counter-trend trades (SMA20 vs SMA50) |
 | **GainzAlgoV2 early exit** | **ON** (RSI 70/30, body 0.7) | Stricter thresholds — only exits on strong opposing reversal candles to avoid premature closes |
+| **Decay-aware targets** | **ON** (floor=0.4, halflife=6 bars/30min) | Target shrinks exponentially as theta erodes; theta-breakeven exit when projected burn exceeds remaining profit. Floor raised from 0.3→0.4 (validated). |
 | **Option delta** | **0.50** (ATM) | Target delta for 0DTE contract selection |
+| **Real options pricing** | **ON** | Uses Alpaca historical 0DTE bars; synth fallback when unavailable (`--no-real-options` for synth-only) |
 | **Base contracts** | **1** | Per trade (scaled by cascade tier) |
 
-**2-Year Replay Results (SPY, 515 days, Apr 2024–May 2026, 0DTE Options):**
+### Stagnation Exit (theta-bleed protection)
+
+Trades that don't move in the expected direction within a set window are cut early to prevent theta from eroding 0DTE premium on stagnant positions.
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| **Stagnation bars** | **10** (50 min) | If trade hasn't moved ≥ threshold after 10 bars, exit at market. Reduced from 12 bars — validated: Sharpe 1.07→1.23, R:R 0.90→1.05 |
+| **Minimum move to hold** | **0.5R** | Trade must be at least 0.5× risk in profit; otherwise cut |
+
+The stagnation exit fires **once** — on the first bar where `bars_since_entry >= 10` and `current_pnl < risk * 0.5`. Combined with the **streak breaker** (2 consecutive losses → stop for day), this keeps losing days contained.
+
+**Sweep results (2-year, 730 days):**
+- Best Sharpe: 12 bars / 0.5R → Sharpe 3.19, PF 2.14, WR 50.7%
+- Best Total P&L: 12 bars / 0.2R → +$153.15, PF 2.10, Sharpe 2.94
+
+### Decay-Aware Targets (theta-adaptive take-profit)
+
+For 0DTE options, theta decay is non-linear — after 30–60 minutes in a trade, the underlying must move significantly MORE just to offset premium erosion. The decay-aware target system addresses this by dynamically shrinking the take-profit level as time passes.
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| **Decay model** | Exponential | `decay_factor = max(floor, 0.5^(bars / halflife))` |
+| **Halflife** | **6 bars** (30 min) | Target decays to 50% of original after 30 min |
+| **Floor** | **0.4** (40%) | Target never shrinks below 40% of original distance (raised from 0.3, validated) |
+| **Theta-breakeven exit** | ON | If projected theta burn over next 2 bars ≥ 80% of current option profit, exit immediately |
+
+**How it works:**
+1. At entry, the target is set normally (1.0R / 1.5R / 1.5R based on explosion score)
+2. Each subsequent bar, the effective target decays: `effective_target = entry ± original_distance × decay_factor`
+3. After 30 min (6 bars), the target is at 50% of original; after 60 min, it hits the 40% floor
+4. Additionally, if the trade is profitable but theta will consume ≥80% of that profit in the next 10 minutes, the position exits immediately ("theta_exit")
+
+**Impact (1-year SPY, synthesized options pricing):**
+
+| Metric | Without Decay | With Decay | Δ |
+|--------|---------------|---------------------|---|
+| Win Rate | 55.1% | **59.7%** | +4.6pp |
+| Profit Factor | 2.45 | **2.66** | +8.6% |
+| Total P&L | +$89.02 | **+$93.44** | +5.0% |
+| Sharpe | 3.85 | **4.39** | +14% |
+| Sortino | 10.76 | **12.67** | +18% |
+| Max Drawdown | $5.57 | **$4.17** | −25% |
+| Stagnation exits | 71% | **39%** | −32pp |
+
+> **Note:** Synth results overestimate real performance. See 1-Year Real Options Results below for ground-truth numbers.
+
+### VIX Sit-Out Filter
+
+On days with extreme volatility, the agent sits out entirely to avoid whipsaw losses:
+
+| Condition | Action |
+|-----------|--------|
+| **VIX > 30** | Skip all trades for the day |
+| **VIX spike > 20% day-over-day** | Skip all trades for the day |
+
+This filter uses daily closing VIX data. During the Aug 2024–Mar 2025 drawdown period (VIX routinely 25–40+), the filter would have avoided the worst losing streaks.
+
+**2-Year Replay Results (SPY, 515 days, Apr 2024–May 2026, 0DTE Options, Synth Pricing):**
 
 | Metric | Value |
 |--------|-------|
@@ -441,8 +501,41 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 | Calmar Ratio | **64.41** |
 | Longest Underwater | 26 days |
 
-> **Note:** Option P&L uses a delta-gamma approximation with 0DTE theta decay modeling.
+> **Note:** 2-year results use synthesized delta-gamma pricing (pre-real-options default).
 > Cascade sizing applies 3/3/3 contracts (flat across E4-5/E6-7/E8+ tiers).
+> Real options pricing is now the golden default — see 1-Year results below for ground-truth performance.
+
+**1-Year Replay Results (SPY, 252 days, May 2025–May 2026, Golden Defaults, Real Alpaca 0DTE Options):**
+
+| Metric | Value |
+|--------|-------|
+| Trading Days | 252 |
+| Triggers | 338 (1.3/day) |
+| Pricing Source | **336 real / 2 synth fallback** (99.4% real) |
+| Win Rate | **55.6%** (188/338) |
+| Profit Factor | **1.53** |
+| Total P&L (cascade-sized) | **+$79.62** |
+| Total Option P&L (cascade-sized, ×100) | **+$7,962** |
+| Avg P&L/Trade | +$0.2356 |
+| Avg Winner | +$1.2286 |
+| Avg Loser | −$1.0090 |
+| R:R Ratio | 1.22 |
+| Sharpe Ratio (annualized) | **2.06** |
+| Sortino Ratio | **4.46** |
+| Max Drawdown | $18.99 (23.5% of peak) |
+| Calmar Ratio | 4.19 |
+| Longest Underwater | 90 days |
+
+| Exit Type | Count | % |
+|-----------|-------|---|
+| **Decay Target** | 148 | 44% |
+| Stagnation | 145 | 43% |
+| Stop | 27 | 8% |
+| Gainz Exit | 12 | 4% |
+| Theta Exit | 4 | 1% |
+| EOD | 2 | 1% |
+
+> **Synth vs Real options gap:** The synthesized delta-gamma model significantly overestimates edge (synth: PF 2.66, Sharpe 4.39 vs real: PF 1.53, Sharpe 2.06). Key differences: (1) real 0DTE theta decay is faster and more uneven than the sqrt model, (2) real bid-ask spreads ($0.03–0.10) erode small-move trades, (3) gamma is not constant — it spikes near expiry. The strategy remains profitable with real pricing but with materially lower returns. All results below use real Alpaca options data unless noted otherwise.
 
 ### Replay Sweet Spot (historical simulation)
 
@@ -451,8 +544,14 @@ Replays the agent logic bar-by-bar on recent 5-min data — the most realistic t
 ```bash
 cd options_agent
 
-# Golden parameters (recommended) — 0DTE options with cascade sizing (all defaults)
+# Golden parameters (recommended) — real Alpaca 0DTE options + cascade sizing + decay-aware targets
 python scripts/replay_sweet_spot.py --days 365
+
+# Use synthesized options pricing instead of real Alpaca data
+python scripts/replay_sweet_spot.py --days 365 --no-real-options
+
+# Disable decay-aware targets (revert to fixed targets)
+python scripts/replay_sweet_spot.py --days 365 --no-decay-aware-targets
 
 # Disable cascade sizing (flat 1 contract per trade)
 python scripts/replay_sweet_spot.py --days 365 --no-cascade-sizing

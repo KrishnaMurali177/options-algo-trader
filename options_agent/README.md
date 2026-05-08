@@ -417,8 +417,9 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 | **Cascade contract sizing** | **ON** — 3ct flat across E2-5 / E6-7 / E8+ | Flat 3/3/3 — equal sizing across all tiers |
 | **Cooldown** | 3 bars (15 min) | Between consecutive triggers |
 | **Stop** | 60% of range (mid + 10% width) | Tighter than bare midpoint — validated: Sharpe 0.76→1.07, DD 89.7%→63.7% |
-| **Regime guard** | ON | Blocks counter-trend trades (SMA20 vs SMA50) |
-| **GainzAlgoV2 early exit** | **ON** (RSI 70/30, body 0.7) | Stricter thresholds — only exits on strong opposing reversal candles to avoid premature closes |
+| **Regime guard** | **OFF** | Disabled — counter-trend trades are profitable when chop+quality+cascade filters pass. Validated 2yr: Sharpe 1.38→1.74, PF 1.30→1.37, P&L +$95→+$122. Use `--regime-guard` to re-enable. |
+| **Active range blend** | **ON** (blend=0.25, 6 bars/30min) | Stop/target uses 75% OR + 25% recent 30-min range. Prevents stale entries on late-day triggers. Validated SPY+QQQ: WR +3pp, DD −14%, UW 83→52 days. |
+| **GainzAlgoV2 early exit** | **ON** (RSI 70/30, body 0.7, min-profit 0.3R) | Stricter thresholds — only exits on strong opposing reversal candles; requires ≥ 0.3R profit to prevent premature closes on losing/scratch trades |
 | **Decay-aware targets** | **ON** (floor=0.4, halflife=6 bars/30min) | Target shrinks exponentially as theta erodes; theta-breakeven exit when projected burn exceeds remaining profit. Floor raised from 0.3→0.4 (validated). |
 | **Option delta** | **0.50** (ATM) | Target delta for 0DTE contract selection |
 | **Real options pricing** | **ON** | Uses Alpaca historical 0DTE bars; synth fallback when unavailable (`--no-real-options` for synth-only) |
@@ -432,8 +433,22 @@ Trades that don't move in the expected direction within a set window are cut ear
 |-----------|-------|-------|
 | **Stagnation bars** | **10** (50 min) | If trade hasn't moved ≥ threshold after 10 bars, exit at market. Reduced from 12 bars — validated: Sharpe 1.07→1.23, R:R 0.90→1.05 |
 | **Minimum move to hold** | **0.5R** | Trade must be at least 0.5× risk in profit; otherwise cut |
+| **MFE skip** | **0.5R** | If trade's Maximum Favorable Excursion (best P&L reached) exceeded 0.5R, skip stagnation exit — let decay_target or stop resolve it. Trades that showed real momentum but temporarily pulled back deserve more time to reach target. |
 
-The stagnation exit fires **once** — on the first bar where `bars_since_entry >= 10` and `current_pnl < risk * 0.5`. Combined with the **streak breaker** (2 consecutive losses → stop for day), this keeps losing days contained.
+The stagnation exit fires **once** — on the first bar where `bars_since_entry >= 10` and `current_pnl < risk * 0.5` **and** `MFE < 0.5R`. If MFE ≥ 0.5R, the trade had real traction and is exempt from stagnation — it will exit via decay_target (if momentum resumes) or stop (if it truly failed). Combined with the **streak breaker** (2 consecutive losses → stop for day), this keeps losing days contained.
+
+**MFE skip validation (2-year, 730 days, real Alpaca 0DTE options):**
+
+| Metric | Without MFE Skip | With MFE Skip | Δ |
+|--------|------------------|---------------|---|
+| SPY per-contract P&L | +$3,671 | **+$3,780** | **+3.0%** |
+| SPY cascade-sized P&L | +$11,014 | **+$11,341** | **+3.0%** |
+| QQQ per-contract P&L | +$2,462 | **+$2,547** | **+3.5%** |
+| QQQ cascade-sized P&L | +$7,385 | **+$7,640** | **+3.5%** |
+| Trade count (SPY) | 695 | 695 | Same |
+| P&L/trade (SPY) | $5.28 | **$5.44** | **+3.0%** |
+
+> Consistent +3% improvement across both symbols with identical trade counts. The MFE skip converts ~10 former stagnation-losses into decay_target-wins by letting trades that showed real momentum continue through temporary pullbacks.
 
 **Sweep results (2-year, 730 days):**
 - Best Sharpe: 12 bars / 0.5R → Sharpe 3.19, PF 2.14, WR 50.7%
@@ -597,9 +612,9 @@ python scripts/run_sweet_spot_agent.py --daemon --max-chop 5 --max-trades-per-da
 # Disable Gainz early exit (revert to baseline behavior)
 python scripts/run_sweet_spot_agent.py --no-gainz-exit
 
-# Tune Gainz thresholds (golden defaults: 70/30/0.7 — stricter than originals)
+# Tune Gainz thresholds (golden defaults: 70/30/0.7/0.3R — stricter than originals)
 python scripts/run_sweet_spot_agent.py --gainz-rsi-overbought 65 --gainz-rsi-oversold 35 \
-  --gainz-body-ratio 0.6
+  --gainz-body-ratio 0.6 --gainz-min-profit-r 0.5
 
 # Journal-only mode (no paper orders, just logs triggers)
 python scripts/run_sweet_spot_agent.py --no-paper
@@ -608,9 +623,11 @@ python scripts/run_sweet_spot_agent.py --no-paper
 **GainzAlgoV2 early-exit behavior:** When enabled (default), the agent monitors
 each open paper position every 5 minutes. If the most recently completed bar
 prints an opposing reversal candle (RSI extreme + strong-bodied candle in the
-opposite direction), the agent calls `close_position(symbol)` to exit
-immediately, cancelling the bracket. Monitoring continues past the 14:00
-entry cutoff until all positions close.
+opposite direction) **and** the position's unrealized P&L is ≥ 0.3R (min-profit
+gate), the agent calls `close_position(symbol)` to exit immediately, cancelling
+the bracket. This prevents Gainz from closing trades that haven't yet reached
+a meaningful profit. Monitoring continues past the 14:00 entry cutoff until all
+positions close.
 
 **Requirements:**
 - `ALPACA_API_KEY` and `ALPACA_SECRET_KEY` in `.env` (free paper account)

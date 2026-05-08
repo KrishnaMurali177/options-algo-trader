@@ -238,16 +238,26 @@ def get_0dte_chain(
     trading_client = TradingClient(api_key=api_key, secret_key=secret_key, paper=True)
     today = date.today()
 
-    # Fetch 0DTE contracts expiring today
+    # Fetch 0DTE contracts expiring today. Alpaca paginates at 100 contracts/page;
+    # SPY has ~200+ strikes so without paging we'd only see the lowest strikes (deep ITM).
     try:
-        req = GetOptionContractsRequest(
-            underlying_symbols=[symbol],
-            expiration_date=today,
-            type=option_type,
-            status="active",
-        )
-        contracts_resp = trading_client.get_option_contracts(req)
-        contracts = contracts_resp.option_contracts if contracts_resp else []
+        contracts = []
+        page_token = None
+        while True:
+            req = GetOptionContractsRequest(
+                underlying_symbols=[symbol],
+                expiration_date=today,
+                type=option_type,
+                status="active",
+                page_token=page_token,
+            )
+            contracts_resp = trading_client.get_option_contracts(req)
+            if not contracts_resp:
+                break
+            contracts.extend(contracts_resp.option_contracts or [])
+            page_token = getattr(contracts_resp, "next_page_token", None)
+            if not page_token:
+                break
     except Exception as e:
         logger.error("Failed to fetch 0DTE chain for %s: %s", symbol, e)
         return None
@@ -256,17 +266,22 @@ def get_0dte_chain(
         logger.warning("No 0DTE %s contracts found for %s expiring %s", option_type, symbol, today)
         return None
 
-    # Get snapshots for greeks (via options data client)
+    # Get snapshots for greeks (via options data client). Alpaca caps per-request
+    # symbol count at 100; batch in chunks so we cover the full chain.
+    snapshots = {}
     try:
         option_client = OptionHistoricalDataClient(api_key=api_key, secret_key=secret_key)
         occ_symbols = [c.symbol for c in contracts]
-        # Alpaca snapshots endpoint — get latest quotes and greeks
         from alpaca.data.requests import OptionSnapshotRequest
-        snap_req = OptionSnapshotRequest(symbol_or_symbols=occ_symbols)
-        snapshots = option_client.get_option_snapshot(snap_req)
+        for i in range(0, len(occ_symbols), 100):
+            batch = occ_symbols[i:i + 100]
+            batch_snaps = option_client.get_option_snapshot(
+                OptionSnapshotRequest(symbol_or_symbols=batch)
+            )
+            if batch_snaps:
+                snapshots.update(batch_snaps)
     except Exception as e:
         logger.warning("Failed to fetch option snapshots: %s — using strike proximity only", e)
-        snapshots = {}
 
     # ── Resolve spot price for strike sanity check ──
     _spot = spot_price
@@ -342,47 +357,67 @@ def get_0dte_chain(
         )
         return best
 
-    # ── Fallback: greeks unavailable on paper feed → rank by strike proximity to spot
-    # (ATM ≈ delta 0.5 by construction; only used when no contract had a usable delta)
+    # ── Fallback: greeks unavailable on paper feed → pick by strike proximity to spot.
+    # Paper feed often returns zero quotes for ATM 0DTE strikes while still quoting deep-ITM
+    # (intrinsic value as a floor), so the previous mid>0.01 filter pushed us into deep-ITM.
+    # Now: pick the closest-strike contract from the full chain, bound to MAX_STRIKE_PCT_FROM_SPOT,
+    # and synthesize a mid from intrinsic + minimal time-value when quotes are missing.
     if not _spot or _spot <= 0:
         logger.warning("No 0DTE %s contract near delta %.2f for %s (no spot for fallback)",
                        option_type, target_delta, symbol)
         return None
 
     best_strike_diff = float("inf")
+    best_contract = None
+    best_snap = None
     for contract in contracts:
-        occ = contract.symbol
-        snap = snapshots.get(occ)
-        bid = float(snap.latest_quote.bid_price) if snap and snap.latest_quote else 0.0
-        ask = float(snap.latest_quote.ask_price) if snap and snap.latest_quote else 0.0
-        mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else 0.0
-        if mid <= 0.01:
-            continue
         strike = float(contract.strike_price)
+        if abs(strike - _spot) / _spot > MAX_STRIKE_PCT_FROM_SPOT:
+            continue
         strike_diff = abs(strike - _spot)
         if strike_diff < best_strike_diff:
             best_strike_diff = strike_diff
-            best = {
-                "occ_symbol": occ,
-                "underlying": symbol,
-                "strike": strike,
-                "expiration": str(contract.expiration_date),
-                "option_type": option_type,
-                "delta": 0.50,  # ATM proxy
-                "gamma": 0.0,
-                "theta": 0.0,
-                "iv": 0.0,
-                "bid": bid,
-                "ask": ask,
-                "mid": mid,
-            }
+            best_contract = contract
+            best_snap = snapshots.get(contract.symbol)
 
-    if best:
-        logger.info(
-            "Selected 0DTE %s by strike proximity (greeks unavailable): %s strike=$%.2f spot=$%.2f mid=$%.2f",
-            option_type, best["occ_symbol"], best["strike"], _spot, best["mid"],
+    if best_contract is None:
+        logger.warning("No 0DTE %s contract within %.0f%% of spot $%.2f for %s",
+                       option_type, MAX_STRIKE_PCT_FROM_SPOT * 100, _spot, symbol)
+        return None
+
+    strike = float(best_contract.strike_price)
+    bid = float(best_snap.latest_quote.bid_price) if best_snap and best_snap.latest_quote else 0.0
+    ask = float(best_snap.latest_quote.ask_price) if best_snap and best_snap.latest_quote else 0.0
+    mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else 0.0
+
+    # If paper feed returns no quote on the closest-strike ATM contract, refuse the trade
+    # rather than fabricate a premium. Downstream risk/theta math is keyed on entry_premium,
+    # so a synthesized mid would corrupt stops and theta-exit thresholds on live fills.
+    if mid <= 0.01:
+        logger.warning(
+            "0DTE %s closest-strike contract %s (strike=$%.2f, spot=$%.2f) has no quote — "
+            "skipping trade rather than trading on synthesized premium",
+            option_type, best_contract.symbol, strike, _spot,
         )
-    else:
-        logger.warning("No 0DTE %s contract for %s (all illiquid)", option_type, symbol)
+        return None
 
+    best = {
+        "occ_symbol": best_contract.symbol,
+        "underlying": symbol,
+        "strike": strike,
+        "expiration": str(best_contract.expiration_date),
+        "option_type": option_type,
+        "delta": 0.50,  # ATM proxy
+        "gamma": 0.0,
+        "theta": 0.0,
+        "iv": 0.0,
+        "bid": bid,
+        "ask": ask,
+        "mid": mid,
+    }
+
+    logger.info(
+        "Selected 0DTE %s by strike proximity (greeks unavailable): %s strike=$%.2f spot=$%.2f mid=$%.2f",
+        option_type, best["occ_symbol"], best["strike"], _spot, best["mid"],
+    )
     return best

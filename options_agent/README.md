@@ -419,6 +419,7 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 | **Stop** | 60% of range (mid + 10% width) | Tighter than bare midpoint — validated: Sharpe 0.76→1.07, DD 89.7%→63.7% |
 | **Regime guard** | **OFF** | Disabled — counter-trend trades are profitable when chop+quality+cascade filters pass. Validated 2yr: Sharpe 1.38→1.74, PF 1.30→1.37, P&L +$95→+$122. Use `--regime-guard` to re-enable. |
 | **Active range blend** | **ON** (blend=0.25, 6 bars/30min) | Stop/target uses 75% OR + 25% recent 30-min range. Prevents stale entries on late-day triggers. Validated SPY+QQQ: WR +3pp, DD −14%, UW 83→52 days. |
+| **PB EMA inside-band gate** | **ON** (fast=13, slow=55) | Rejects entries when price is *between* the two EMAs (PB EMA's "no zone" / chop state). Symmetric — does not block direction. Validated 730d SPY: PF 1.41→1.48, Sharpe 1.89→2.26, MDD $30.81→$27.03 (−12%), avg/trade +6.6%. Disable with `--no-pb-ema`. |
 | **GainzAlgoV2 early exit** | **ON** (RSI 70/30, body 0.7, min-profit 0.3R) | Stricter thresholds — only exits on strong opposing reversal candles; requires ≥ 0.3R profit to prevent premature closes on losing/scratch trades |
 | **Decay-aware targets** | **ON** (floor=0.4, halflife=6 bars/30min) | Target shrinks exponentially as theta erodes; theta-breakeven exit when projected burn exceeds remaining profit. Floor raised from 0.3→0.4 (validated). |
 | **Option delta** | **0.50** (ATM) | Target delta for 0DTE contract selection |

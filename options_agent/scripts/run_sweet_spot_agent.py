@@ -440,7 +440,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                         if "entry_time" in opt_info:
                             minutes_in_trade = (now - opt_info["entry_time"]).total_seconds() / 60
                             bars_elapsed = max(1, int(minutes_in_trade / 5))
-                            decay_halflife = 6  # bars (30 min)
+                            decay_halflife = 8  # bars (40 min, was 6/30min)
                             decay_floor = 0.4
                             decay_factor = max(decay_floor, 0.5 ** (bars_elapsed / decay_halflife))
                             original_dist = opt_info.get("original_target_dist", 0)
@@ -493,14 +493,14 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                     should_close = True
                                     close_reason = "theta_exit"
 
-                        # Stagnation exit: if 50 min (10 bars) have passed and trade
-                        # hasn't moved 0.5R in its favor, cut it to avoid theta bleed.
+                        # Stagnation exit: if 60 min (12 bars) have passed and trade
+                        # hasn't moved 0.3R in its favor, cut it to avoid theta bleed.
                         # MFE skip (golden): if trade already reached 0.5R, don't stagnation-exit —
                         # let decay_target or stop resolve it. Trades that showed real momentum
                         # but temporarily pulled back deserve more time to reach target.
                         if not should_close and "entry_time" in opt_info:
                             minutes_in_trade = (now - opt_info["entry_time"]).total_seconds() / 60
-                            if minutes_in_trade >= 50:
+                            if minutes_in_trade >= 60:
                                 risk = abs(opt_info.get("entry_underlying", underlying_price) - opt_info["stop_price"])
                                 if risk > 0:
                                     current_pnl = (underlying_price - opt_info.get("entry_underlying", underlying_price)) \
@@ -508,7 +508,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                         else (opt_info.get("entry_underlying", underlying_price) - underlying_price)
                                     mfe = opt_info.get("max_favorable_excursion", 0.0)
                                     mfe_ratio = mfe / risk if risk > 0 else 0
-                                    if current_pnl < risk * 0.5 and mfe_ratio < 0.5:
+                                    if current_pnl < risk * 0.3 and mfe_ratio < 0.5:
                                         should_close = True
                                         close_reason = "stagnation"
 

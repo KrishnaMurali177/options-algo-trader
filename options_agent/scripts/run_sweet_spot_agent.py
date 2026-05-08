@@ -40,17 +40,162 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from dotenv import load_dotenv
 load_dotenv()
 
+import numpy as np
 import pandas as pd
 import yfinance as yf
 
 from src.utils.alpaca_data import fetch_bars as alpaca_fetch_bars
-from src.market_analyzer import MarketAnalyzer
 from src.opening_range import OpeningRangeAnalyzer
 from src.recent_momentum import RecentMomentumAnalyzer
 from src.momentum_cascade import MomentumCascadeDetector
+from src.models.market_data import MarketIndicators
 from src.utils.quality_scorer import compute_quality_score
 from src.utils.choppiness import compute_choppiness
 from src.utils.gainz import gainz_signal
+
+
+def _build_indicators_replay_parity(
+    extended_bars: pd.DataFrame,
+    day_bars: pd.DataFrame,
+    symbol: str,
+    vix: float,
+) -> MarketIndicators:
+    """Build MarketIndicators using the exact construction the replay's scan loop uses.
+
+    SMA-50 / SMA-200 come from `extended_bars` (multi-day) so they have warmup;
+    RSI / MACD / ATR / BB / ZLEMA / volume come from `day_bars` (today only).
+    Mirrors lines 344-405 of replay_sweet_spot.py.
+    """
+    n = len(day_bars)
+    if n == 0:
+        raise ValueError("day_bars is empty — cannot build indicators")
+
+    day_close = day_bars["Close"].astype(float)
+    day_high = day_bars["High"].astype(float)
+    day_low = day_bars["Low"].astype(float)
+    day_vol = day_bars["Volume"].astype(float)
+    ext_close = extended_bars["Close"].astype(float)
+    ext_n = len(ext_close)
+    price = float(day_close.iloc[-1])
+
+    # RSI (intraday, today only)
+    if n >= 15:
+        delta = day_close.diff()
+        gain = delta.where(delta > 0, 0.0).rolling(14).mean()
+        loss = (-delta.where(delta < 0, 0.0)).rolling(14).mean()
+        rs = gain / loss.replace(0, np.nan)
+        rsi_series = 100 - (100 / (1 + rs))
+        rsi_val = float(rsi_series.iloc[-1])
+        if np.isnan(rsi_val):
+            rsi_val = 50.0
+    else:
+        rsi_val = 50.0
+
+    # SMAs: 20 from today, 50/200 from extended
+    sma_20 = float(day_close.iloc[-20:].mean()) if n >= 20 else price
+    sma_50 = float(ext_close.iloc[-50:].mean()) if ext_n >= 50 else float(ext_close.mean())
+    sma_200 = float(ext_close.iloc[-200:].mean()) if ext_n >= 200 else float(ext_close.mean())
+
+    # Bollinger Bands (today only, 20-period)
+    if n >= 20:
+        bb_mid = float(day_close.rolling(20).mean().iloc[-1])
+        bb_std_val = float(day_close.rolling(20).std().iloc[-1])
+        if np.isnan(bb_mid):
+            bb_mid = price
+            bb_std_val = 0.0
+    else:
+        bb_mid = price
+        bb_std_val = 0.0
+    bb_upper = bb_mid + 2 * bb_std_val
+    bb_lower = bb_mid - 2 * bb_std_val
+
+    # MACD (today only, 12/26/9)
+    if n >= 26:
+        ema12 = day_close.ewm(span=12, adjust=False).mean()
+        ema26 = day_close.ewm(span=26, adjust=False).mean()
+        macd_line = ema12 - ema26
+        signal_line = macd_line.ewm(span=9, adjust=False).mean()
+        hist = macd_line - signal_line
+        macd_val = float(macd_line.iloc[-1])
+        macd_sig = float(signal_line.iloc[-1])
+        macd_hist = float(hist.iloc[-1])
+    else:
+        macd_val = macd_sig = macd_hist = 0.0
+
+    # ATR (today only, 14-period)
+    if n >= 15:
+        tr = pd.concat(
+            [day_high - day_low,
+             (day_high - day_close.shift()).abs(),
+             (day_low - day_close.shift()).abs()],
+            axis=1,
+        ).max(axis=1)
+        atr_val = float(tr.rolling(14).mean().iloc[-1])
+        if np.isnan(atr_val):
+            atr_val = 1.0
+    else:
+        atr_val = 1.0
+
+    # Volume
+    current_volume = int(day_vol.iloc[-1])
+    vol_sma_val = float(day_vol.rolling(min(20, n)).mean().iloc[-1])
+    if np.isnan(vol_sma_val):
+        vol_sma_val = float(current_volume)
+
+    # ZLEMA 8/21
+    if n >= 21:
+        lag_fast = (8 - 1) // 2
+        lag_slow = (21 - 1) // 2
+        comp_fast = 2 * day_close - day_close.shift(lag_fast)
+        comp_slow = 2 * day_close - day_close.shift(lag_slow)
+        zf = float(comp_fast.ewm(span=8, adjust=False).mean().iloc[-1])
+        zs = float(comp_slow.ewm(span=21, adjust=False).mean().iloc[-1])
+        if zf > zs * 1.0002:
+            zlema_trend = "bullish"
+        elif zf < zs * 0.9998:
+            zlema_trend = "bearish"
+        else:
+            zlema_trend = "neutral"
+    else:
+        zf = zs = price
+        zlema_trend = "neutral"
+
+    return MarketIndicators(
+        symbol=symbol,
+        timestamp=datetime.now(ZoneInfo("UTC")),
+        current_price=price,
+        timeframe="15min",
+        vix=vix,
+        rsi_14=rsi_val,
+        rsi_5min=rsi_val,
+        sma_20=sma_20,
+        sma_50=sma_50,
+        sma_200=sma_200,
+        bb_upper=bb_upper,
+        bb_middle=bb_mid,
+        bb_lower=bb_lower,
+        macd=macd_val,
+        macd_signal=macd_sig,
+        macd_histogram=macd_hist,
+        atr_14=atr_val,
+        volume=current_volume,
+        volume_sma_20=vol_sma_val,
+        zlema_fast=zf,
+        zlema_slow=zs,
+        zlema_trend=zlema_trend,
+    )
+
+
+def _fetch_current_vix() -> float:
+    """Fetch latest VIX close. Returns 20.0 (neutral) on failure."""
+    try:
+        vix_df = yf.download("^VIX", period="5d", interval="1d", progress=False)
+        if isinstance(vix_df.columns, pd.MultiIndex):
+            vix_df.columns = vix_df.columns.get_level_values(0)
+        return float(vix_df["Close"].iloc[-1])
+    except Exception as e:
+        logger.warning("VIX fetch failed (%s) — defaulting to 20.0", e)
+        return 20.0
 
 
 def _check_gainz_exit(underlying_symbol: str, direction: str, body_ratio: float,
@@ -125,18 +270,37 @@ def is_past_or(min_after_open: int = 60) -> bool:
 
 def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
                      pb_ema: bool = True, pb_ema_fast: int = 13, pb_ema_slow: int = 55) -> dict | None:
-    """Evaluate sweet spot conditions. Returns trigger dict or None."""
-    try:
-        analyzer = MarketAnalyzer()
-        indicators = analyzer.analyze(symbol, timeframe="15min")
+    """Evaluate sweet spot conditions. Returns trigger dict or None.
 
-        or_analyzer = OpeningRangeAnalyzer()
-        or_result = or_analyzer.analyze(indicators)
-        or_direction = or_result.breakout_direction if or_result else "neutral"
+    Replay parity: indicators, OR/recent/cascade analyzers, and choppiness all
+    derive from a single multi-day Alpaca 5-min bar pull, exactly the way
+    replay_sweet_spot.py constructs them. No yfinance intraday fetches.
+    """
+    try:
+        # ── Single source of truth: 5d of Alpaca 5-min bars ──
+        # 5 calendar days gives ~3-4 prior trading days for SMA-50/200 warmup.
+        extended_bars = alpaca_fetch_bars(symbol, days_back=5, interval="5min")
+        if len(extended_bars) == 0:
+            logger.warning("No bars returned from Alpaca for %s", symbol)
+            return None
+        today_et = get_et_now().date()
+        day_bars = extended_bars[extended_bars.index.date == today_et]
+        if len(day_bars) == 0:
+            return None
+
+        vix_val = _fetch_current_vix()
+        indicators = _build_indicators_replay_parity(extended_bars, day_bars, symbol, vix_val)
+
+        # ── Analyzers (all routed through bars_5m= path — same code as replay) ──
+        or_result = OpeningRangeAnalyzer().analyze(indicators, bars_5m=day_bars)
+        if or_result:
+            _bd = or_result.breakout_direction
+            or_direction = _bd.value if hasattr(_bd, "value") else _bd
+        else:
+            or_direction = "neutral"
         or_momentum = or_result.momentum_score if or_result else 0
 
-        rc_analyzer = RecentMomentumAnalyzer()
-        rc_result = rc_analyzer.analyze(indicators)
+        rc_result = RecentMomentumAnalyzer().analyze(indicators, bars_5m=day_bars)
         recent_dir = rc_result.direction if rc_result else "neutral"
         recent_momentum = rc_result.momentum_score if rc_result else 0
 
@@ -144,7 +308,7 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
         if direction is None:
             return None
 
-        # Regime guard: block counter-trend trades unless RSI extreme (mirror of replay logic)
+        # Regime guard (off by golden default, mirror of replay logic)
         if regime_guard:
             bullish_regime = indicators.sma_20 > indicators.sma_50
             bearish_regime = indicators.sma_20 < indicators.sma_50
@@ -152,6 +316,17 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
                 return None
             if direction == "buy_call" and bearish_regime and indicators.rsi_14 >= 30:
                 return None
+
+        # Real intraday VWAP from today's bars (cum typical-price × volume).
+        vwap_val: float | None = None
+        _h = day_bars["High"].astype(float)
+        _l = day_bars["Low"].astype(float)
+        _c = day_bars["Close"].astype(float)
+        _v = day_bars["Volume"].astype(float)
+        _typical = (_h + _l + _c) / 3
+        _cumvol = float(_v.cumsum().iloc[-1])
+        if _cumvol > 0:
+            vwap_val = float((_typical * _v).cumsum().iloc[-1] / _cumvol)
 
         quality_result = compute_quality_score(
             direction=direction,
@@ -167,16 +342,19 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
             recent_dir=recent_dir,
             recent_momentum=recent_momentum,
             zlema_trend=indicators.zlema_trend,
+            vwap=vwap_val,
         )
         quality = quality_result.score
 
         cascade = MomentumCascadeDetector().analyze(
             indicators, quality_score=quality,
             or_momentum=or_momentum, recent_momentum=recent_momentum,
+            bars_5m=day_bars,
         )
 
-        bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
-        chop = compute_choppiness(bars)
+        # `bars` is used downstream for PB EMA + active-range; alias to today's bars.
+        bars = day_bars
+        chop = compute_choppiness(bars, vix=indicators.vix, atr=indicators.atr_14)
 
         # Sweet spot criteria
         if not (3 <= quality <= 7):
@@ -236,18 +414,23 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
         else:
             target_mult = 1.0  # Moderate — standard 1R
 
+        # Replay parity: entry is the current price (the agent files a market order,
+        # so this matches the real fill); the active-range blend governs only the
+        # stop/target midpoint, never the entry level.
+        entry = indicators.current_price
         if direction == "buy_call":
-            entry = blend_high + (blend_high - blend_low) * 0.10
             mid = (blend_high + blend_low) / 2
-            stop = mid + 0.10 * (blend_high - blend_low)  # Tighter: 60% of range (was midpoint)
+            stop = mid + 0.10 * (blend_high - blend_low)
             risk = entry - stop
             target_1 = entry + risk * target_mult
         else:
-            entry = blend_low - (blend_high - blend_low) * 0.10
             mid = (blend_high + blend_low) / 2
-            stop = mid - 0.10 * (blend_high - blend_low)  # Tighter: 60% of range (was midpoint)
+            stop = mid - 0.10 * (blend_high - blend_low)
             risk = stop - entry
             target_1 = entry - risk * target_mult
+        # Replay parity: reject if price sits on the wrong side of the stop midpoint.
+        if risk <= 0:
+            return None
 
         return {
             "timestamp": now.isoformat(),

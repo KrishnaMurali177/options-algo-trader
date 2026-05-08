@@ -1634,26 +1634,60 @@ Backtest: Q 4–7 with cascade ≥ 4, chop ≤ 5 → 1-yr SPY: 63.6% WR, PF 1.81
         unsafe_allow_html=True,
     )
 
-    # ── Entry / Stop / Target plan (matches live agent formulas) ──
+    # ── Entry / Stop / Target plan (matches live agent formulas — active range blend 0.25) ──
     _rh = float(_or_result.range_high)
     _rl = float(_or_result.range_low)
     _rw = _rh - _rl
     if _rw > 0:
+        # Active range blend: 75% OR + 25% recent 30-min range (golden default)
+        _BLEND = 0.25
+        if _replay_bars is not None and len(_replay_bars) >= 6:
+            _recent = _replay_bars.iloc[-6:]
+            _ar_high = float(_recent["High"].max())
+            _ar_low = float(_recent["Low"].min())
+            if _ar_high - _ar_low > 0:
+                _rh_blend = _rh * (1 - _BLEND) + _ar_high * _BLEND
+                _rl_blend = _rl * (1 - _BLEND) + _ar_low * _BLEND
+            else:
+                _rh_blend, _rl_blend = _rh, _rl
+        else:
+            # Live mode: fetch last 6 bars (30 min) of 5-min data for blend
+            try:
+                _live_bars = yf.download(sym, period="1d", interval="5m", progress=False)
+                if isinstance(_live_bars.columns, pd.MultiIndex):
+                    _live_bars.columns = _live_bars.columns.get_level_values(0)
+                if len(_live_bars) >= 6:
+                    _recent_live = _live_bars.iloc[-6:]
+                    _ar_high = float(_recent_live["High"].max())
+                    _ar_low = float(_recent_live["Low"].min())
+                    if _ar_high - _ar_low > 0:
+                        _rh_blend = _rh * (1 - _BLEND) + _ar_high * _BLEND
+                        _rl_blend = _rl * (1 - _BLEND) + _ar_low * _BLEND
+                    else:
+                        _rh_blend, _rl_blend = _rh, _rl
+                else:
+                    _rh_blend, _rl_blend = _rh, _rl
+            except Exception:
+                _rh_blend, _rl_blend = _rh, _rl
+        _rw_blend = _rh_blend - _rl_blend
+
         if _cascade.explosion_score >= 8:
             _tmult = 1.5
         elif _cascade.explosion_score >= 6:
-            _tmult = 1.25
+            _tmult = 1.5
         else:
             _tmult = 1.0
         _is_call = _ss_direction == "Buy Call"
-        _stop_px = (_rh + _rl) / 2
+        _mid = (_rh_blend + _rl_blend) / 2
         if _is_call:
-            _entry_px = _rh + _rw * 0.10
+            _entry_px = _rh_blend + _rw_blend * 0.10
+            _stop_px = _mid + 0.10 * _rw_blend  # Tighter: 60% of range
             _risk = _entry_px - _stop_px
             _target_px = _entry_px + _risk * _tmult
             _to_entry = _entry_px - current_price
         else:
-            _entry_px = _rl - _rw * 0.10
+            _entry_px = _rl_blend - _rw_blend * 0.10
+            _stop_px = _mid - 0.10 * _rw_blend  # Tighter: 60% of range
             _risk = _stop_px - _entry_px
             _target_px = _entry_px - _risk * _tmult
             _to_entry = current_price - _entry_px
@@ -1663,15 +1697,15 @@ Backtest: Q 4–7 with cascade ≥ 4, chop ≤ 5 → 1-yr SPY: 63.6% WR, PF 1.81
 
         ec1, ec2, ec3, ec4 = st.columns(4)
         ec1.metric("Entry", f"${_entry_px:.2f}", _entry_status, delta_color="off")
-        ec2.metric("Stop (range mid)", f"${_stop_px:.2f}", f"-${_risk:.2f} risk", delta_color="inverse")
+        ec2.metric("Stop (60% range)", f"${_stop_px:.2f}", f"-${_risk:.2f} risk", delta_color="inverse")
         ec3.metric(f"Target ({_tmult:.2f}R)", f"${_target_px:.2f}", f"+${_reward:.2f} reward", delta_color="normal")
         ec4.metric("R:R", f"1 : {_tmult:.2f}", f"Cascade {_cascade.explosion_score}/10")
 
         st.caption(
-            f"Plan from OR range ${_rl:.2f}–${_rh:.2f} (width ${_rw:.2f}). "
-            f"Entry = range edge ± 10% buffer · Stop = midpoint · Target multiplier scales with cascade "
-            f"(≥8→1.5R, ≥6→1.25R, else 1.0R). "
-            f"Live agent monitors GainzAlgoV2 reversal (RSI 65/35, body 0.5) for early exit."
+            f"Plan from blended range (75% OR ${_rl:.2f}–${_rh:.2f} + 25% recent 30m). "
+            f"Entry = range edge ± 10% buffer · Stop = mid + 10% (tighter 60%) · Target multiplier scales with cascade "
+            f"(≥6→1.5R, else 1.0R). "
+            f"Live agent monitors GainzAlgoV2 reversal (RSI 70/30, body 0.7) for early exit."
         )
     else:
         st.caption("⏳ Opening range still forming — entry/stop/target plan will appear once the 9:30–10:30 ET range is set.")

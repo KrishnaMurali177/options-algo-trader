@@ -421,7 +421,7 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 | **Active range blend** | **ON** (blend=0.25, 6 bars/30min) | Stop/target uses 75% OR + 25% recent 30-min range. Prevents stale entries on late-day triggers. Validated SPY+QQQ: WR +3pp, DD −14%, UW 83→52 days. |
 | **PB EMA inside-band gate** | **ON** (fast=13, slow=55) | Rejects entries when price is *between* the two EMAs (PB EMA's "no zone" / chop state). Symmetric — does not block direction. Validated 730d SPY: PF 1.41→1.48, Sharpe 1.89→2.26, MDD $30.81→$27.03 (−12%), avg/trade +6.6%. Disable with `--no-pb-ema`. |
 | **GainzAlgoV2 early exit** | **ON** (RSI 70/30, body 0.7, min-profit 0.3R) | Stricter thresholds — only exits on strong opposing reversal candles; requires ≥ 0.3R profit to prevent premature closes on losing/scratch trades |
-| **Decay-aware targets** | **ON** (floor=0.4, halflife=6 bars/30min) | Target shrinks exponentially as theta erodes; theta-breakeven exit when projected burn exceeds remaining profit. Floor raised from 0.3→0.4 (validated). |
+| **Decay-aware targets** | **ON** (floor=0.4, halflife=8 bars/40min) | Target shrinks exponentially as theta erodes; theta-breakeven exit when projected burn exceeds remaining profit. Floor raised from 0.3→0.4, halflife from 6→8 bars (validated: SPY Calmar 4.63→8.56, QQQ Sharpe 1.04→1.34). |
 | **Option delta** | **0.50** (ATM) | Target delta for 0DTE contract selection |
 | **Real options pricing** | **ON** | Uses Alpaca historical 0DTE bars; synth fallback when unavailable (`--no-real-options` for synth-only) |
 | **Base contracts** | **1** | Per trade (scaled by cascade tier) |
@@ -432,11 +432,11 @@ Trades that don't move in the expected direction within a set window are cut ear
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| **Stagnation bars** | **10** (50 min) | If trade hasn't moved ≥ threshold after 10 bars, exit at market. Reduced from 12 bars — validated: Sharpe 1.07→1.23, R:R 0.90→1.05 |
-| **Minimum move to hold** | **0.5R** | Trade must be at least 0.5× risk in profit; otherwise cut |
+| **Stagnation bars** | **12** (60 min) | If trade hasn't moved ≥ threshold after 12 bars, exit at market. Increased from 10 bars — validated 730d SPY+QQQ+VOO: SPY MDD 21.6%→11.7%, Calmar 4.63→8.56; QQQ Sharpe 1.04→1.34, MDD 37.2%→20.1% |
+| **Minimum move to hold** | **0.3R** | Trade must be at least 0.3× risk in profit; otherwise cut. Lowered from 0.5R — keeps trades with some momentum alive for decaying target. |
 | **MFE skip** | **0.5R** | If trade's Maximum Favorable Excursion (best P&L reached) exceeded 0.5R, skip stagnation exit — let decay_target or stop resolve it. Trades that showed real momentum but temporarily pulled back deserve more time to reach target. |
 
-The stagnation exit fires **once** — on the first bar where `bars_since_entry >= 10` and `current_pnl < risk * 0.5` **and** `MFE < 0.5R`. If MFE ≥ 0.5R, the trade had real traction and is exempt from stagnation — it will exit via decay_target (if momentum resumes) or stop (if it truly failed). Combined with the **streak breaker** (2 consecutive losses → stop for day), this keeps losing days contained.
+The stagnation exit fires **once** — on the first bar where `bars_since_entry >= 12` and `current_pnl < risk * 0.3` **and** `MFE < 0.5R`. If MFE ≥ 0.5R, the trade had real traction and is exempt from stagnation — it will exit via decay_target (if momentum resumes) or stop (if it truly failed). Combined with the **streak breaker** (2 consecutive losses → stop for day), this keeps losing days contained.
 
 **MFE skip validation (2-year, 730 days, real Alpaca 0DTE options):**
 
@@ -462,14 +462,14 @@ For 0DTE options, theta decay is non-linear — after 30–60 minutes in a trade
 | Parameter | Value | Notes |
 |-----------|-------|-------|
 | **Decay model** | Exponential | `decay_factor = max(floor, 0.5^(bars / halflife))` |
-| **Halflife** | **6 bars** (30 min) | Target decays to 50% of original after 30 min |
+| **Halflife** | **8 bars** (40 min) | Target decays to 50% of original after 40 min (was 6 bars/30 min — slower decay lets more trades reach target, especially on QQQ) |
 | **Floor** | **0.4** (40%) | Target never shrinks below 40% of original distance (raised from 0.3, validated) |
 | **Theta-breakeven exit** | ON | If projected theta burn over next 2 bars ≥ 80% of current option profit, exit immediately |
 
 **How it works:**
 1. At entry, the target is set normally (1.0R / 1.5R / 1.5R based on explosion score)
 2. Each subsequent bar, the effective target decays: `effective_target = entry ± original_distance × decay_factor`
-3. After 30 min (6 bars), the target is at 50% of original; after 60 min, it hits the 40% floor
+3. After 40 min (8 bars), the target is at 50% of original; after 80 min, it hits the 40% floor
 4. Additionally, if the trade is profitable but theta will consume ≥80% of that profit in the next 10 minutes, the position exits immediately ("theta_exit")
 
 **Impact (1-year SPY, synthesized options pricing):**
@@ -520,6 +520,22 @@ This filter uses daily closing VIX data. During the Aug 2024–Mar 2025 drawdown
 > **Note:** 2-year results use synthesized delta-gamma pricing (pre-real-options default).
 > Cascade sizing applies 3/3/3 contracts (flat across E4-5/E6-7/E8+ tiers).
 > Real options pricing is now the golden default — see 1-Year results below for ground-truth performance.
+
+**2-Year Replay Results (501 days, May 2024–May 2026, Golden Defaults, Real Alpaca 0DTE Options):**
+
+| Metric | SPY | QQQ | VOO |
+|--------|-----|-----|-----|
+| Triggers | 625 (1.2/day) | 580 (1.2/day) | 710 (1.4/day) |
+| Win Rate | **60.5%** | **52.9%** | **58.0%** |
+| Profit Factor | **1.51** | **1.27** | **1.90** |
+| Total P&L (cascade-sized) | **+$142.77** | **+$103.97** | **+$193.08** |
+| Sharpe Ratio | **2.31** | **1.34** | **3.74** |
+| Sortino Ratio | **4.55** | **2.75** | **8.92** |
+| Max Drawdown | **$16.68 (11.7%)** | **$22.53 (20.1%)** | **$14.68 (7.6%)** |
+| Calmar Ratio | **8.56** | **4.61** | **13.16** |
+| Longest Underwater | 104 days | 130 days | 58 days |
+
+> Golden defaults: stagnation 12 bars / 0.3R, decay halflife 8 bars, PB EMA 13/55, cascade 3/3/3, max-chop 5, max-stops 1, regime guard OFF.
 
 **1-Year Replay Results (SPY, 252 days, May 2025–May 2026, Golden Defaults, Real Alpaca 0DTE Options):**
 

@@ -191,7 +191,10 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 decay_halflife_bars: int = 6,
                 active_range: bool = False,
                 active_range_bars: int = 6,
-                active_range_blend: float = 1.0) -> list[dict]:
+                active_range_blend: float = 1.0,
+                pb_ema: bool = False,
+                pb_ema_fast: int = 9,
+                pb_ema_slow: int = 21) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
     Uses the EXACT same analyzers as the live agent:
@@ -313,6 +316,10 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
 
     # Precompute volume SMA
     day_vol_sma = day_vol.rolling(min(20, len(day_vol))).mean()
+
+    # Precompute PB EMA bands (two EMAs on close — between them = chop zone)
+    day_pb_ema_fast = day_close.ewm(span=pb_ema_fast, adjust=False).mean() if pb_ema else None
+    day_pb_ema_slow = day_close.ewm(span=pb_ema_slow, adjust=False).mean() if pb_ema else None
 
     for i, (ts, bar) in enumerate(scan_bars.iterrows()):
         # ── Daily limits ──
@@ -475,6 +482,16 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         chop = compute_choppiness(bars_to_now, vix=vix, atr=atr_val)
         if chop.chop_score > max_chop:
             continue
+
+        # ── PB EMA inside-band gate (symmetric chop reject) ──
+        # Reject when price is *between* the two EMAs — the indicator's
+        # "no zone" state. Asymmetric: does NOT block direction, only chop.
+        if pb_ema and day_pb_ema_fast is not None:
+            ema_f = float(day_pb_ema_fast.iloc[:n].iloc[-1])
+            ema_s = float(day_pb_ema_slow.iloc[:n].iloc[-1])
+            band_hi, band_lo = max(ema_f, ema_s), min(ema_f, ema_s)
+            if band_lo < price < band_hi:
+                continue
 
         # ── TRIGGER! ──
         last_trigger_idx = i
@@ -830,6 +847,8 @@ def main():
     # Decay-aware targets (golden: ON, floor=0.4, halflife=6 bars/30min).
     # Real options pricing (golden: ON, Alpaca historical 0DTE bars).
     # MFE stagnation skip (golden: ON, threshold=0.5R — validated +3% on SPY & QQQ).
+    # PB EMA inside-band gate (golden: ON, 13/55 — validated 730d SPY:
+    #   PF 1.41→1.48, Sharpe 1.89→2.26, MDD $30.81→$27.03 / -12%).
     # Override individual flags to explore. Use --research-mode to revert to
     # loose pre-golden defaults (chop 10, no caps, 10:35 scan, no Gainz, no decay).
     parser.add_argument("--symbol", "-s", default="SPY")
@@ -917,6 +936,17 @@ def main():
                         help="Number of recent 5-min bars for active range (default: 6 = 30 min)")
     parser.add_argument("--active-range-blend", type=float, default=0.25,
                         help="Blend ratio: 0.0=pure OR, 0.25=golden, 0.5=50/50, 1.0=pure active (default: 0.25)")
+    parser.add_argument("--pb-ema", action="store_true", default=True,
+                        help="Enable PB EMA inside-band gate (golden: ON, 13/55). "
+                             "Rejects entries where price is between the fast/slow EMAs "
+                             "(chop zone). Symmetric — does not block direction. "
+                             "Validated 730d SPY: PF 1.41→1.48, Sharpe 1.89→2.26, MDD −12%%.")
+    parser.add_argument("--no-pb-ema", action="store_true",
+                        help="Disable PB EMA inside-band gate.")
+    parser.add_argument("--pb-ema-fast", type=int, default=13,
+                        help="Fast EMA length for PB EMA band (golden: 13)")
+    parser.add_argument("--pb-ema-slow", type=int, default=55,
+                        help="Slow EMA length for PB EMA band (golden: 55)")
     parser.add_argument("--vix-max", type=float, default=30.0,
                         help="Skip trading days where VIX > this level (0=disabled, default: 30)")
     parser.add_argument("--vix-spike-pct", type=float, default=20.0,
@@ -931,7 +961,8 @@ def main():
         args.max_stops_per_day = 0
         args.no_gainz_exit = True
         args.no_decay_aware_targets = True
-        logger.info("research-mode: loose defaults applied (chop 10, max-Q 8, scan from 10:35, no caps, no Gainz, no decay targets)")
+        args.no_pb_ema = True
+        logger.info("research-mode: loose defaults applied (chop 10, max-Q 8, scan from 10:35, no caps, no Gainz, no decay targets, no PB EMA)")
 
     # Fetch data via Alpaca
     try:
@@ -1054,7 +1085,10 @@ def main():
                               decay_halflife_bars=args.decay_halflife_bars,
                               active_range=not args.no_active_range,
                               active_range_bars=args.active_range_bars,
-                              active_range_blend=args.active_range_blend)
+                              active_range_blend=args.active_range_blend,
+                              pb_ema=args.pb_ema and not args.no_pb_ema,
+                              pb_ema_fast=args.pb_ema_fast,
+                              pb_ema_slow=args.pb_ema_slow)
         all_triggers.extend(triggers)
 
     # ── Results ──

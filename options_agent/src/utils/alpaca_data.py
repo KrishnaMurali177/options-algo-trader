@@ -268,6 +268,24 @@ def get_0dte_chain(
         logger.warning("Failed to fetch option snapshots: %s — using strike proximity only", e)
         snapshots = {}
 
+    # ── Resolve spot price for strike sanity check ──
+    _spot = spot_price
+    if _spot is None or _spot <= 0:
+        try:
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockLatestTradeRequest
+            stock_client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
+            trade_resp = stock_client.get_stock_latest_trade(
+                StockLatestTradeRequest(symbol_or_symbols=symbol)
+            )
+            if symbol in trade_resp:
+                _spot = float(trade_resp[symbol].price)
+        except Exception:
+            pass
+
+    # Max strike distance from spot (percentage) to prevent deep ITM/OTM picks
+    MAX_STRIKE_PCT_FROM_SPOT = 0.02  # 2% — for SPY ~$737, that's ~$15
+
     best = None
     best_delta_diff = float("inf")
 
@@ -291,6 +309,13 @@ def get_0dte_chain(
         # Skip illiquid contracts
         if mid <= 0.01:
             continue
+
+        # Strike sanity check: reject contracts too far from spot (prevents deep ITM picks
+        # when greeks are stale/wrong on paper feed)
+        strike = float(contract.strike_price)
+        if _spot and _spot > 0:
+            if abs(strike - _spot) / _spot > MAX_STRIKE_PCT_FROM_SPOT:
+                continue
 
         delta_diff = abs(delta - target_delta)
         if delta_diff < best_delta_diff and delta_diff <= delta_tolerance:
@@ -319,20 +344,7 @@ def get_0dte_chain(
 
     # ── Fallback: greeks unavailable on paper feed → rank by strike proximity to spot
     # (ATM ≈ delta 0.5 by construction; only used when no contract had a usable delta)
-    if spot_price is None:
-        try:
-            from alpaca.data.historical import StockHistoricalDataClient
-            from alpaca.data.requests import StockLatestTradeRequest
-            stock_client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
-            trade_resp = stock_client.get_stock_latest_trade(
-                StockLatestTradeRequest(symbol_or_symbols=symbol)
-            )
-            if symbol in trade_resp:
-                spot_price = float(trade_resp[symbol].price)
-        except Exception as e:
-            logger.warning("Spot fetch for %s fallback failed: %s", symbol, e)
-
-    if not spot_price or spot_price <= 0:
+    if not _spot or _spot <= 0:
         logger.warning("No 0DTE %s contract near delta %.2f for %s (no spot for fallback)",
                        option_type, target_delta, symbol)
         return None
@@ -347,7 +359,7 @@ def get_0dte_chain(
         if mid <= 0.01:
             continue
         strike = float(contract.strike_price)
-        strike_diff = abs(strike - spot_price)
+        strike_diff = abs(strike - _spot)
         if strike_diff < best_strike_diff:
             best_strike_diff = strike_diff
             best = {
@@ -368,7 +380,7 @@ def get_0dte_chain(
     if best:
         logger.info(
             "Selected 0DTE %s by strike proximity (greeks unavailable): %s strike=$%.2f spot=$%.2f mid=$%.2f",
-            option_type, best["occ_symbol"], best["strike"], spot_price, best["mid"],
+            option_type, best["occ_symbol"], best["strike"], _spot, best["mid"],
         )
     else:
         logger.warning("No 0DTE %s contract for %s (all illiquid)", option_type, symbol)

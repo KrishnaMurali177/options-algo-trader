@@ -166,8 +166,8 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                max_consecutive_losses: int = 2,
                daily_loss_limit: float = 0.0,
                confirmation_bar: bool = False,
-               stagnation_bars: int = 10,
-               stagnation_threshold: float = 0.5,
+               stagnation_bars: int = 12,
+               stagnation_threshold: float = 0.3,
                gainz_exit: bool = True,
                gainz_body_ratio: float = 0.7,
                gainz_rsi_overbought: float = 70.0,
@@ -188,7 +188,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                real_options: bool = False,
                decay_aware_targets: bool = False,
                 decay_target_floor: float = 0.4,
-                decay_halflife_bars: int = 6,
+                decay_halflife_bars: int = 8,
                 active_range: bool = False,
                 active_range_bars: int = 6,
                 active_range_blend: float = 1.0,
@@ -841,10 +841,11 @@ def main():
     # Defaults match GOLDEN parameters (see README) — produces validated 2-yr SPY
     # results (real Alpaca options): 695 trades, +$3,780/contract, +$11,341 cascade-sized.
     # Tighter stops (60% of range), decay floor 0.4, mid-tier target 1.5R.
-    # Stagnation: 10 bars (50 min), no confirmation bar, MFE skip at 0.5R.
+    # Stagnation: 12 bars (60 min), no confirmation bar, MFE skip at 0.5R.
+    # Stagnation threshold: 0.3R (was 0.5R — keeps trades with some momentum alive).
     # Streak breaker: 2 consecutive losses → stop for day.
     # Cascade ≥ 2 (lowered from 4 — E2-E3 trades profitable with other filters).
-    # Decay-aware targets (golden: ON, floor=0.4, halflife=6 bars/30min).
+    # Decay-aware targets (golden: ON, floor=0.4, halflife=8 bars/40min, was 6/30min).
     # Real options pricing (golden: ON, Alpaca historical 0DTE bars).
     # MFE stagnation skip (golden: ON, threshold=0.5R — validated +3% on SPY & QQQ).
     # PB EMA inside-band gate (golden: ON, 13/55 — validated 730d SPY:
@@ -881,10 +882,12 @@ def main():
                         help="Disable confirmation bar requirement (default: disabled — confirmation bar hurt performance)")
     parser.add_argument("--confirmation-bar", action="store_true", default=False,
                         help="Enable confirmation bar (require next bar to close in trade direction before entry)")
-    parser.add_argument("--stagnation-bars", type=int, default=10,
-                        help="Bars before stagnation exit fires (golden: 10 = 50 min, was 12)")
-    parser.add_argument("--stagnation-threshold", type=float, default=0.5,
-                        help="Minimum P&L as fraction of R to avoid stagnation exit (golden: 0.5)")
+    parser.add_argument("--stagnation-bars", type=int, default=12,
+                        help="Bars before stagnation exit fires (golden: 12 = 60 min, was 10). "
+                             "Validated 730d SPY+QQQ+VOO: PF +0.03, Sharpe +0.05, MDD -10pp, Calmar +86%%.")
+    parser.add_argument("--stagnation-threshold", type=float, default=0.3,
+                        help="Minimum P&L as fraction of R to avoid stagnation exit (golden: 0.3, was 0.5). "
+                             "Lower threshold keeps trades with some momentum alive for decaying target.")
     parser.add_argument("--no-gainz-exit", action="store_true",
                         help="Disable GainzAlgoV2 reversal early-exit (golden: enabled)")
     parser.add_argument("--gainz-body-ratio", type=float, default=0.7, help="Min candle body/range ratio for Gainz signal (golden: 0.7)")
@@ -926,8 +929,9 @@ def main():
                              "(exponential decay with floor) and adds theta-breakeven exit.")
     parser.add_argument("--decay-target-floor", type=float, default=0.4,
                         help="Minimum decay factor for target (0.4 = target never shrinks below 40%% of original, was 0.3)")
-    parser.add_argument("--decay-halflife-bars", type=int, default=6,
-                        help="Bars (5-min each) for target to decay to 50%% (golden: 6 = 30 min)")
+    parser.add_argument("--decay-halflife-bars", type=int, default=8,
+                        help="Bars (5-min each) for target to decay to 50%% (golden: 8 = 40 min, was 6). "
+                             "Slower decay keeps targets ~15%% higher at 30 min, especially benefits QQQ.")
     parser.add_argument("--active-range", action="store_true", default=True,
                         help="Use blended OR+recent range for stop/target (golden: ON, blend 0.25)")
     parser.add_argument("--no-active-range", action="store_true",

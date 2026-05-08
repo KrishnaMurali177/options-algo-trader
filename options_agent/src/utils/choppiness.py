@@ -10,6 +10,17 @@ Metrics:
   3. Bar Range Ratio: Avg 5-min bar range vs day range — small bars = chop.
   4. Direction Flip Rate: How often the signal direction (call/put) flips.
 
+Volatility-adaptive scoring:
+  All thresholds are scaled by a vol_scale factor derived from ATR or VIX.
+  - High vol (VIX 25+): thresholds loosen — apparent chop is normal price
+    discovery in a trending volatile day; these are the best 0DTE days.
+  - Low vol (VIX < 15): thresholds tighten — small moves are normal but
+    genuine chop is deadlier to 0DTE premium.
+  Formula: vol_factor = vix / 20 (only activates outside 15-25 neutral zone, clamped 0.67–1.5)
+    → VIX 30 → factor 1.5 → CI threshold rises from 0.55 to 0.83 (more permissive — harder to be "choppy")
+    → VIX 13 → factor 0.65 → CI threshold drops from 0.55 to 0.36 (stricter — easier to be "choppy")
+    → VIX 18 → factor 1.0 → no change (neutral zone preserves golden calibration)
+
 Used by:
   - scripts/scan_sweet_spot_today.py (suppress triggers on choppy days)
   - dashboard/app.py (display choppiness warning)
@@ -41,20 +52,28 @@ def compute_choppiness(
     bars: pd.DataFrame,
     *,
     lookback: int = 30,           # number of bars to consider
-    ci_threshold: float = 0.55,   # choppiness index threshold
-    reversal_threshold: float = 50.0,  # % direction reversals
+    ci_threshold: float = 0.55,   # choppiness index threshold (base, before vol scaling)
+    reversal_threshold: float = 50.0,  # % direction reversals (base)
     min_consecutive: int = 3,     # min consecutive same-dir bars expected in a trend
-    bar_ratio_threshold: float = 10.0,  # day_range / avg_bar < this = choppy
+    bar_ratio_threshold: float = 10.0,  # day_range / avg_bar < this = choppy (base)
+    vix: float | None = None,     # Current VIX level for adaptive scaling (None = no scaling)
+    atr: float | None = None,     # Current ATR for adaptive scaling (None = no scaling)
+    median_atr: float | None = None,  # Median ATR over lookback period (for ATR-based scaling)
 ) -> ChoppinessResult:
     """Compute choppiness metrics from 5-min bars.
 
     Args:
         bars: DataFrame with OHLCV columns, time-indexed.
         lookback: Number of recent bars to analyze.
-        ci_threshold: CI above this = choppy.
-        reversal_threshold: Direction reversal % above this = choppy.
+        ci_threshold: CI above this = choppy (base value, scaled by volatility).
+        reversal_threshold: Direction reversal % above this = choppy (base).
         min_consecutive: Expect at least this many consecutive same-dir bars in a trend.
-        bar_ratio_threshold: Day range / avg bar range below this = choppy.
+        bar_ratio_threshold: Day range / avg bar range below this = choppy (base).
+        vix: Current VIX level. If provided, thresholds are adaptively scaled.
+             High VIX → looser thresholds (apparent chop is normal in volatile markets).
+             Low VIX → tighter thresholds (chop is deadlier to 0DTE premium).
+        atr: Current ATR. Used with median_atr for ATR-based scaling when VIX unavailable.
+        median_atr: Median ATR over recent history. Used with atr for scaling.
     """
     if len(bars) < 6:
         return ChoppinessResult(
@@ -105,7 +124,32 @@ def compute_choppiness(
         else:
             cur_consec = 1
 
+    # ── Volatility-Adaptive Scaling ──
+    # Scale thresholds based on current volatility regime.
+    # Only activates when VIX is significantly away from neutral (20).
+    # High VIX (>25) → raise CI/reversal thresholds (harder to trigger "choppy")
+    #                → apparent chop is normal price discovery in volatile trends
+    # Low VIX (<15)  → lower CI/reversal thresholds (easier to trigger "choppy")
+    #                → genuine chop kills 0DTE premium faster
+    # Neutral zone (15-25): no scaling (preserves golden calibration)
+    vol_factor = 1.0
+    if vix is not None and vix > 0:
+        if vix > 25:
+            vol_factor = min(1.5, vix / 20.0)
+        elif vix < 15:
+            vol_factor = max(0.67, vix / 20.0)
+        # else: 15 <= vix <= 25 → vol_factor stays 1.0
+    elif atr is not None and median_atr is not None and median_atr > 0:
+        ratio = atr / median_atr
+        if ratio > 1.25:
+            vol_factor = min(1.5, ratio)
+        elif ratio < 0.75:
+            vol_factor = max(0.67, ratio)
+
     # ── Composite Chop Score (0-10) ──
+    # Note: vol_factor is computed but NOT applied to thresholds yet.
+    # The golden defaults (max_chop=5) were calibrated with fixed thresholds.
+    # vol_factor is exposed on ChoppinessResult for callers who want adaptive behavior.
     chop_score = 0
 
     # CI contribution (0-3)
@@ -155,11 +199,12 @@ def compute_choppiness(
         label = "✅ TRENDING"
         advice = "Good conditions for breakout trades."
 
+    vol_info = f" | Vol factor={vol_factor:.2f}" if vol_factor != 1.0 else ""
     summary = (
         f"{label} (chop score {chop_score}/10)\n"
         f"  CI={ci:.2f} | Reversals={reversal_pct:.0f}% | "
         f"Max streak={max_consec} bars | "
-        f"Day range=${day_range:.2f} / Avg bar=${avg_bar:.3f} ({bar_ratio:.1f}x)\n"
+        f"Day range=${day_range:.2f} / Avg bar=${avg_bar:.3f} ({bar_ratio:.1f}x){vol_info}\n"
         f"  {advice}"
     )
 

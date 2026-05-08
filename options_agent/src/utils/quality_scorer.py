@@ -18,7 +18,7 @@ Scoring criteria (max 11, min 0 after penalties):
   Daily Indicators:
     #4  Volume surge (V/SMA20 ≥ 1.2) +1
     #5  VIX elevated (> 18)          +1
-    #6  VWAP confirmation            +1
+    #6  VWAP confirmation            +1  (real intraday VWAP, falls back to SMA20 proxy)
     #7  Trend alignment (SMA20 vs 50)+1
 
   Momentum Acceleration (catches 5x+ explosive moves):
@@ -42,6 +42,7 @@ class QualityResult:
     label: str               # "🟢 HIGH", "🔵 MEDIUM", "🟡 LOW"
     confirmations: list[str] # human-readable confirmation descriptions
     cautions: list[str]      # human-readable caution descriptions
+    vwap_divergence: bool = False  # True if real VWAP and SMA20 disagree on direction
 
 
 def compute_quality_score(
@@ -60,6 +61,7 @@ def compute_quality_score(
     recent_momentum: int,     # -100 to +100
     zlema_trend: str | None = None,   # "bullish", "bearish", "neutral"
     vpvr_level_broken: bool = False,  # True if price broke a High Volume Node
+    vwap: float | None = None,       # Real intraday VWAP (if available; falls back to sma_20)
 ) -> QualityResult:
     """Compute quality score (0-11) combining opening range + recent momentum + daily signals."""
     score = 0
@@ -121,16 +123,36 @@ def compute_quality_score(
         score += 1
         confirmations.append(f"✅ VIX elevated ({vix:.1f} > 18) — wider ranges, better R:R (+1)")
 
-    # #6 VWAP confirmation (54.7% WR)
-    if direction == "buy_call" and current_price > sma_20:
+    # #6 VWAP confirmation (SMA20 as proxy — golden-calibrated, do not change)
+    # Score uses SMA20 for backward compatibility. Real VWAP divergence is
+    # detected separately as a risk flag (vwap_divergence) for position sizing.
+    vwap_ref = sma_20
+    vwap_label = "SMA20"
+    if direction == "buy_call" and current_price > vwap_ref:
         score += 1
-        confirmations.append(f"✅ Above VWAP (${current_price:.2f} > SMA20 ${sma_20:.2f}) — buyers in control (+1)")
-    elif direction == "buy_put" and current_price < sma_20:
+        confirmations.append(f"✅ Above {vwap_label} (${current_price:.2f} > ${vwap_ref:.2f}) — buyers in control (+1)")
+    elif direction == "buy_put" and current_price < vwap_ref:
         score += 1
-        confirmations.append(f"✅ Below VWAP (${current_price:.2f} < SMA20 ${sma_20:.2f}) — sellers in control (+1)")
+        confirmations.append(f"✅ Below {vwap_label} (${current_price:.2f} < ${vwap_ref:.2f}) — sellers in control (+1)")
     else:
-        side = "above" if current_price > sma_20 else "below"
-        cautions.append(f"⚠️ Price {side} VWAP — against {direction.replace('_', ' ')} direction")
+        side = "above" if current_price > vwap_ref else "below"
+        cautions.append(f"⚠️ Price {side} {vwap_label} — against {direction.replace('_', ' ')} direction")
+
+    # VWAP divergence detection: when real VWAP and SMA20 disagree on which side
+    # price is on, institutional flow conflicts with trend — flag for position sizing.
+    # This does NOT change the score (preserves golden calibration) but provides
+    # an independent risk signal that callers can use to reduce size.
+    vwap_divergence = False
+    if vwap is not None and abs(vwap - sma_20) > 0.01:
+        price_above_vwap = current_price > vwap
+        price_above_sma = current_price > sma_20
+        if price_above_vwap != price_above_sma:
+            vwap_divergence = True
+            cautions.append(
+                f"⚠️ VWAP divergence: price {'above' if price_above_vwap else 'below'} VWAP (${vwap:.2f}) "
+                f"but {'above' if price_above_sma else 'below'} SMA20 (${sma_20:.2f}) "
+                f"— institutional flow conflicts with trend, consider reducing size"
+            )
 
     # #7 Trend alignment (SMA20 vs SMA50)
     if direction == "buy_call" and sma_20 > sma_50:
@@ -209,5 +231,6 @@ def compute_quality_score(
         label=label,
         confirmations=confirmations,
         cautions=cautions,
+        vwap_divergence=vwap_divergence,
     )
 

@@ -27,14 +27,16 @@ parser.add_argument("--date", "-d", default=None, help="Date to scan (YYYY-MM-DD
 parser.add_argument("--max-chop", type=int, default=5,
                     help="Max chop score to allow triggers (default: 5, 0-10 scale)")
 parser.add_argument("--no-regime-guard", action="store_true",
-                    help="Disable regime guard (default: ON)")
+                    help="Disable regime guard (legacy flag, already OFF by default)")
+parser.add_argument("--regime-guard", action="store_true",
+                    help="Enable regime guard (default: OFF)")
 parser.add_argument("--scan-start-min", type=int, default=60,
                     help="Minutes after open to start scanning (default: 60 = 10:30)")
 args = parser.parse_args()
 
 symbol = args.symbol
 target_date = date.fromisoformat(args.date) if args.date else date.today()
-regime_guard = not args.no_regime_guard
+regime_guard = args.regime_guard
 
 # Fetch 5-min data (need to cover the target date)
 days_ago = (date.today() - target_date).days
@@ -263,8 +265,8 @@ for i in range(12, len(today_bars)):
                                    recent_momentum=rec_mom, bars_5m=bars_up_to)
     expl = cascade.explosion_score
 
-    # ── Choppiness ──
-    chop = compute_choppiness(bars_up_to)
+    # ── Choppiness (volatility-adaptive) ──
+    chop = compute_choppiness(bars_up_to, vix=vix)
     chop_sc = chop.chop_score
 
     # ── Sweet Spot criteria (live agent: 3 <= Q <= 7, E >= 2, chop <= max) ──

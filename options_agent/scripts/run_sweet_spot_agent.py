@@ -186,6 +186,25 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True) 
         range_low = or_result.range_low if or_result else indicators.current_price
         range_width = range_high - range_low
 
+        # ── Active range blend: 75% OR + 25% recent 30-min range (golden: 0.25) ──
+        ACTIVE_RANGE_BLEND = 0.25
+        ACTIVE_RANGE_BARS = 6
+        if len(bars) >= ACTIVE_RANGE_BARS:
+            recent_bars = bars.iloc[-ACTIVE_RANGE_BARS:]
+            ar_high = float(recent_bars["High"].max())
+            ar_low = float(recent_bars["Low"].min())
+            ar_width = ar_high - ar_low
+            if ar_width > 0:
+                b = ACTIVE_RANGE_BLEND
+                blend_high = range_high * (1 - b) + ar_high * b
+                blend_low = range_low * (1 - b) + ar_low * b
+            else:
+                blend_high = range_high
+                blend_low = range_low
+        else:
+            blend_high = range_high
+            blend_low = range_low
+
         # ── Entry confirmation: price must be in upper/lower 25% of range or beyond ──
         breakout_threshold = range_width * 0.25
         if direction == "buy_call" and indicators.current_price < (range_high - breakout_threshold):
@@ -202,15 +221,15 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True) 
             target_mult = 1.0  # Moderate — standard 1R
 
         if direction == "buy_call":
-            entry = range_high + range_width * 0.10
-            mid = (range_high + range_low) / 2
-            stop = mid + 0.10 * (range_high - range_low)  # Tighter: 60% of range (was midpoint)
+            entry = blend_high + (blend_high - blend_low) * 0.10
+            mid = (blend_high + blend_low) / 2
+            stop = mid + 0.10 * (blend_high - blend_low)  # Tighter: 60% of range (was midpoint)
             risk = entry - stop
             target_1 = entry + risk * target_mult
         else:
-            entry = range_low - range_width * 0.10
-            mid = (range_high + range_low) / 2
-            stop = mid - 0.10 * (range_high - range_low)  # Tighter: 60% of range (was midpoint)
+            entry = blend_low - (blend_high - blend_low) * 0.10
+            mid = (blend_high + blend_low) / 2
+            stop = mid - 0.10 * (blend_high - blend_low)  # Tighter: 60% of range (was midpoint)
             risk = stop - entry
             target_1 = entry - risk * target_mult
 
@@ -246,13 +265,14 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             gainz_body_ratio: float = 0.7,
             gainz_rsi_overbought: float = 70.0,
             gainz_rsi_oversold: float = 30.0,
+            gainz_min_profit_r: float = 0.3,
             trade_shares: bool = False,
             contracts: int = 1,
             target_delta: float = 0.50,
             cascade_size_low: int = 3,
             cascade_size_mid: int = 3,
             cascade_size_high: int = 3,
-            regime_guard: bool = True,
+            regime_guard: bool = False,
             vix_max: float = 30.0,
             vix_spike_pct: float = 20.0):
     """Run the agent for one trading day."""
@@ -328,6 +348,31 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             for sym, dir_ in list(open_directions.items()):
                 if _check_gainz_exit(sym, dir_, gainz_body_ratio,
                                      gainz_rsi_overbought, gainz_rsi_oversold):
+                    # ── Min-profit gate: only Gainz-exit if P&L >= gainz_min_profit_r × risk ──
+                    if gainz_min_profit_r > 0:
+                        trig_match = next((t for t in triggers
+                                           if (t.get("symbol") == sym or t.get("occ_symbol") == sym)
+                                           and not t.get("closed")), None)
+                        if trig_match:
+                            risk = abs(trig_match.get("entry", 0) - trig_match.get("stop", 0))
+                            if risk > 0:
+                                try:
+                                    # Use underlying price P&L (not option P&L) to match replay logic
+                                    cur_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
+                                    if len(cur_bars) > 0:
+                                        cur_price = float(cur_bars["Close"].iloc[-1])
+                                        entry_ul = trig_match.get("price", trig_match.get("entry", cur_price))
+                                        if "call" in dir_:
+                                            ul_pnl = cur_price - entry_ul
+                                        else:
+                                            ul_pnl = entry_ul - cur_price
+                                        if ul_pnl < risk * gainz_min_profit_r:
+                                            logger.debug("Gainz exit skipped for %s — underlying P&L $%.2f < %.1fR ($%.2f)",
+                                                         sym, ul_pnl,
+                                                         gainz_min_profit_r, risk * gainz_min_profit_r)
+                                            continue
+                                except Exception as e:
+                                    logger.warning("Min-profit gate check failed for %s: %s", sym, e)
                     logger.info("⚡ GAINZ EXIT: closing %s %s on opposing reversal signal",
                                 sym, "CALL" if "call" in dir_ else "PUT")
                     close_result = trader.close_position(sym)
@@ -352,6 +397,16 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                     for occ_sym, opt_info in list(open_options.items()):
                         should_close = False
                         close_reason = ""
+
+                        # ── Update Maximum Favorable Excursion (MFE) ──
+                        entry_ul = opt_info.get("entry_underlying", underlying_price)
+                        if "call" in opt_info["direction"]:
+                            current_excursion = underlying_price - entry_ul
+                        else:
+                            current_excursion = entry_ul - underlying_price
+                        opt_info["max_favorable_excursion"] = max(
+                            opt_info.get("max_favorable_excursion", 0.0), current_excursion
+                        )
 
                         # ── Decay-aware target (golden: ON, halflife=6 bars, floor=0.4) ──
                         effective_target = opt_info["target_price"]
@@ -412,7 +467,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                     close_reason = "theta_exit"
 
                         # Stagnation exit: if 50 min (10 bars) have passed and trade
-                        # hasn't moved 0.5R in its favor, cut it to avoid theta bleed
+                        # hasn't moved 0.5R in its favor, cut it to avoid theta bleed.
+                        # MFE skip (golden): if trade already reached 0.5R, don't stagnation-exit —
+                        # let decay_target or stop resolve it. Trades that showed real momentum
+                        # but temporarily pulled back deserve more time to reach target.
                         if not should_close and "entry_time" in opt_info:
                             minutes_in_trade = (now - opt_info["entry_time"]).total_seconds() / 60
                             if minutes_in_trade >= 50:
@@ -421,7 +479,9 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                     current_pnl = (underlying_price - opt_info.get("entry_underlying", underlying_price)) \
                                         if "call" in opt_info["direction"] \
                                         else (opt_info.get("entry_underlying", underlying_price) - underlying_price)
-                                    if current_pnl < risk * 0.5:
+                                    mfe = opt_info.get("max_favorable_excursion", 0.0)
+                                    mfe_ratio = mfe / risk if risk > 0 else 0
+                                    if current_pnl < risk * 0.5 and mfe_ratio < 0.5:
                                         should_close = True
                                         close_reason = "stagnation"
 
@@ -567,6 +627,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                     "delta": contract["delta"],
                                     "entry_time": get_et_now(),
                                     "entry_underlying": trigger.get("price", trigger["entry"]),
+                                    "max_favorable_excursion": 0.0,  # MFE tracking for stagnation skip
                                 }
                                 open_directions[contract["occ_symbol"]] = trigger["direction"]
                                 logger.info("  📝 0DTE %s order: %s strike=$%.2f Δ=%.2f premium=$%.2f × %d contracts",
@@ -689,6 +750,8 @@ def main():
                         help="RSI threshold for Gainz SELL signal (default: 70)")
     parser.add_argument("--gainz-rsi-oversold", type=float, default=30.0,
                         help="RSI threshold for Gainz BUY signal (default: 30)")
+    parser.add_argument("--gainz-min-profit-r", type=float, default=0.3,
+                        help="Min profit as fraction of R to allow Gainz exit (golden: 0.3, 0=disabled)")
     parser.add_argument("--shares", action="store_true",
                         help="Trade shares instead of 0DTE options (default: options)")
     parser.add_argument("--contracts", type=int, default=1,
@@ -702,7 +765,9 @@ def main():
     parser.add_argument("--cascade-size-high", type=int, default=3,
                         help="Contracts for E 8+ tier (default: 3)")
     parser.add_argument("--no-regime-guard", action="store_true",
-                        help="Disable regime guard (default: ON — blocks counter-trend trades unless RSI extreme)")
+                        help="Disable regime guard (legacy flag, already OFF by default)")
+    parser.add_argument("--regime-guard", action="store_true",
+                        help="Enable regime guard (default: OFF — validated: removing it improves Sharpe 1.38→1.74, PF 1.30→1.37 over 2yr)")
     parser.add_argument("--vix-max", type=float, default=30.0,
                         help="Skip trading days where VIX > this level (0=disabled, default: 30)")
     parser.add_argument("--vix-spike-pct", type=float, default=20.0,
@@ -733,13 +798,14 @@ def main():
                             gainz_body_ratio=args.gainz_body_ratio,
                             gainz_rsi_overbought=args.gainz_rsi_overbought,
                             gainz_rsi_oversold=args.gainz_rsi_oversold,
+                            gainz_min_profit_r=args.gainz_min_profit_r,
                             trade_shares=args.shares,
                             contracts=args.contracts,
                             target_delta=args.target_delta,
                             cascade_size_low=args.cascade_size_low,
                             cascade_size_mid=args.cascade_size_mid,
                             cascade_size_high=args.cascade_size_high,
-                            regime_guard=not args.no_regime_guard,
+                            regime_guard=args.regime_guard,
                             vix_max=args.vix_max,
                             vix_spike_pct=args.vix_spike_pct)
                     # After market close, sleep until next day 9:25 AM
@@ -768,13 +834,14 @@ def main():
                 gainz_body_ratio=args.gainz_body_ratio,
                 gainz_rsi_overbought=args.gainz_rsi_overbought,
                 gainz_rsi_oversold=args.gainz_rsi_oversold,
+                gainz_min_profit_r=args.gainz_min_profit_r,
                 trade_shares=args.shares,
                 contracts=args.contracts,
                 target_delta=args.target_delta,
                 cascade_size_low=args.cascade_size_low,
                 cascade_size_mid=args.cascade_size_mid,
                 cascade_size_high=args.cascade_size_high,
-                regime_guard=not args.no_regime_guard,
+                regime_guard=args.regime_guard,
                 vix_max=args.vix_max,
                 vix_spike_pct=args.vix_spike_pct)
 

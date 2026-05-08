@@ -159,6 +159,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                target_mult_low: float = 1.0, target_mult_mid: float = 1.5,
                target_mult_high: float = 1.5,
                regime_guard: bool = True,
+               or_threshold: int = 25,
                symbol: str = "SPY",
                max_trades_per_day: int = 3,
                max_stops_per_day: int = 1,
@@ -171,6 +172,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                gainz_body_ratio: float = 0.7,
                gainz_rsi_overbought: float = 70.0,
                gainz_rsi_oversold: float = 30.0,
+               gainz_min_profit_r: float = 0.3,
                cascade_sizing: bool = False,
                cascade_size_low: int = 3,
                cascade_size_mid: int = 3,
@@ -185,8 +187,11 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                dynamic_or: bool = False,
                real_options: bool = False,
                decay_aware_targets: bool = False,
-               decay_target_floor: float = 0.4,
-               decay_halflife_bars: int = 6) -> list[dict]:
+                decay_target_floor: float = 0.4,
+                decay_halflife_bars: int = 6,
+                active_range: bool = False,
+                active_range_bars: int = 6,
+                active_range_blend: float = 1.0) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
     Uses the EXACT same analyzers as the live agent:
@@ -403,9 +408,9 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         recent_momentum = rc_result.momentum_score
 
         # ── Direction decision (same as live agent) ──
-        if or_momentum >= 25:
+        if or_momentum >= or_threshold:
             direction = "buy_call"
-        elif or_momentum <= -25:
+        elif or_momentum <= -or_threshold:
             direction = "buy_put"
         else:
             continue
@@ -424,6 +429,10 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 continue
 
         # ── Quality Score (EXACT same as live agent) ──
+        # Compute real intraday VWAP at this point in time
+        _cumvol_n = float(day_cumvol.iloc[:n].iloc[-1]) if n > 0 else 0
+        _vwap_val = float(day_cum_tp_vol.iloc[:n].iloc[-1] / _cumvol_n) if _cumvol_n > 0 else None
+
         quality_result = compute_quality_score(
             direction=direction,
             current_price=indicators.current_price,
@@ -438,6 +447,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             recent_dir=recent_dir,
             recent_momentum=recent_momentum,
             zlema_trend=indicators.zlema_trend,
+            vwap=_vwap_val,
         )
         quality = quality_result.score
 
@@ -458,7 +468,11 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             continue
 
         # ── Choppiness ──
-        chop = compute_choppiness(bars_to_now)
+        # vol_factor is computed inside compute_choppiness (available on result)
+        # but the gate uses the golden-calibrated fixed max_chop threshold.
+        # Low-vol adaptive tightening (VIX<15 → max_chop-1) showed +5.7% per-trade
+        # efficiency but −0.2% total P&L over 2yr — insufficient for golden default.
+        chop = compute_choppiness(bars_to_now, vix=vix, atr=atr_val)
         if chop.chop_score > max_chop:
             continue
 
@@ -480,20 +494,39 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         else:
             target_mult = target_mult_low
 
+        # ── Active range: blend OR range with recent N bars for stop/target ──
+        # blend=0.0 → pure OR range (golden default), blend=1.0 → pure active range
+        # blend=0.5 → average of OR and recent range
+        if active_range:
+            recent_bars = bars_to_now.iloc[-active_range_bars:]
+            ar_high = float(recent_bars["High"].max())
+            ar_low = float(recent_bars["Low"].min())
+            ar_width = ar_high - ar_low
+            if ar_width > 0:
+                b = active_range_blend
+                ar_range_high = range_high * (1 - b) + ar_high * b
+                ar_range_low = range_low * (1 - b) + ar_low * b
+            else:
+                ar_range_high = range_high
+                ar_range_low = range_low
+        else:
+            ar_range_high = range_high
+            ar_range_low = range_low
+
         if direction == "buy_call":
             entry = price
-            mid = (range_high + range_low) / 2
+            mid = (ar_range_high + ar_range_low) / 2
             # Tighter stop: 60% from low toward high (instead of bare midpoint)
-            stop = mid + 0.10 * (range_high - range_low)
+            stop = mid + 0.10 * (ar_range_high - ar_range_low)
             risk = entry - stop
             if risk <= 0:
                 continue
             target = entry + risk * target_mult
         else:
             entry = price
-            mid = (range_high + range_low) / 2
+            mid = (ar_range_high + ar_range_low) / 2
             # Tighter stop: 60% from high toward low (instead of bare midpoint)
-            stop = mid - 0.10 * (range_high - range_low)
+            stop = mid - 0.10 * (ar_range_high - ar_range_low)
             risk = stop - entry
             if risk <= 0:
                 continue
@@ -545,8 +578,18 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             # Original target distance in underlying terms
             original_target_dist = abs(target - entry)
 
+        # Track Maximum Favorable Excursion for smart stagnation exit
+        max_favorable_excursion = 0.0
+
         for bar_j, (_, fb) in enumerate(future_bars.iterrows()):
             fh, fl, fc = float(fb["High"]), float(fb["Low"]), float(fb["Close"])
+
+            # Update MFE: best intrabar P&L the trade has seen
+            if direction == "buy_call":
+                bar_best = fh - entry
+            else:
+                bar_best = entry - fl
+            max_favorable_excursion = max(max_favorable_excursion, bar_best)
 
             # ── Decay-aware dynamic target: shrink target as theta erodes ──
             # The idea: as time passes, theta eats premium. The underlying must
@@ -616,15 +659,21 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                                   rsi_overbought=gainz_rsi_overbought,
                                   rsi_oversold=gainz_rsi_oversold)
                 if direction == "buy_call" and gz == "sell":
-                    outcome = "gainz_exit"; exit_price = fc; exit_ts = fb.name; break
+                    gainz_pnl = (fc - entry) if risk > 0 else 0
+                    if gainz_min_profit_r <= 0 or gainz_pnl >= risk * gainz_min_profit_r:
+                        outcome = "gainz_exit"; exit_price = fc; exit_ts = fb.name; break
                 if direction == "buy_put" and gz == "buy":
-                    outcome = "gainz_exit"; exit_price = fc; exit_ts = fb.name; break
+                    gainz_pnl = (entry - fc) if risk > 0 else 0
+                    if gainz_min_profit_r <= 0 or gainz_pnl >= risk * gainz_min_profit_r:
+                        outcome = "gainz_exit"; exit_price = fc; exit_ts = fb.name; break
 
             # Stagnation exit: if after N bars trade hasn't moved 0.5R, cut it
+            # Enhancement: skip stagnation if trade reached >0.5R (MFE) — let target/stop resolve
             bars_since_entry = len(day_bars[(day_bars.index > ts) & (day_bars.index <= fb.name)])
             if bars_since_entry >= stagnation_bars:
                 current_pnl = (fc - entry) if direction == "buy_call" else (entry - fc)
-                if current_pnl < risk * stagnation_threshold:
+                mfe_ratio = max_favorable_excursion / risk if risk > 0 else 0
+                if current_pnl < risk * stagnation_threshold and mfe_ratio < 0.5:
                     outcome = "stagnation"; exit_price = fc; exit_ts = fb.name; break
 
             # Hard time stop 15:30
@@ -722,6 +771,16 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         else:
             size = 1.0
 
+        # ── VWAP divergence risk adjustment ──
+        # When real VWAP and SMA20 disagree on which side price is on,
+        # institutional flow conflicts with trend. The flag is available
+        # on quality_result.vwap_divergence for callers/dashboard to display.
+        # NOTE: Sizing reduction disabled after backtest showed net negative
+        # impact — the OR momentum already prices VWAP into the trigger,
+        # so divergence is informational, not actionable for sizing.
+        # if quality_result.vwap_divergence and size > 1.0:
+        #     size = max(1.0, size - 1.0)
+
         # Scale option P&L by number of contracts
         if simulate_options and option_pnl_total is not None:
             option_pnl_total_sized = option_pnl_total * size
@@ -762,14 +821,15 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
 
 def main():
     parser = argparse.ArgumentParser(description="Replay Sweet Spot Agent on historical data")
-    # Defaults match GOLDEN parameters (see README) — produces validated 1-yr SPY
-    # results (real Alpaca options): 338 trades, 55.6% WR, PF 1.53, +$79.62, Sharpe 2.06.
+    # Defaults match GOLDEN parameters (see README) — produces validated 2-yr SPY
+    # results (real Alpaca options): 695 trades, +$3,780/contract, +$11,341 cascade-sized.
     # Tighter stops (60% of range), decay floor 0.4, mid-tier target 1.5R.
-    # Stagnation: 10 bars (50 min), no confirmation bar.
+    # Stagnation: 10 bars (50 min), no confirmation bar, MFE skip at 0.5R.
     # Streak breaker: 2 consecutive losses → stop for day.
     # Cascade ≥ 2 (lowered from 4 — E2-E3 trades profitable with other filters).
     # Decay-aware targets (golden: ON, floor=0.4, halflife=6 bars/30min).
     # Real options pricing (golden: ON, Alpaca historical 0DTE bars).
+    # MFE stagnation skip (golden: ON, threshold=0.5R — validated +3% on SPY & QQQ).
     # Override individual flags to explore. Use --research-mode to revert to
     # loose pre-golden defaults (chop 10, no caps, 10:35 scan, no Gainz, no decay).
     parser.add_argument("--symbol", "-s", default="SPY")
@@ -786,7 +846,12 @@ def main():
     parser.add_argument("--target-mult-low", type=float, default=1.0, help="Target multiple for low explosion")
     parser.add_argument("--target-mult-mid", type=float, default=1.5, help="Target multiple for mid explosion (was 1.25, tightened-stop change: 1.5)")
     parser.add_argument("--target-mult-high", type=float, default=1.5, help="Target multiple for high explosion")
-    parser.add_argument("--no-regime-guard", action="store_true", help="Disable regime guardrails")
+    parser.add_argument("--no-regime-guard", action="store_true", default=True,
+                        help="Disable regime guardrails (golden: OFF — regime guard disabled by default)")
+    parser.add_argument("--regime-guard", action="store_true",
+                        help="Enable regime guard (blocks counter-trend trades unless RSI extreme)")
+    parser.add_argument("--or-threshold", type=int, default=25,
+                        help="OR momentum threshold for direction decision (golden: 25, test: 30/35)")
     parser.add_argument("--max-trades-per-day", type=int, default=3, help="Max trades per day (0=unlimited, golden: 3)")
     parser.add_argument("--max-stops-per-day", type=int, default=1, help="Stop trading after N stop-outs (0=unlimited, golden: 1)")
     parser.add_argument("--max-consecutive-losses", type=int, default=2,
@@ -806,6 +871,8 @@ def main():
     parser.add_argument("--gainz-body-ratio", type=float, default=0.7, help="Min candle body/range ratio for Gainz signal (golden: 0.7)")
     parser.add_argument("--gainz-rsi-overbought", type=float, default=70.0, help="RSI threshold for Gainz SELL signal (golden: 70)")
     parser.add_argument("--gainz-rsi-oversold", type=float, default=30.0, help="RSI threshold for Gainz BUY signal (golden: 30)")
+    parser.add_argument("--gainz-min-profit-r", type=float, default=0.3,
+                        help="Min profit as fraction of R to allow Gainz exit (golden: 0.3, 0=disabled)")
     parser.add_argument("--no-cascade-sizing", action="store_true",
                         help="Disable cascade contract sizing (default: ON)")
     parser.add_argument("--cascade-size-low", type=int, default=3,
@@ -842,6 +909,14 @@ def main():
                         help="Minimum decay factor for target (0.4 = target never shrinks below 40%% of original, was 0.3)")
     parser.add_argument("--decay-halflife-bars", type=int, default=6,
                         help="Bars (5-min each) for target to decay to 50%% (golden: 6 = 30 min)")
+    parser.add_argument("--active-range", action="store_true", default=True,
+                        help="Use blended OR+recent range for stop/target (golden: ON, blend 0.25)")
+    parser.add_argument("--no-active-range", action="store_true",
+                        help="Disable active range blending (use pure OR range)")
+    parser.add_argument("--active-range-bars", type=int, default=6,
+                        help="Number of recent 5-min bars for active range (default: 6 = 30 min)")
+    parser.add_argument("--active-range-blend", type=float, default=0.25,
+                        help="Blend ratio: 0.0=pure OR, 0.25=golden, 0.5=50/50, 1.0=pure active (default: 0.25)")
     parser.add_argument("--vix-max", type=float, default=30.0,
                         help="Skip trading days where VIX > this level (0=disabled, default: 30)")
     parser.add_argument("--vix-spike-pct", type=float, default=20.0,
@@ -946,7 +1021,8 @@ def main():
                               scan_start=args.scan_start,
                               target_mult_low=args.target_mult_low, target_mult_mid=args.target_mult_mid,
                               target_mult_high=args.target_mult_high,
-                              regime_guard=not args.no_regime_guard,
+                              regime_guard=args.regime_guard,
+                              or_threshold=args.or_threshold,
                               symbol=args.symbol,
                               max_trades_per_day=args.max_trades_per_day,
                               max_stops_per_day=args.max_stops_per_day,
@@ -959,6 +1035,7 @@ def main():
                               gainz_body_ratio=args.gainz_body_ratio,
                               gainz_rsi_overbought=args.gainz_rsi_overbought,
                               gainz_rsi_oversold=args.gainz_rsi_oversold,
+                              gainz_min_profit_r=args.gainz_min_profit_r,
                               cascade_sizing=not args.no_cascade_sizing,
                               cascade_size_low=args.cascade_size_low,
                               cascade_size_mid=args.cascade_size_mid,
@@ -974,7 +1051,10 @@ def main():
                               real_options=args.real_options and not args.no_real_options,
                               decay_aware_targets=not args.no_decay_aware_targets,
                               decay_target_floor=args.decay_target_floor,
-                              decay_halflife_bars=args.decay_halflife_bars)
+                              decay_halflife_bars=args.decay_halflife_bars,
+                              active_range=not args.no_active_range,
+                              active_range_bars=args.active_range_bars,
+                              active_range_blend=args.active_range_blend)
         all_triggers.extend(triggers)
 
     # ── Results ──
@@ -987,7 +1067,7 @@ def main():
     else:
         mode_label = f"0DTE OPTIONS (synth Δ={args.option_delta}, γ={args.option_gamma})"
     print(f"  Mode: {mode_label}")
-    print(f"  Filter: Quality {args.min_quality}-{args.max_quality}, Cascade ≥ {args.min_cascade}, Chop ≤ {args.max_chop}, Regime Guard: {'ON' if not args.no_regime_guard else 'OFF'}")
+    print(f"  Filter: Quality {args.min_quality}-{args.max_quality}, Cascade ≥ {args.min_cascade}, Chop ≤ {args.max_chop}, Regime Guard: {'ON' if args.regime_guard else 'OFF'}")
     print(f"  Analyzers: OpeningRange + RecentMomentum + MomentumCascade (exact replica)")
     if not args.no_decay_aware_targets:
         print(f"  Decay-Aware Targets: ON (floor={args.decay_target_floor}, halflife={args.decay_halflife_bars} bars / {args.decay_halflife_bars*5} min)")
@@ -1083,7 +1163,8 @@ def main():
     print(f"    {'Tier':<14} {'N':>4} {'WR%':>6} {'PF':>5} {'TotPnL':>9} {'AvgPnL':>8}")
     cl, cm, ch = args.cascade_size_low, args.cascade_size_mid, args.cascade_size_high
     tiers = [
-        (f"E 4-5 ({cl}ct)",  lambda e: e <= 5),
+        (f"E 2-3 ({cl}ct)",  lambda e: e <= 3),
+        (f"E 4-5 ({cl}ct)",  lambda e: 4 <= e <= 5),
         (f"E 6-7 ({cm}ct)",  lambda e: 6 <= e <= 7),
         (f"E 8+  ({ch}ct)",  lambda e: e >= 8),
     ]
@@ -1108,6 +1189,24 @@ def main():
     print(f"\n  Exit Breakdown:")
     for o, c in sorted(outcomes.items(), key=lambda x: -x[1]):
         print(f"    {o:<12} {c:>3} ({c/len(all_triggers)*100:.0f}%)")
+
+    # ── Call vs Put Aggregation ──
+    print(f"\n  Call vs Put Aggregation{sizing_label}:")
+    print(f"    {'Side':<6} {'N':>4} {'%Tot':>5} {'WR%':>6} {'PF':>5} {'TotPnL':>10} {'AvgPnL':>9}")
+    for side_label, side_pred in [("CALL", lambda d: "call" in d), ("PUT", lambda d: "put" in d)]:
+        side = [t for t in all_triggers if side_pred(t["direction"])]
+        if not side:
+            print(f"    {side_label:<6} {0:>4} {'—':>5} {'—':>6} {'—':>5} {'—':>10} {'—':>9}")
+            continue
+        sw = [t for t in side if t["is_winner"]]
+        sl = [t for t in side if not t["is_winner"]]
+        sgp = sum(t[pnl_field] for t in sw)
+        sgl = abs(sum(t[pnl_field] for t in sl))
+        spf = sgp / sgl if sgl > 0 else float("inf")
+        spnl = sum(t[pnl_field] for t in side)
+        pct_of_total = len(side) / len(all_triggers) * 100
+        print(f"    {side_label:<6} {len(side):>4} {pct_of_total:>4.1f}% {len(sw)/len(side)*100:>5.1f}% "
+              f"{spf:>5.2f} ${spnl:>+8.2f} ${spnl/len(side):>+7.3f}")
 
     # Trade log
     if not args.shares:

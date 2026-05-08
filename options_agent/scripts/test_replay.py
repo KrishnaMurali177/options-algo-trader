@@ -25,7 +25,7 @@ for d in (df_5m, df_daily, vix_df):
 df_5m.index = pd.to_datetime(df_5m.index)
 if df_5m.index.tz is None:
     df_5m.index = df_5m.index.tz_localize("UTC")
-df_5m.index = df_5m.index.tz_convert("US/Eastern")
+df_5m.index = df_5m.index.tz_convert("America/New_York")
 
 today = date.today()
 tb = df_5m[df_5m.index.date == today]

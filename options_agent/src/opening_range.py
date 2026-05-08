@@ -112,7 +112,7 @@ class OpeningRangeAnalyzer:
         # Ensure timezone-aware index
         if bars.index.tz is None:
             bars.index = bars.index.tz_localize("UTC")
-            bars.index = bars.index.tz_convert("US/Eastern")
+            bars.index = bars.index.tz_convert("America/New_York")
 
         # Opening range: bars in 9:30-10:29 window
         opening_bars = bars.between_time("09:30", "10:29")
@@ -267,7 +267,7 @@ class OpeningRangeAnalyzer:
         df.index = pd.to_datetime(df.index)
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-        df.index = df.index.tz_convert("US/Eastern")
+        df.index = df.index.tz_convert("America/New_York")
 
         today = date.today()
         today_bars = df[df.index.date == today].copy()

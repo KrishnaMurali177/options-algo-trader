@@ -948,7 +948,7 @@ def main():
         df.index = pd.to_datetime(df.index)
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-        df.index = df.index.tz_convert("US/Eastern")
+        df.index = df.index.tz_convert("America/New_York")
 
     if df.empty:
         print("No data available")

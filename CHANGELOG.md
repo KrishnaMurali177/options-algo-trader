@@ -13,3 +13,6 @@
 - [2026-05-05] Created: .streamlit/config.toml — Streamlit theme config at repo root
 - [2026-05-05] Modified: app.py — Fixed entrypoint for Streamlit Cloud (exec with correct __file__)
 - [2026-05-05] Modified: options_agent/src/momentum_cascade.py — Added missing _analyze_synthesized fallback method
+- [2026-05-07] Modified: options_agent/dashboard/app.py — Fixed choppiness score missing in live/Now mode by fetching 5-min bars in fetch_indicators and reusing them for choppiness
+- [2026-05-07] Modified: Dockerfile — Added tzdata package for timezone support in slim image
+- [2026-05-07] Modified: 13 Python files — Replaced all `US/Eastern` with `America/New_York` (IANA standard) to fix pandas 3.x zoneinfo compatibility

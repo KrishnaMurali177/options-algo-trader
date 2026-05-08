@@ -84,7 +84,7 @@ def fetch_bars(
 
     Returns:
         DataFrame with columns: Open, High, Low, Close, Volume
-        Index: DatetimeIndex in US/Eastern timezone.
+        Index: DatetimeIndex in America/New_York timezone.
     """
     from alpaca.data.enums import DataFeed
     from alpaca.data.requests import StockBarsRequest
@@ -103,7 +103,7 @@ def fetch_bars(
         df.index = pd.to_datetime(df.index)
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-        df.index = df.index.tz_convert("US/Eastern")
+        df.index = df.index.tz_convert("America/New_York")
         return df
 
     # Map interval string to Alpaca TimeFrame
@@ -168,7 +168,7 @@ def fetch_bars(
     df.index = pd.to_datetime(df.index)
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
-    df.index = df.index.tz_convert("US/Eastern")
+    df.index = df.index.tz_convert("America/New_York")
 
     # Cache to Parquet
     df.to_parquet(cache)

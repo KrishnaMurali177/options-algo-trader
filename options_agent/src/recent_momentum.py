@@ -53,7 +53,7 @@ class RecentMomentumAnalyzer:
             # Use pre-fetched bars (replay mode) — take last 6 bars as "recent 30 min"
             if bars_5m.index.tz is None:
                 bars_5m.index = pd.to_datetime(bars_5m.index)
-                bars_5m.index = bars_5m.index.tz_localize("UTC").tz_convert("US/Eastern")
+                bars_5m.index = bars_5m.index.tz_localize("UTC").tz_convert("America/New_York")
             recent = bars_5m.tail(6)
             if len(recent) >= 3:
                 return self._score(recent, bars_5m, indicators, data_source="replay_bars")
@@ -86,7 +86,7 @@ class RecentMomentumAnalyzer:
         df.index = pd.to_datetime(df.index)
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
-        df.index = df.index.tz_convert("US/Eastern")
+        df.index = df.index.tz_convert("America/New_York")
 
         today = date.today()
         today_bars = df[df.index.date == today].copy()

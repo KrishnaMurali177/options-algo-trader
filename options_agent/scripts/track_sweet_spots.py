@@ -45,9 +45,9 @@ JOURNAL_DIR.mkdir(exist_ok=True)
 
 
 def get_current_et_time() -> datetime:
-    """Get current time in US/Eastern."""
+    """Get current time in America/New_York."""
     from zoneinfo import ZoneInfo
-    return datetime.now(ZoneInfo("US/Eastern"))
+    return datetime.now(ZoneInfo("America/New_York"))
 
 
 def is_market_open() -> bool:
@@ -198,7 +198,7 @@ def review_day(day: date, symbol: str = "SPY"):
     df.index = pd.to_datetime(df.index)
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
-    df.index = df.index.tz_convert("US/Eastern")
+    df.index = df.index.tz_convert("America/New_York")
     
     print(f"\n  {'Time':<6} {'Dir':<9} {'Entry':>8} {'Stop':>8} {'T1':>8} {'T2':>8} {'Outcome':<10} {'P&L':>8}")
     print(f"  {'─'*6} {'─'*9} {'─'*8} {'─'*8} {'─'*8} {'─'*8} {'─'*10} {'─'*8}")

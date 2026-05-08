@@ -9,7 +9,7 @@ Two layers of cache:
 
 Public API:
   resolve_atm_0dte(symbol, trade_date, option_type, spot)  -> OCC symbol or None
-  fetch_option_bars(occ, start, end, interval="5min")      -> DataFrame (US/Eastern)
+  fetch_option_bars(occ, start, end, interval="5min")      -> DataFrame (America/New_York)
   option_close_at(bars, ts)                                -> float or None
 
 Notes:
@@ -141,7 +141,7 @@ def fetch_option_bars(
 ) -> pd.DataFrame:
     """Fetch historical bars for a single option contract. Cached as parquet.
 
-    Returns DataFrame indexed by US/Eastern timestamps with columns
+    Returns DataFrame indexed by America/New_York timestamps with columns
     [Open, High, Low, Close, Volume, VWAP] (subset that's available).
     Empty frame if Alpaca returns nothing.
     """
@@ -152,7 +152,7 @@ def fetch_option_bars(
             df.index = pd.to_datetime(df.index)
             if df.index.tz is None:
                 df.index = df.index.tz_localize("UTC")
-            df.index = df.index.tz_convert("US/Eastern")
+            df.index = df.index.tz_convert("America/New_York")
             return df
         except Exception:
             cache.unlink(missing_ok=True)
@@ -211,7 +211,7 @@ def fetch_option_bars(
     df.index = pd.to_datetime(df.index)
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
-    df.index = df.index.tz_convert("US/Eastern")
+    df.index = df.index.tz_convert("America/New_York")
 
     df.to_parquet(cache)
     return df
@@ -222,9 +222,9 @@ def option_close_at(bars: pd.DataFrame, ts: pd.Timestamp) -> float | None:
     if bars.empty:
         return None
     if ts.tzinfo is None:
-        ts = ts.tz_localize("US/Eastern")
-    elif str(ts.tz) != "US/Eastern":
-        ts = ts.tz_convert("US/Eastern")
+        ts = ts.tz_localize("America/New_York")
+    elif str(ts.tz) != "America/New_York":
+        ts = ts.tz_convert("America/New_York")
     sub = bars[bars.index <= ts]
     if sub.empty:
         return None
@@ -240,7 +240,7 @@ def fetch_intraday_option_bars(
 
     Spans 09:30 ET → 16:00 ET converted to UTC, with a small buffer.
     """
-    eastern = pd.Timestamp(trade_date, tz="US/Eastern")
+    eastern = pd.Timestamp(trade_date, tz="America/New_York")
     start = (eastern + pd.Timedelta(hours=9, minutes=0)).tz_convert("UTC").to_pydatetime()
     end = (eastern + pd.Timedelta(hours=16, minutes=30)).tz_convert("UTC").to_pydatetime()
     return fetch_option_bars(occ, start, end, interval=interval)

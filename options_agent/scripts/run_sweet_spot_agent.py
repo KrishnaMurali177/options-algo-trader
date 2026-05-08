@@ -102,7 +102,7 @@ logger = logging.getLogger("sweet_spot_agent")
 
 def get_et_now() -> datetime:
     from zoneinfo import ZoneInfo
-    return datetime.now(ZoneInfo("US/Eastern"))
+    return datetime.now(ZoneInfo("America/New_York"))
 
 
 def is_market_hours() -> bool:

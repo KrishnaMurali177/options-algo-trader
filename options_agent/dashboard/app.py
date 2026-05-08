@@ -500,7 +500,30 @@ def fetch_indicators(symbol: str, timeframe: str = "daily") -> dict:
     analyzer = MarketAnalyzer()
     ind = analyzer.analyze(symbol, timeframe=timeframe)
     regime = analyzer.classify_regime(ind)
-    return {"indicators": ind.model_dump(), "regime": regime.value}
+
+    # Fetch 5-min bars for choppiness analysis (Alpaca first, yfinance fallback)
+    _bars_5m = pd.DataFrame()
+    try:
+        from src.utils.alpaca_data import fetch_bars as _alpaca_fetch
+        _bars_5m = _alpaca_fetch(symbol, days_back=5, interval="5min")
+    except Exception:
+        pass
+    if _bars_5m.empty:
+        _bars_5m = yf.download(symbol, period="5d", interval="5m", progress=False)
+    if not _bars_5m.empty:
+        if isinstance(_bars_5m.columns, pd.MultiIndex):
+            _bars_5m.columns = _bars_5m.columns.get_level_values(0)
+        _bars_5m.index = pd.to_datetime(_bars_5m.index)
+        if _bars_5m.index.tz is None:
+            _bars_5m.index = _bars_5m.index.tz_localize("UTC")
+        _bars_5m.index = _bars_5m.index.tz_convert("America/New_York")
+        from datetime import date as _dt_date
+        _today_bars = _bars_5m[_bars_5m.index.date == _dt_date.today()]
+        if _today_bars.empty:
+            _today_bars = _bars_5m[_bars_5m.index.date == _bars_5m.index[-1].date()]
+        _bars_5m = _today_bars
+
+    return {"indicators": ind.model_dump(), "regime": regime.value, "bars_5m": _bars_5m}
 
 
 @st.cache_data(ttl=120, show_spinner="Fetching intraday data for time replay…")
@@ -537,7 +560,7 @@ def fetch_indicators_at_time(symbol: str, as_of_time: str, timeframe: str = "dai
     df_5m.index = pd.to_datetime(df_5m.index)
     if df_5m.index.tz is None:
         df_5m.index = df_5m.index.tz_localize("UTC")
-    df_5m.index = df_5m.index.tz_convert("US/Eastern")
+    df_5m.index = df_5m.index.tz_convert("America/New_York")
 
     # Get today's (or last trading day's) bars
     from datetime import date as _date
@@ -1258,29 +1281,11 @@ _recent_dir = _recent.direction  # "bullish", "bearish", "neutral"
 _recent_momentum = _recent.momentum_score
 
 # Choppiness analysis (from 5-min bars when available)
-if _replay_bars is not None and not _replay_bars.empty:
-    _chop_result = compute_choppiness(_replay_bars)
+_chop_bars = _replay_bars if (_replay_bars is not None and not _replay_bars.empty) else raw.get("bars_5m")
+if _chop_bars is not None and isinstance(_chop_bars, pd.DataFrame) and not _chop_bars.empty:
+    _chop_result = compute_choppiness(_chop_bars)
 else:
-    # Try to get bars from live yfinance data for choppiness
-    try:
-        import yfinance as _yf_chop
-        _chop_df = _yf_chop.download(ind_dict["symbol"], period="5d", interval="5m", progress=False)
-        if not _chop_df.empty:
-            if isinstance(_chop_df.columns, pd.MultiIndex):
-                _chop_df.columns = _chop_df.columns.get_level_values(0)
-            _chop_df.index = pd.to_datetime(_chop_df.index)
-            if _chop_df.index.tz is None:
-                _chop_df.index = _chop_df.index.tz_localize("UTC")
-            _chop_df.index = _chop_df.index.tz_convert("US/Eastern")
-            from datetime import date as _dt_date
-            _today_chop = _chop_df[_chop_df.index.date == _dt_date.today()]
-            if _today_chop.empty:
-                _today_chop = _chop_df[_chop_df.index.date == _chop_df.index[-1].date()]
-            _chop_result = compute_choppiness(_today_chop)
-        else:
-            _chop_result = None
-    except Exception:
-        _chop_result = None
+    _chop_result = None
 
 def _compute_quality_score(ind: dict, direction: str, or_direction: str, or_momentum: int,
                            or_confirmed: bool, recent_dir: str, recent_momentum: int) -> int:

@@ -53,11 +53,15 @@ from src.utils.choppiness import compute_choppiness
 from src.utils.gainz import gainz_signal
 
 
-def _check_gainz_exit(symbol: str, direction: str, body_ratio: float,
+def _check_gainz_exit(underlying_symbol: str, direction: str, body_ratio: float,
                       rsi_overbought: float, rsi_oversold: float) -> bool:
-    """Return True if the latest completed 5-min bar fires an opposing Gainz signal."""
+    """Return True if the latest completed 5-min bar fires an opposing Gainz signal.
+
+    Always evaluated on the underlying's bars — Alpaca's bars endpoint does not
+    accept OCC option symbols.
+    """
     try:
-        bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
+        bars = alpaca_fetch_bars(underlying_symbol, days_back=1, interval="5min")
         if len(bars) < 16:
             return False
         # Use the last completed bar (penultimate row — last row may be in-progress)
@@ -119,7 +123,8 @@ def is_past_or(min_after_open: int = 60) -> bool:
     return minutes_since_open >= min_after_open
 
 
-def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True) -> dict | None:
+def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
+                     pb_ema: bool = True, pb_ema_fast: int = 13, pb_ema_slow: int = 55) -> dict | None:
     """Evaluate sweet spot conditions. Returns trigger dict or None."""
     try:
         analyzer = MarketAnalyzer()
@@ -180,6 +185,17 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True) 
             return None
         if chop.chop_score > max_chop:
             return None
+
+        # ── PB EMA inside-band gate (golden: ON, 13/55) ──
+        # Reject when price is *between* the fast/slow EMAs — PB EMA's
+        # "no zone" state. Symmetric: does not block direction, only chop.
+        if pb_ema and len(bars) >= pb_ema_slow:
+            close = bars["Close"].astype(float)
+            ema_f = float(close.ewm(span=pb_ema_fast, adjust=False).mean().iloc[-1])
+            ema_s = float(close.ewm(span=pb_ema_slow, adjust=False).mean().iloc[-1])
+            band_hi, band_lo = max(ema_f, ema_s), min(ema_f, ema_s)
+            if band_lo < indicators.current_price < band_hi:
+                return None
 
         now = get_et_now()
         range_high = or_result.range_high if or_result else indicators.current_price
@@ -274,7 +290,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             cascade_size_high: int = 3,
             regime_guard: bool = False,
             vix_max: float = 30.0,
-            vix_spike_pct: float = 20.0):
+            vix_spike_pct: float = 20.0,
+            pb_ema: bool = True,
+            pb_ema_fast: int = 13,
+            pb_ema_slow: int = 55):
     """Run the agent for one trading day."""
     today = date.today()
     journal_file = JOURNAL_DIR / f"{today.isoformat()}.json"
@@ -291,9 +310,11 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             logger.error("Paper trader init failed: %s — running journal-only", e)
 
     logger.info("═══ Sweet Spot Agent: %s — %s ═══", symbol, today)
-    logger.info("Settings: qty=%d, max_chop=%d, max_trades=%d, max_stops=%d, scan_start=%dmin, regime_guard=%s, paper=%s, mode=%s",
+    logger.info("Settings: qty=%d, max_chop=%d, max_trades=%d, max_stops=%d, scan_start=%dmin, regime_guard=%s, pb_ema=%s, paper=%s, mode=%s",
                 qty, max_chop, max_trades_per_day, max_stops_per_day, scan_start_min,
-                "ON" if regime_guard else "OFF", bool(trader),
+                "ON" if regime_guard else "OFF",
+                f"{pb_ema_fast}/{pb_ema_slow}" if pb_ema else "OFF",
+                bool(trader),
                 "shares" if trade_shares else f"0DTE options (contracts={contracts}, delta={target_delta})")
 
     # ── VIX sit-out filter (golden: skip if VIX > 30 or spiked > 20% day-over-day) ──
@@ -346,7 +367,8 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             # Drop tracked symbols that are no longer open (stop/target/EOD already fired)
             open_directions = {s: d for s, d in open_directions.items() if s in live_symbols}
             for sym, dir_ in list(open_directions.items()):
-                if _check_gainz_exit(sym, dir_, gainz_body_ratio,
+                # Always evaluate Gainz on the underlying's bars, never the OCC symbol.
+                if _check_gainz_exit(symbol, dir_, gainz_body_ratio,
                                      gainz_rsi_overbought, gainz_rsi_oversold):
                     # ── Min-profit gate: only Gainz-exit if P&L >= gainz_min_profit_r × risk ──
                     if gainz_min_profit_r > 0:
@@ -373,12 +395,16 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                             continue
                                 except Exception as e:
                                     logger.warning("Min-profit gate check failed for %s: %s", sym, e)
+                    is_option = sym in open_options
                     logger.info("⚡ GAINZ EXIT: closing %s %s on opposing reversal signal",
                                 sym, "CALL" if "call" in dir_ else "PUT")
-                    close_result = trader.close_position(sym)
+                    if is_option:
+                        close_result = trader.close_options_position(sym)
+                    else:
+                        close_result = trader.close_position(sym)
                     # Stamp the matching trigger with the Gainz exit info
                     for trig in triggers:
-                        if trig.get("symbol") == sym and not trig.get("closed"):
+                        if (trig.get("occ_symbol") == sym or trig.get("symbol") == sym) and not trig.get("closed"):
                             trig["exit_reason"] = "gainz_exit"
                             trig["exit_time"] = get_et_now().isoformat()
                             if close_result:
@@ -387,6 +413,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             break
                     journal_file.write_text(json.dumps(triggers, indent=2, default=str))
                     open_directions.pop(sym, None)
+                    open_options.pop(sym, None)
 
         # ── Options stop/target/time-stop monitoring (underlying-based, since no bracket for options) ──
         if not trade_shares and trader and open_options:
@@ -546,7 +573,8 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             break
 
         scan_count += 1
-        trigger = check_sweet_spot(symbol, max_chop=max_chop, regime_guard=regime_guard)
+        trigger = check_sweet_spot(symbol, max_chop=max_chop, regime_guard=regime_guard,
+                                   pb_ema=pb_ema, pb_ema_fast=pb_ema_fast, pb_ema_slow=pb_ema_slow)
 
         if trigger:
             # Deduplicate (15 min cooldown)
@@ -768,6 +796,13 @@ def main():
                         help="Disable regime guard (legacy flag, already OFF by default)")
     parser.add_argument("--regime-guard", action="store_true",
                         help="Enable regime guard (default: OFF — validated: removing it improves Sharpe 1.38→1.74, PF 1.30→1.37 over 2yr)")
+    parser.add_argument("--no-pb-ema", action="store_true",
+                        help="Disable PB EMA inside-band gate (default: ON, 13/55 — "
+                             "validated 730d SPY: PF 1.41→1.48, Sharpe 1.89→2.26, MDD −12%%)")
+    parser.add_argument("--pb-ema-fast", type=int, default=13,
+                        help="Fast EMA length for PB EMA band (golden: 13)")
+    parser.add_argument("--pb-ema-slow", type=int, default=55,
+                        help="Slow EMA length for PB EMA band (golden: 55)")
     parser.add_argument("--vix-max", type=float, default=30.0,
                         help="Skip trading days where VIX > this level (0=disabled, default: 30)")
     parser.add_argument("--vix-spike-pct", type=float, default=20.0,
@@ -807,7 +842,10 @@ def main():
                             cascade_size_high=args.cascade_size_high,
                             regime_guard=args.regime_guard,
                             vix_max=args.vix_max,
-                            vix_spike_pct=args.vix_spike_pct)
+                            vix_spike_pct=args.vix_spike_pct,
+                            pb_ema=not args.no_pb_ema,
+                            pb_ema_fast=args.pb_ema_fast,
+                            pb_ema_slow=args.pb_ema_slow)
                     # After market close, sleep until next day 9:25 AM
                     tomorrow_925 = (now + timedelta(days=1)).replace(hour=9, minute=25, second=0)
                     sleep_sec = (tomorrow_925 - get_et_now()).total_seconds()
@@ -843,7 +881,10 @@ def main():
                 cascade_size_high=args.cascade_size_high,
                 regime_guard=args.regime_guard,
                 vix_max=args.vix_max,
-                vix_spike_pct=args.vix_spike_pct)
+                vix_spike_pct=args.vix_spike_pct,
+                pb_ema=not args.no_pb_ema,
+                pb_ema_fast=args.pb_ema_fast,
+                pb_ema_slow=args.pb_ema_slow)
 
 
 if __name__ == "__main__":

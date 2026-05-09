@@ -524,6 +524,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             logger.warning("VIX sit-out check failed: %s — proceeding anyway", e)
 
     last_trigger = None
+    last_was_stagnation = False  # Track for extended post-stagnation cooldown
     scan_count = 0
     trades_today = 0
     stops_today = 0
@@ -678,19 +679,30 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
 
                         # Stagnation exit: if 60 min (12 bars) have passed and trade
                         # hasn't moved 0.3R in its favor, cut it to avoid theta bleed.
+                        # Tiered stagnation (golden): at 40 min (8 bars), exit flat trades
+                        # between -0.1R and +0.2R early. At 60 min, standard stagnation.
                         # MFE skip (golden): if trade already reached 0.5R, don't stagnation-exit —
                         # let decay_target or stop resolve it. Trades that showed real momentum
                         # but temporarily pulled back deserve more time to reach target.
                         if not should_close and "entry_time" in opt_info:
                             minutes_in_trade = (now - opt_info["entry_time"]).total_seconds() / 60
-                            if minutes_in_trade >= 60:
-                                risk = abs(opt_info.get("entry_underlying", underlying_price) - opt_info["stop_price"])
-                                if risk > 0:
-                                    current_pnl = (underlying_price - opt_info.get("entry_underlying", underlying_price)) \
-                                        if "call" in opt_info["direction"] \
-                                        else (opt_info.get("entry_underlying", underlying_price) - underlying_price)
-                                    mfe = opt_info.get("max_favorable_excursion", 0.0)
-                                    mfe_ratio = mfe / risk if risk > 0 else 0
+                            risk = abs(opt_info.get("entry_underlying", underlying_price) - opt_info["stop_price"])
+                            if risk > 0:
+                                current_pnl = (underlying_price - opt_info.get("entry_underlying", underlying_price)) \
+                                    if "call" in opt_info["direction"] \
+                                    else (opt_info.get("entry_underlying", underlying_price) - underlying_price)
+                                mfe = opt_info.get("max_favorable_excursion", 0.0)
+                                mfe_ratio = mfe / risk if risk > 0 else 0
+                                pnl_r = current_pnl / risk
+
+                                # Tiered stagnation: early exit at bar 8 (40 min) if flat
+                                if 38 <= minutes_in_trade < 42:  # ~40 min window (bar 8)
+                                    if -0.1 <= pnl_r <= 0.2 and mfe_ratio < 0.5:
+                                        should_close = True
+                                        close_reason = "stagnation"
+
+                                # Standard stagnation at bar 12 (60 min)
+                                if not should_close and minutes_in_trade >= 60:
                                     if current_pnl < risk * 0.3 and mfe_ratio < 0.5:
                                         should_close = True
                                         close_reason = "stagnation"
@@ -719,8 +731,12 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             if close_reason == "stop":
                                 stops_today += 1
                                 consecutive_losses += 1
+                            elif close_reason == "stagnation":
+                                consecutive_losses += 1
+                                last_was_stagnation = True
                             elif close_reason == "target":
                                 consecutive_losses = 0
+                                last_was_stagnation = False
             except Exception as e:
                 logger.warning("Options monitoring failed: %s", e)
 
@@ -760,9 +776,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                    pb_ema=pb_ema, pb_ema_fast=pb_ema_fast, pb_ema_slow=pb_ema_slow)
 
         if trigger:
-            # Deduplicate (15 min cooldown)
-            if last_trigger and (now - last_trigger).total_seconds() < 900:
-                logger.debug("Skipping duplicate trigger within 15 min")
+            # Deduplicate (15 min cooldown, 30 min after stagnation exit)
+            cooldown_sec = 1800 if last_was_stagnation else 900
+            if last_trigger and (now - last_trigger).total_seconds() < cooldown_sec:
+                logger.debug("Skipping duplicate trigger within cooldown (%d min)", cooldown_sec // 60)
             else:
                 last_trigger = now
                 trades_today += 1

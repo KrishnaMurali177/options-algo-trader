@@ -152,7 +152,9 @@ def _build_indicators_from_bars(bars: pd.DataFrame, symbol: str = "SPY") -> Mark
 
 
 def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
-               min_cascade: int = 4, min_quality: int = 4, max_quality: int = 7,
+               min_cascade: int = 4, min_cascade_call: int | None = None,
+               vix_stop_slope: float = 0.0, vix_stop_anchor: float = 15.0,
+               min_quality: int = 4, max_quality: int = 7,
                breakout_pct: float = 0.25, cooldown_bars: int = 3,
                scan_end: str = "13:59",
                scan_start: str = "11:30",
@@ -199,7 +201,11 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                  tiered_stag_early_bar: int = 8,
                  tiered_stag_pnl_lo: float = -0.1,
                  tiered_stag_pnl_hi: float = 0.2,
-                 stag_cooldown_bars: int = 6) -> list[dict]:
+                 stag_cooldown_bars: int = 6,
+                 r_anchored_risk: bool = False,
+                 r_anchor_pct: float = 0.25,
+                 extension_veto: bool = False,
+                 extension_max_atr: float = 2.0) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
     Uses the EXACT same analyzers as the live agent:
@@ -248,8 +254,12 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                     range_width = quick_width
                     effective_scan_start = "10:00"
 
-    # Post-OR bars (10:30 onward) — scan windows
-    post_or = day_bars[day_bars.index > or_bars.index[-1]]
+    # Post-OR bars — scan windows
+    # When dynamic_or fired with the 30-min OR, scan from 10:00; otherwise 10:30+
+    if dynamic_or and effective_scan_start == "10:00":
+        post_or = day_bars[day_bars.index >= quick_or_bars.index[-1]]
+    else:
+        post_or = day_bars[day_bars.index > or_bars.index[-1]]
     if len(post_or) < 3:
         return []
 
@@ -478,7 +488,14 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         )
         explosion = cascade.explosion_score
 
-        if explosion < min_cascade:
+        # Side-asymmetric cascade gate: optional separate floor for CALLs to
+        # correct cascade-score bull-bias (CALLs at low E underperform PUTs at
+        # the same E in 730d SPY data — see strategy_callput_calibration_skew).
+        effective_min_cascade = (
+            min_cascade_call if (min_cascade_call is not None and direction == "buy_call")
+            else min_cascade
+        )
+        if explosion < effective_min_cascade:
             continue
 
         # ── Choppiness ──
@@ -498,6 +515,18 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             ema_s = float(day_pb_ema_slow.iloc[:n].iloc[-1])
             band_hi, band_lo = max(ema_f, ema_s), min(ema_f, ema_s)
             if band_lo < price < band_hi:
+                continue
+
+        # ── Extension veto (mean-reversion exhaustion filter) ──
+        # Reject buy_call when price >> SMA-20 by N×ATR (call already overextended,
+        # likely to revert before target). Mirror for buy_put when price << SMA-20.
+        # Asymmetric / directional: only vetoes trend-continuation entries; a counter-
+        # trend buy_put on an overextended-up move stays eligible.
+        if extension_veto and atr_val > 0:
+            ext_atr = (price - indicators.sma_20) / atr_val
+            if direction == "buy_call" and ext_atr > extension_max_atr:
+                continue
+            if direction == "buy_put" and -ext_atr > extension_max_atr:
                 continue
 
         # ── TRIGGER! ──
@@ -537,11 +566,29 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             ar_range_high = range_high
             ar_range_low = range_low
 
-        if direction == "buy_call":
+        if r_anchored_risk:
+            # R-anchored geometry: risk is a fixed fraction of the range, independent
+            # of where in the breakout zone entry triggered. Removes endogeneity
+            # between entry-vs-mid distance and risk size, so target_mult means
+            # the same dollar distance regardless of bar timing.
+            ar_range_width = ar_range_high - ar_range_low
+            risk = r_anchor_pct * ar_range_width
+            if risk <= 0:
+                continue
+            entry = price
+            if direction == "buy_call":
+                stop = entry - risk
+                target = entry + risk * target_mult
+            else:
+                stop = entry + risk
+                target = entry - risk * target_mult
+        elif direction == "buy_call":
             entry = price
             mid = (ar_range_high + ar_range_low) / 2
-            # Tighter stop: 60% from low toward high (instead of bare midpoint)
-            stop = mid + 0.10 * (ar_range_high - ar_range_low)
+            # VIX-conditional stop buffer: widens in turbulent regimes, anchored
+            # to baseline 0.10 at VIX <= vix_stop_anchor.
+            buffer_pct = 0.10 + vix_stop_slope * max(0.0, vix - vix_stop_anchor)
+            stop = mid + buffer_pct * (ar_range_high - ar_range_low)
             risk = entry - stop
             if risk <= 0:
                 continue
@@ -549,8 +596,8 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         else:
             entry = price
             mid = (ar_range_high + ar_range_low) / 2
-            # Tighter stop: 60% from high toward low (instead of bare midpoint)
-            stop = mid - 0.10 * (ar_range_high - ar_range_low)
+            buffer_pct = 0.10 + vix_stop_slope * max(0.0, vix - vix_stop_anchor)
+            stop = mid - buffer_pct * (ar_range_high - ar_range_low)
             risk = stop - entry
             if risk <= 0:
                 continue
@@ -884,6 +931,15 @@ def main():
     parser.add_argument("--min-quality", type=int, default=3, help="Minimum quality score (golden: 3)")
     parser.add_argument("--max-quality", type=int, default=7, help="Maximum quality score (golden: 7)")
     parser.add_argument("--min-cascade", type=int, default=2, help="Minimum cascade proxy (golden: 2, was 4)")
+    parser.add_argument("--min-cascade-call", type=int, default=None,
+                        help="Side-asymmetric: separate min cascade for CALLs only "
+                             "(corrects cascade bull-bias). Default: None (use --min-cascade for both).")
+    parser.add_argument("--vix-stop-slope", type=float, default=0.0,
+                        help="VIX-conditional stop buffer slope (default: 0.0 = static 10%% buffer). "
+                             "Buffer = 0.10 + slope * max(0, VIX - vix_stop_anchor). "
+                             "Try 0.005 (10%% at VIX≤15, 15%% at VIX 25).")
+    parser.add_argument("--vix-stop-anchor", type=float, default=15.0,
+                        help="VIX level at which stop buffer slope kicks in (default: 15.0).")
     parser.add_argument("--breakout-pct", type=float, default=0.25, help="Breakout percentage of range")
     parser.add_argument("--cooldown-bars", type=int, default=3, help="Cooldown period in bars")
     parser.add_argument("--scan-end", type=str, default="13:59", help="End time for scanning (HH:MM, golden: 13:59)")
@@ -994,6 +1050,18 @@ def main():
                         help="Max P&L as fraction of R for early stag exit (default: 0.2)")
     parser.add_argument("--stag-cooldown-bars", type=int, default=6,
                         help="Extended cooldown bars after stagnation exit (default: 6 = 30 min)")
+    parser.add_argument("--r-anchored-risk", action="store_true", default=False,
+                        help="A/B: anchor risk to a fixed fraction of range width (default: 25%%) "
+                             "instead of (entry - mid_stop). Removes endogeneity between entry "
+                             "location and risk size, so target_mult means a consistent distance.")
+    parser.add_argument("--r-anchor-pct", type=float, default=0.25,
+                        help="Risk as fraction of range width when --r-anchored-risk is on (default: 0.25)")
+    parser.add_argument("--extension-veto", action="store_true", default=False,
+                        help="A/B: veto entries when price is overextended from SMA-20 by N×ATR. "
+                             "Asymmetric — only vetoes trend-continuation; counter-trend stays eligible. "
+                             "Tests Malyarovich-style mean-reversion exhaustion idea.")
+    parser.add_argument("--extension-max-atr", type=float, default=2.0,
+                        help="Max |price − SMA-20| / ATR before extension-veto rejects entry (default: 2.0)")
     args = parser.parse_args()
 
     if args.research_mode:
@@ -1090,7 +1158,9 @@ def main():
 
         triggers = replay_day(day_bars, day, max_chop=args.max_chop,
                               min_quality=args.min_quality, max_quality=args.max_quality,
-                              min_cascade=args.min_cascade, breakout_pct=args.breakout_pct,
+                              min_cascade=args.min_cascade, min_cascade_call=args.min_cascade_call,
+                              vix_stop_slope=args.vix_stop_slope, vix_stop_anchor=args.vix_stop_anchor,
+                              breakout_pct=args.breakout_pct,
                               cooldown_bars=args.cooldown_bars, scan_end=args.scan_end,
                               scan_start=args.scan_start,
                               target_mult_low=args.target_mult_low, target_mult_mid=args.target_mult_mid,
@@ -1136,7 +1206,11 @@ def main():
                               tiered_stag_early_bar=args.tiered_stag_early_bar,
                               tiered_stag_pnl_lo=args.tiered_stag_pnl_lo,
                               tiered_stag_pnl_hi=args.tiered_stag_pnl_hi,
-                              stag_cooldown_bars=args.stag_cooldown_bars)
+                              stag_cooldown_bars=args.stag_cooldown_bars,
+                              r_anchored_risk=args.r_anchored_risk,
+                              r_anchor_pct=args.r_anchor_pct,
+                              extension_veto=args.extension_veto,
+                              extension_max_atr=args.extension_max_atr)
         all_triggers.extend(triggers)
 
     # ── Results ──
@@ -1196,11 +1270,16 @@ def main():
         var_d = sum((x - mean_d) ** 2 for x in daily_series) / (n_days - 1)
         std_d = var_d ** 0.5
         sharpe = (mean_d / std_d) * (252 ** 0.5) if std_d > 0 else float("inf")
-        # Sortino: target downside deviation (target=0, divisor=N total)
-        # TDD = sqrt(mean(min(0, r)^2 over all N days))
-        downside_sq_sum = sum(x ** 2 for x in daily_series if x < 0)
-        tdd = (downside_sq_sum / n_days) ** 0.5
-        sortino = (mean_d / tdd) * (252 ** 0.5) if tdd > 0 else float("inf")
+        # Sortino: Frank-Sortino-original formulation. Divide by the count of
+        # *negative* days only, so the denominator measures realized downside
+        # risk rather than smearing it across calm/zero days. This is what
+        # GIPS/Pertrac/most fund admin systems report.
+        downside_returns = [x for x in daily_series if x < 0]
+        if downside_returns:
+            tdd = (sum(x ** 2 for x in downside_returns) / len(downside_returns)) ** 0.5
+            sortino = (mean_d / tdd) * (252 ** 0.5) if tdd > 0 else float("inf")
+        else:
+            sortino = float("inf")
     else:
         sharpe = sortino = 0.0
 

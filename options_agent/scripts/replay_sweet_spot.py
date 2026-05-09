@@ -192,9 +192,14 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 active_range: bool = False,
                 active_range_bars: int = 6,
                 active_range_blend: float = 1.0,
-                pb_ema: bool = False,
-                pb_ema_fast: int = 9,
-                pb_ema_slow: int = 21) -> list[dict]:
+                 pb_ema: bool = False,
+                 pb_ema_fast: int = 9,
+                 pb_ema_slow: int = 21,
+                 tiered_stagnation: bool = False,
+                 tiered_stag_early_bar: int = 8,
+                 tiered_stag_pnl_lo: float = -0.1,
+                 tiered_stag_pnl_hi: float = 0.2,
+                 stag_cooldown_bars: int = 6) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
     Uses the EXACT same analyzers as the live agent:
@@ -250,6 +255,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
 
     triggers = []
     last_trigger_idx = -999
+    last_was_stagnation = False  # Track for extended stag cooldown
     stops_today = 0  # Track stop-outs for daily loss limit
     consecutive_losses = 0  # Track streak for streak breaker
     daily_pnl_cumulative = 0.0  # Track cumulative daily P&L
@@ -333,7 +339,8 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             break
 
         # Cooldown: skip if triggered within last N bars
-        if i - last_trigger_idx < cooldown_bars:
+        effective_cooldown = stag_cooldown_bars if (tiered_stagnation and last_was_stagnation) else cooldown_bars
+        if i - last_trigger_idx < effective_cooldown:
             continue
 
         # Use all bars up to current time for indicators
@@ -622,7 +629,8 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             # to the (now-decayed) target, take profit immediately.
             if decay_aware_targets and simulate_options:
                 bars_elapsed = bar_j + 1
-                decay_factor = max(decay_target_floor,
+                _eff_floor = decay_target_floor
+                decay_factor = max(_eff_floor,
                                    0.5 ** (bars_elapsed / decay_halflife_bars))
                 decayed_dist = original_target_dist * decay_factor
                 if direction == "buy_call":
@@ -687,6 +695,17 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             # Stagnation exit: if after N bars trade hasn't moved 0.5R, cut it
             # Enhancement: skip stagnation if trade reached >0.5R (MFE) — let target/stop resolve
             bars_since_entry = len(day_bars[(day_bars.index > ts) & (day_bars.index <= fb.name)])
+
+            # ── Tiered stagnation: early exit at bar 8 if trade is flat (between -0.1R and +0.2R) ──
+            # Cuts dead-money trades sooner, preserving capital for better setups.
+            # Also imposes a longer post-stagnation cooldown to avoid re-entering chop.
+            if tiered_stagnation and bars_since_entry == tiered_stag_early_bar:
+                current_pnl = (fc - entry) if direction == "buy_call" else (entry - fc)
+                pnl_r = current_pnl / risk if risk > 0 else 0
+                mfe_ratio = max_favorable_excursion / risk if risk > 0 else 0
+                if tiered_stag_pnl_lo <= pnl_r <= tiered_stag_pnl_hi and mfe_ratio < 0.5:
+                    outcome = "stagnation"; exit_price = fc; exit_ts = fb.name; break
+
             if bars_since_entry >= stagnation_bars:
                 current_pnl = (fc - entry) if direction == "buy_call" else (entry - fc)
                 mfe_ratio = max_favorable_excursion / risk if risk > 0 else 0
@@ -770,6 +789,9 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         if outcome == "stop":
             stops_today += 1
 
+        # Track stagnation for extended cooldown
+        last_was_stagnation = (outcome == "stagnation")
+
         # ── Update daily risk trackers ──
         daily_pnl_cumulative += pnl
         if pnl <= 0:
@@ -839,9 +861,12 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
 def main():
     parser = argparse.ArgumentParser(description="Replay Sweet Spot Agent on historical data")
     # Defaults match GOLDEN parameters (see README) — produces validated 2-yr SPY
-    # results (real Alpaca options): 695 trades, +$3,780/contract, +$11,341 cascade-sized.
+    # results (real Alpaca options): 608 trades, +$5,053/contract, +$15,159 cascade-sized.
     # Tighter stops (60% of range), decay floor 0.4, mid-tier target 1.5R.
-    # Stagnation: 12 bars (60 min), no confirmation bar, MFE skip at 0.5R.
+    # Stagnation: tiered (bar 8 early exit + bar 12 standard), MFE skip at 0.5R.
+    # Tiered stagnation: exits flat trades (-0.1R to +0.2R) at bar 8 (40 min);
+    #   extends cooldown to 6 bars (30 min) after stagnation exits.
+    #   Validated 730d SPY: PF 1.51→1.60, Sharpe 2.31→2.63, MDD −33%, Calmar +60%.
     # Stagnation threshold: 0.3R (was 0.5R — keeps trades with some momentum alive).
     # Streak breaker: 2 consecutive losses → stop for day.
     # Cascade ≥ 2 (lowered from 4 — E2-E3 trades profitable with other filters).
@@ -955,6 +980,20 @@ def main():
                         help="Skip trading days where VIX > this level (0=disabled, default: 30)")
     parser.add_argument("--vix-spike-pct", type=float, default=20.0,
                         help="Skip days where VIX spiked >N%% day-over-day (0=disabled, default: 20)")
+    # ── Tiered Stagnation (golden default: ON) ──
+    parser.add_argument("--tiered-stagnation", action="store_true", default=True,
+                        help="Enable tiered stagnation: early exit at bar 8 if trade is flat (-0.1R to +0.2R),"
+                             " plus extended 6-bar cooldown after stagnation exits (golden: ON)")
+    parser.add_argument("--no-tiered-stagnation", action="store_true",
+                        help="Disable tiered stagnation (revert to bar-12-only stagnation)")
+    parser.add_argument("--tiered-stag-early-bar", type=int, default=8,
+                        help="Bar at which tiered stagnation checks for flat trades (default: 8 = 40 min)")
+    parser.add_argument("--tiered-stag-pnl-lo", type=float, default=-0.1,
+                        help="Min P&L as fraction of R for early stag exit (default: -0.1)")
+    parser.add_argument("--tiered-stag-pnl-hi", type=float, default=0.2,
+                        help="Max P&L as fraction of R for early stag exit (default: 0.2)")
+    parser.add_argument("--stag-cooldown-bars", type=int, default=6,
+                        help="Extended cooldown bars after stagnation exit (default: 6 = 30 min)")
     args = parser.parse_args()
 
     if args.research_mode:
@@ -1092,7 +1131,12 @@ def main():
                               active_range_blend=args.active_range_blend,
                               pb_ema=args.pb_ema and not args.no_pb_ema,
                               pb_ema_fast=args.pb_ema_fast,
-                              pb_ema_slow=args.pb_ema_slow)
+                              pb_ema_slow=args.pb_ema_slow,
+                              tiered_stagnation=args.tiered_stagnation and not args.no_tiered_stagnation,
+                              tiered_stag_early_bar=args.tiered_stag_early_bar,
+                              tiered_stag_pnl_lo=args.tiered_stag_pnl_lo,
+                              tiered_stag_pnl_hi=args.tiered_stag_pnl_hi,
+                              stag_cooldown_bars=args.stag_cooldown_bars)
         all_triggers.extend(triggers)
 
     # ── Results ──

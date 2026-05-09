@@ -415,7 +415,7 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 | **Entry confirmation** | Price in upper/lower 25% of OR range | Prevents entering from mid-range |
 | **Cascade-scaled targets** | E≥8→1.5R, E≥6→1.5R, else 1.0R | Mid-tier target raised from 1.25R to 1.5R (validated: PF 1.16→1.23) |
 | **Cascade contract sizing** | **ON** — 3ct flat across E2-5 / E6-7 / E8+ | Flat 3/3/3 — equal sizing across all tiers |
-| **Cooldown** | 3 bars (15 min) | Between consecutive triggers |
+| **Cooldown** | 3 bars (15 min) | Between consecutive triggers; 6 bars (30 min) after stagnation exits |
 | **Stop** | 60% of range (mid + 10% width) | Tighter than bare midpoint — validated: Sharpe 0.76→1.07, DD 89.7%→63.7% |
 | **Regime guard** | **OFF** | Disabled — counter-trend trades are profitable when chop+quality+cascade filters pass. Validated 2yr: Sharpe 1.38→1.74, PF 1.30→1.37, P&L +$95→+$122. Use `--regime-guard` to re-enable. |
 | **Active range blend** | **ON** (blend=0.25, 6 bars/30min) | Stop/target uses 75% OR + 25% recent 30-min range. Prevents stale entries on late-day triggers. Validated SPY+QQQ: WR +3pp, DD −14%, UW 83→52 days. |
@@ -428,15 +428,18 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 
 ### Stagnation Exit (theta-bleed protection)
 
-Trades that don't move in the expected direction within a set window are cut early to prevent theta from eroding 0DTE premium on stagnant positions.
+Trades that don't move in the expected direction within a set window are cut early to prevent theta from eroding 0DTE premium on stagnant positions. The **tiered stagnation** system (golden default) adds an earlier check at bar 8 for flat trades.
 
 | Parameter | Value | Notes |
 |-----------|-------|-------|
-| **Stagnation bars** | **12** (60 min) | If trade hasn't moved ≥ threshold after 12 bars, exit at market. Increased from 10 bars — validated 730d SPY+QQQ+VOO: SPY MDD 21.6%→11.7%, Calmar 4.63→8.56; QQQ Sharpe 1.04→1.34, MDD 37.2%→20.1% |
+| **Tiered stagnation** | **ON** | Early exit at bar 8 (40 min) for flat trades between −0.1R and +0.2R. Validated 730d SPY: PF 1.51→1.60, Sharpe 2.31→2.63, MDD $16.68→$11.10 (−33%), Calmar 8.56→13.66 (+60%). |
+| **Tiered stag early bar** | **8** (40 min) | If trade P&L is between −0.1R and +0.2R at bar 8, exit immediately — trade is going nowhere and theta is bleeding |
+| **Post-stagnation cooldown** | **6 bars** (30 min) | Extended cooldown after stagnation exits (vs 3 bars/15 min normal). Prevents re-entering the same choppy range. |
+| **Stagnation bars** | **12** (60 min) | Standard stagnation: if trade hasn't moved ≥ threshold after 12 bars, exit at market. Increased from 10 bars — validated 730d SPY+QQQ+VOO: SPY MDD 21.6%→11.7%, Calmar 4.63→8.56; QQQ Sharpe 1.04→1.34, MDD 37.2%→20.1% |
 | **Minimum move to hold** | **0.3R** | Trade must be at least 0.3× risk in profit; otherwise cut. Lowered from 0.5R — keeps trades with some momentum alive for decaying target. |
 | **MFE skip** | **0.5R** | If trade's Maximum Favorable Excursion (best P&L reached) exceeded 0.5R, skip stagnation exit — let decay_target or stop resolve it. Trades that showed real momentum but temporarily pulled back deserve more time to reach target. |
 
-The stagnation exit fires **once** — on the first bar where `bars_since_entry >= 12` and `current_pnl < risk * 0.3` **and** `MFE < 0.5R`. If MFE ≥ 0.5R, the trade had real traction and is exempt from stagnation — it will exit via decay_target (if momentum resumes) or stop (if it truly failed). Combined with the **streak breaker** (2 consecutive losses → stop for day), this keeps losing days contained.
+The stagnation exit uses a **two-tier system**. At bar 8 (40 min), if the trade's P&L is between −0.1R and +0.2R and MFE < 0.5R, the trade exits immediately — it's going nowhere and theta is bleeding. At bar 12 (60 min), the standard stagnation check fires: if `current_pnl < risk * 0.3` **and** `MFE < 0.5R`, exit. If MFE ≥ 0.5R at either tier, the trade had real traction and is exempt — it will exit via decay_target or stop. After any stagnation exit, a 6-bar (30 min) cooldown is imposed instead of the standard 3-bar (15 min) cooldown, preventing re-entry into the same choppy range. Combined with the **streak breaker** (2 consecutive losses → stop for day), this keeps losing days contained.
 
 **MFE skip validation (2-year, 730 days, real Alpaca 0DTE options):**
 
@@ -525,17 +528,17 @@ This filter uses daily closing VIX data. During the Aug 2024–Mar 2025 drawdown
 
 | Metric | SPY | QQQ | VOO |
 |--------|-----|-----|-----|
-| Triggers | 625 (1.2/day) | 580 (1.2/day) | 710 (1.4/day) |
-| Win Rate | **60.5%** | **52.9%** | **58.0%** |
-| Profit Factor | **1.51** | **1.27** | **1.90** |
-| Total P&L (cascade-sized) | **+$142.77** | **+$103.97** | **+$193.08** |
-| Sharpe Ratio | **2.31** | **1.34** | **3.74** |
-| Sortino Ratio | **4.55** | **2.75** | **8.92** |
-| Max Drawdown | **$16.68 (11.7%)** | **$22.53 (20.1%)** | **$14.68 (7.6%)** |
-| Calmar Ratio | **8.56** | **4.61** | **13.16** |
-| Longest Underwater | 104 days | 130 days | 58 days |
+| Triggers | 608 (1.2/day) | 569 (1.1/day) | 697 (1.4/day) |
+| Win Rate | **59.7%** | **52.5%** | **58.8%** |
+| Profit Factor | **1.60** | **1.35** | **1.97** |
+| Total P&L (cascade-sized) | **+$151.59** | **+$117.20** | **+$193.08** |
+| Sharpe Ratio | **2.63** | **1.61** | **3.93** |
+| Sortino Ratio | **5.56** | **3.39** | **9.15** |
+| Max Drawdown | **$11.10 (7.3%)** | **$19.14 (15.4%)** | **$11.88 (6.2%)** |
+| Calmar Ratio | **13.66** | **6.12** | **16.25** |
+| Longest Underwater | 88 days | 117 days | 57 days |
 
-> Golden defaults: stagnation 12 bars / 0.3R, decay halflife 8 bars, PB EMA 13/55, cascade 3/3/3, max-chop 5, max-stops 1, regime guard OFF.
+> Golden defaults: tiered stagnation ON (bar 8 early exit + 6-bar stag cooldown), stagnation 12 bars / 0.3R, decay halflife 8 bars, PB EMA 13/55, cascade 3/3/3, max-chop 5, max-stops 1, regime guard OFF.
 
 **1-Year Replay Results (SPY, 252 days, May 2025–May 2026, Golden Defaults, Real Alpaca 0DTE Options):**
 

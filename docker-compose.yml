@@ -13,10 +13,24 @@ services:
       - ./options_agent/data_cache:/app/data_cache
     restart: unless-stopped
 
-  agent:
+  agent-spy:
     build: .
-    container_name: options-agent
-    command: python scripts/run_sweet_spot_agent.py --daemon
+    container_name: options-agent-spy
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol SPY
+    env_file:
+      - options_agent/.env
+    volumes:
+      - ./options_agent/logs:/app/logs
+      - ./options_agent/sweet_spot_journal:/app/sweet_spot_journal
+      - ./options_agent/data_cache:/app/data_cache
+    restart: unless-stopped
+    profiles:
+      - live
+
+  agent-qqq:
+    build: .
+    container_name: options-agent-qqq
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol QQQ
     env_file:
       - options_agent/.env
     volumes:

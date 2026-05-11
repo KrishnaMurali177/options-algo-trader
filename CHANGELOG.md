@@ -16,3 +16,8 @@
 - [2026-05-07] Modified: options_agent/dashboard/app.py — Fixed choppiness score missing in live/Now mode by fetching 5-min bars in fetch_indicators and reusing them for choppiness
 - [2026-05-07] Modified: Dockerfile — Added tzdata package for timezone support in slim image
 - [2026-05-07] Modified: 13 Python files — Replaced all `US/Eastern` with `America/New_York` (IANA standard) to fix pandas 3.x zoneinfo compatibility
+- [2026-05-10] Modified: options_agent/.env — Added ALPACA_API_KEY and ALPACA_SECRET_KEY fields for paper trading setup
+- [2026-05-10] Modified: docker-compose.yml — Split agent into agent-spy and agent-qqq services with default params, both under live profile
+- [2026-05-10] Modified: run.sh — Added agents, agent-spy, agent-qqq, status, and stop-agents commands
+- [2026-05-10] Modified: HOWTO.md — Rewrote with live agent setup, parameters table, cron config, and updated command list
+- [2026-05-10] Modified: options_agent/README.md — Updated Quick Start and Live Agent sections to use Docker commands

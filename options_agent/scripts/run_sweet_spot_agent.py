@@ -569,7 +569,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         try:
             live_positions = {p.symbol: p for p in trader.client.get_all_positions()}
             for trig in triggers:
-                if trig.get("closed") or trig.get("trade_mode") != "0dte_option":
+                if trig.get("closed") or trig.get("discard") or trig.get("trade_mode") != "0dte_option":
                     continue
                 occ = trig.get("occ_symbol")
                 if occ and occ in live_positions and occ.startswith(symbol):
@@ -603,7 +603,9 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
 
         if not is_market_hours():
             if now.hour >= 16:
+                logger.info("Loop exit: past market close (%02d:%02d ET)", now.hour, now.minute)
                 break
+            logger.info("Outside market hours (%02d:%02d ET, weekday=%d) — sleeping 60s", now.hour, now.minute, now.weekday())
             time.sleep(60)
             continue
 
@@ -810,9 +812,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         if now.hour >= 14:
             # After 15:30, if no open positions, we're done for the day
             if now.hour == 15 and now.minute >= 30 and not open_directions:
-                logger.info("Time stop reached (15:30 ET) and no open positions. Done for today.")
+                logger.info("Loop exit: time stop reached (15:30 ET) and no open positions.")
                 break
             if not open_directions:
+                logger.info("Loop exit: past 14:00 entry cutoff (%02d:%02d ET) and no open positions.", now.hour, now.minute)
                 break
             time.sleep(300)
             continue
@@ -827,6 +830,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         if max_trades_per_day > 0 and trades_today >= max_trades_per_day:
             logger.info("Daily trade limit reached (%d/%d). Monitoring open positions only.", trades_today, max_trades_per_day)
             if not open_directions:
+                logger.info("Loop exit: daily trade cap (%d) reached and no open positions.", max_trades_per_day)
                 break
             time.sleep(300)
             continue

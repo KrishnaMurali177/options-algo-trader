@@ -58,7 +58,7 @@ Both strategies are **intraday scalps** with defined risk (premium paid). The ag
 
 ## 🚀 Quick Start
 
-### 1. Setup
+### 1. Configure
 ```bash
 cd options_agent
 python -m venv .venv
@@ -66,18 +66,37 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-### 2. Configure
 ```bash
-cp .env.example .env
-# Edit .env with your Robinhood credentials (only needed for live/MCP mode)
+cp options_agent/.env.example options_agent/.env
+# Edit .env — add ALPACA_API_KEY and ALPACA_SECRET_KEY for paper trading
+# Robinhood credentials only needed for live MCP mode
 ```
 
-### 3. Launch Simulation Dashboard (Streamlit)
+### 2. Launch Dashboard
 ```bash
 cd options_agent
 streamlit run dashboard/app.py
 # Opens at http://localhost:8501
 ```
+# DOCKER EQUIVALENT
+```bash
+./run.sh dashboard
+# Opens at http://localhost:8501
+```
+
+### 3. Start Live Agents (Paper Trading)
+```bash
+# Start both SPY + QQQ sweet spot agents
+./run.sh agents
+
+# Check status
+./run.sh status
+
+# Stop agents
+./run.sh stop-agents
+```
+
+See [HOWTO.md](../HOWTO.md) for full Docker setup, agent parameters, and cron configuration.
 
 The dashboard lets you:
 - 📊 **Analyze** any stock symbol with live market data and technical indicators
@@ -608,36 +627,29 @@ Output includes: win rate, profit factor, total P&L, exit breakdown, and a full 
 
 ### Live Sweet Spot Agent (paper trading)
 
-Runs autonomously during market hours, scanning every 5 minutes and placing bracket orders on your Alpaca paper account.
+Runs autonomously during market hours, scanning every 5 minutes and placing 0DTE option orders on your Alpaca paper account. Both SPY and QQQ agents run as separate Docker containers.
 
 ```bash
-cd options_agent
+# Start both SPY + QQQ agents (recommended)
+./run.sh agents
 
-# Single day run (golden parameters — 0DTE options, cascade sizing, Gainz exit ON)
-python scripts/run_sweet_spot_agent.py
+# Or start individually
+./run.sh agent-spy
+./run.sh agent-qqq
 
-# Daemon mode (restarts daily, runs Mon–Fri)
-python scripts/run_sweet_spot_agent.py --daemon
+# Check status and recent logs
+./run.sh status
 
-# Multiple base contracts (cascade sizing will scale: 2ct base × 3/3/3 = 6 per trade)
-python scripts/run_sweet_spot_agent.py --daemon --contracts 2
+# Stop agents
+./run.sh stop-agents
 
-# Legacy share trading mode
-python scripts/run_sweet_spot_agent.py --shares --qty 10
-
-# Override defaults
-python scripts/run_sweet_spot_agent.py --daemon --max-chop 5 --max-trades-per-day 3 \
-  --max-stops-per-day 1 --scan-start-min 60
-
-# Disable Gainz early exit (revert to baseline behavior)
-python scripts/run_sweet_spot_agent.py --no-gainz-exit
-
-# Tune Gainz thresholds (golden defaults: 70/30/0.7/0.3R — stricter than originals)
-python scripts/run_sweet_spot_agent.py --gainz-rsi-overbought 65 --gainz-rsi-oversold 35 \
-  --gainz-body-ratio 0.6 --gainz-min-profit-r 0.5
+# Custom parameters via docker-compose run
+docker-compose --profile live run --rm agent-spy python scripts/run_sweet_spot_agent.py \
+  --daemon --contracts 2 --max-chop 5 --max-trades-per-day 3
 
 # Journal-only mode (no paper orders, just logs triggers)
-python scripts/run_sweet_spot_agent.py --no-paper
+docker-compose --profile live run --rm agent-spy python scripts/run_sweet_spot_agent.py \
+  --no-paper
 ```
 
 **GainzAlgoV2 early-exit behavior:** When enabled (default), the agent monitors

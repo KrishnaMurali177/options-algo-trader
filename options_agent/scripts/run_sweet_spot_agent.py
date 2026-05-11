@@ -269,8 +269,12 @@ def is_past_or(min_after_open: int = 60) -> bool:
 
 
 def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
-                     pb_ema: bool = True, pb_ema_fast: int = 13, pb_ema_slow: int = 55) -> dict | None:
-    """Evaluate sweet spot conditions. Returns trigger dict or None.
+                     pb_ema: bool = True, pb_ema_fast: int = 13, pb_ema_slow: int = 55) -> dict:
+    """Evaluate sweet spot conditions. Always returns a verdict dict.
+
+    Returns a dict with either:
+      - {"status": "trigger", **trigger_payload}  on accept
+      - {"status": "reject", "stage": str, "reason": str, ...diagnostics}  on reject
 
     Replay parity: indicators, OR/recent/cascade analyzers, and choppiness all
     derive from a single multi-day Alpaca 5-min bar pull, exactly the way
@@ -282,11 +286,11 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
         extended_bars = alpaca_fetch_bars(symbol, days_back=5, interval="5min")
         if len(extended_bars) == 0:
             logger.warning("No bars returned from Alpaca for %s", symbol)
-            return None
+            return {"status": "reject", "stage": "data", "reason": "no bars from Alpaca"}
         today_et = get_et_now().date()
         day_bars = extended_bars[extended_bars.index.date == today_et]
         if len(day_bars) == 0:
-            return None
+            return {"status": "reject", "stage": "data", "reason": "no bars for today"}
 
         vix_val = _fetch_current_vix()
         indicators = _build_indicators_replay_parity(extended_bars, day_bars, symbol, vix_val)
@@ -306,16 +310,23 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
 
         direction = "buy_call" if or_momentum >= 25 else "buy_put" if or_momentum <= -25 else None
         if direction is None:
-            return None
+            return {"status": "reject", "stage": "direction",
+                    "reason": f"OR momentum {or_momentum:+d} inside ±25 band",
+                    "or_momentum": or_momentum, "recent_momentum": recent_momentum,
+                    "price": indicators.current_price}
 
         # Regime guard (off by golden default, mirror of replay logic)
         if regime_guard:
             bullish_regime = indicators.sma_20 > indicators.sma_50
             bearish_regime = indicators.sma_20 < indicators.sma_50
             if direction == "buy_put" and bullish_regime and indicators.rsi_14 <= 70:
-                return None
+                return {"status": "reject", "stage": "regime_guard",
+                        "reason": f"PUT vetoed by bullish regime (sma20>{indicators.sma_50:.2f}, rsi {indicators.rsi_14:.1f}≤70)",
+                        "direction": direction, "or_momentum": or_momentum, "price": indicators.current_price}
             if direction == "buy_call" and bearish_regime and indicators.rsi_14 >= 30:
-                return None
+                return {"status": "reject", "stage": "regime_guard",
+                        "reason": f"CALL vetoed by bearish regime (sma20<{indicators.sma_50:.2f}, rsi {indicators.rsi_14:.1f}≥30)",
+                        "direction": direction, "or_momentum": or_momentum, "price": indicators.current_price}
 
         # Real intraday VWAP from today's bars (cum typical-price × volume).
         vwap_val: float | None = None
@@ -357,12 +368,18 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
         chop = compute_choppiness(bars, vix=indicators.vix, atr=indicators.atr_14)
 
         # Sweet spot criteria
+        diag_common = {"direction": direction, "or_momentum": or_momentum,
+                       "quality": quality, "explosion": cascade.explosion_score,
+                       "chop": chop.chop_score, "price": indicators.current_price}
         if not (3 <= quality <= 7):
-            return None
+            return {"status": "reject", "stage": "quality",
+                    "reason": f"quality {quality} outside sweet band [3,7]", **diag_common}
         if cascade.explosion_score < 2:
-            return None
+            return {"status": "reject", "stage": "cascade",
+                    "reason": f"explosion {cascade.explosion_score} < 2", **diag_common}
         if chop.chop_score > max_chop:
-            return None
+            return {"status": "reject", "stage": "chop",
+                    "reason": f"chop {chop.chop_score} > max {max_chop}", **diag_common}
 
         # ── PB EMA inside-band gate (golden: ON, 13/55) ──
         # Reject when price is *between* the fast/slow EMAs — PB EMA's
@@ -373,7 +390,9 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
             ema_s = float(close.ewm(span=pb_ema_slow, adjust=False).mean().iloc[-1])
             band_hi, band_lo = max(ema_f, ema_s), min(ema_f, ema_s)
             if band_lo < indicators.current_price < band_hi:
-                return None
+                return {"status": "reject", "stage": "pb_ema",
+                        "reason": f"price ${indicators.current_price:.2f} inside EMA band [${band_lo:.2f},${band_hi:.2f}]",
+                        **diag_common}
 
         now = get_et_now()
         range_high = or_result.range_high if or_result else indicators.current_price
@@ -402,9 +421,13 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
         # ── Entry confirmation: price must be in upper/lower 25% of range or beyond ──
         breakout_threshold = range_width * 0.25
         if direction == "buy_call" and indicators.current_price < (range_high - breakout_threshold):
-            return None
+            return {"status": "reject", "stage": "entry_zone",
+                    "reason": f"CALL price ${indicators.current_price:.2f} below upper-25% band (need ≥${range_high - breakout_threshold:.2f}, range ${range_low:.2f}-${range_high:.2f})",
+                    **diag_common}
         if direction == "buy_put" and indicators.current_price > (range_low + breakout_threshold):
-            return None
+            return {"status": "reject", "stage": "entry_zone",
+                    "reason": f"PUT price ${indicators.current_price:.2f} above lower-25% band (need ≤${range_low + breakout_threshold:.2f}, range ${range_low:.2f}-${range_high:.2f})",
+                    **diag_common}
 
         # Target multiplier scales with cascade strength
         if cascade.explosion_score >= 8:
@@ -430,9 +453,12 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
             target_1 = entry - risk * target_mult
         # Replay parity: reject if price sits on the wrong side of the stop midpoint.
         if risk <= 0:
-            return None
+            return {"status": "reject", "stage": "risk",
+                    "reason": f"non-positive risk ${risk:.2f} (entry ${entry:.2f} on wrong side of stop ${stop:.2f})",
+                    **diag_common}
 
         return {
+            "status": "trigger",
             "timestamp": now.isoformat(),
             "time": now.strftime("%H:%M"),
             "symbol": symbol,
@@ -453,7 +479,7 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
 
     except Exception as e:
         logger.error("Sweet spot check failed: %s", e)
-        return None
+        return {"status": "reject", "stage": "error", "reason": str(e)}
 
 
 def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
@@ -476,10 +502,13 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             vix_spike_pct: float = 20.0,
             pb_ema: bool = True,
             pb_ema_fast: int = 13,
-            pb_ema_slow: int = 55):
+            pb_ema_slow: int = 55,
+            verbose_rejects: bool = False):
     """Run the agent for one trading day."""
     today = date.today()
-    journal_file = JOURNAL_DIR / f"{today.isoformat()}.json"
+    # Per-symbol journal so concurrent SPY/QQQ agents don't clobber each other's writes.
+    journal_file = JOURNAL_DIR / f"{today.isoformat()}_{symbol}.json"
+    verdicts_file = JOURNAL_DIR / f"{today.isoformat()}_verdicts.jsonl"
     triggers = json.loads(journal_file.read_text()) if journal_file.exists() else []
 
     trader = None
@@ -531,6 +560,43 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
     consecutive_losses = 0
     open_directions: dict[str, str] = {}  # symbol/occ_symbol → "buy_call" / "buy_put"
     open_options: dict[str, dict] = {}  # occ_symbol → {entry_premium, stop_price, target_price, direction}
+
+    # ── Restart recovery: rehydrate open positions from Alpaca + journal ──
+    # If the agent was restarted mid-day, in-memory state is empty. Pull live
+    # Alpaca positions for this symbol's 0DTE options and rejoin with the
+    # journal so exit monitoring resumes seamlessly.
+    if trader and not trade_shares:
+        try:
+            live_positions = {p.symbol: p for p in trader.client.get_all_positions()}
+            for trig in triggers:
+                if trig.get("closed") or trig.get("trade_mode") != "0dte_option":
+                    continue
+                occ = trig.get("occ_symbol")
+                if occ and occ in live_positions and occ.startswith(symbol):
+                    entry_time_str = trig.get("timestamp")
+                    try:
+                        entry_time = datetime.fromisoformat(entry_time_str)
+                    except Exception:
+                        entry_time = get_et_now()
+                    open_options[occ] = {
+                        "entry_premium": trig.get("option_premium", 1.0),
+                        "stop_price": trig["stop"],
+                        "target_price": trig["target"],
+                        "original_target_dist": abs(trig["target"] - trig["entry"]),
+                        "direction": trig["direction"],
+                        "delta": trig.get("option_delta", 0.5),
+                        "entry_time": entry_time,
+                        "entry_underlying": trig.get("price", trig["entry"]),
+                        "max_favorable_excursion": 0.0,
+                    }
+                    open_directions[occ] = trig["direction"]
+                    trades_today += 1  # count toward daily cap so we don't over-trade
+                    # Set cooldown anchor so next scan doesn't immediately re-trigger.
+                    last_trigger = max(last_trigger, entry_time) if last_trigger else entry_time
+                    logger.info("♻ Recovered open position from journal: %s (stop=$%.2f target=$%.2f)",
+                                occ, trig["stop"], trig["target"])
+        except Exception as e:
+            logger.warning("Restart-recovery scan failed: %s — proceeding with empty state", e)
 
     while True:
         now = get_et_now()
@@ -772,13 +838,38 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             break
 
         scan_count += 1
-        trigger = check_sweet_spot(symbol, max_chop=max_chop, regime_guard=regime_guard,
+        verdict = check_sweet_spot(symbol, max_chop=max_chop, regime_guard=regime_guard,
                                    pb_ema=pb_ema, pb_ema_fast=pb_ema_fast, pb_ema_slow=pb_ema_slow)
 
-        if trigger:
+        # Persist every verdict (rejects + triggers) to a daily JSONL for offline analysis.
+        try:
+            verdict_record = {"ts": now.isoformat(), "symbol": symbol, **verdict}
+            with verdicts_file.open("a", encoding="utf-8") as vf:
+                vf.write(json.dumps(verdict_record, default=str) + "\n")
+        except Exception as e:
+            logger.warning("Verdict journal write failed: %s", e)
+
+        if verdict.get("status") == "reject":
+            # Always log post-direction rejects (interesting); only log pre-direction
+            # rejects when --verbose-rejects is on (noisy: fires every scan with no setup).
+            stage = verdict.get("stage", "?")
+            interesting = stage not in ("data", "direction")
+            if interesting or verbose_rejects:
+                logger.info("✗ %s reject [%s] %s", symbol, stage, verdict.get("reason", ""))
+
+        if verdict.get("status") == "trigger":
+            trigger = {k: v for k, v in verdict.items() if k != "status"}
             # Deduplicate (15 min cooldown, 30 min after stagnation exit)
             cooldown_sec = 1800 if last_was_stagnation else 900
-            if last_trigger and (now - last_trigger).total_seconds() < cooldown_sec:
+            # Block new entries when a same-direction option is already open
+            # (avoids duplicate buys on the same OCC after restart-recovery).
+            already_open_same_dir = any(
+                d == trigger["direction"] for d in open_directions.values()
+            )
+            if already_open_same_dir:
+                logger.info("✗ %s skip [open_position] %s already open in %s — not stacking",
+                            symbol, trigger["direction"], list(open_directions.keys()))
+            elif last_trigger and (now - last_trigger).total_seconds() < cooldown_sec:
                 logger.debug("Skipping duplicate trigger within cooldown (%d min)", cooldown_sec // 60)
             else:
                 last_trigger = now
@@ -1005,6 +1096,9 @@ def main():
                         help="Slow EMA length for PB EMA band (golden: 55)")
     parser.add_argument("--vix-max", type=float, default=30.0,
                         help="Skip trading days where VIX > this level (0=disabled, default: 30)")
+    parser.add_argument("--verbose-rejects", action="store_true", default=False,
+                        help="Log every reject reason, including pre-direction (no setup) rejects. "
+                             "Off by default — only post-direction rejects (gates that killed an actual setup) log.")
     parser.add_argument("--vix-spike-pct", type=float, default=20.0,
                         help="Skip days where VIX spiked >N%% day-over-day (0=disabled, default: 20)")
     args = parser.parse_args()
@@ -1045,7 +1139,8 @@ def main():
                             vix_spike_pct=args.vix_spike_pct,
                             pb_ema=not args.no_pb_ema,
                             pb_ema_fast=args.pb_ema_fast,
-                            pb_ema_slow=args.pb_ema_slow)
+                            pb_ema_slow=args.pb_ema_slow,
+                            verbose_rejects=args.verbose_rejects)
                     # After market close, sleep until next day 9:25 AM
                     tomorrow_925 = (now + timedelta(days=1)).replace(hour=9, minute=25, second=0)
                     sleep_sec = (tomorrow_925 - get_et_now()).total_seconds()
@@ -1084,7 +1179,8 @@ def main():
                 vix_spike_pct=args.vix_spike_pct,
                 pb_ema=not args.no_pb_ema,
                 pb_ema_fast=args.pb_ema_fast,
-                pb_ema_slow=args.pb_ema_slow)
+                pb_ema_slow=args.pb_ema_slow,
+                verbose_rejects=args.verbose_rejects)
 
 
 if __name__ == "__main__":

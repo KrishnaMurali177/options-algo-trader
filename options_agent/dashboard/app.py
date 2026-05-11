@@ -2468,13 +2468,18 @@ _journal_dir = _Path(__file__).resolve().parent.parent / "sweet_spot_journal"
 _all_trades = []
 if _journal_dir.exists():
     for _jf in sorted(_journal_dir.glob("*.json")):
+        # Accept both legacy `<date>.json` and per-symbol `<date>_<SYM>.json`.
+        _stem_date = _jf.stem.split("_")[0]
         try:
-            _d = _date.fromisoformat(_jf.stem)
+            _d = _date.fromisoformat(_stem_date)
         except ValueError:
             continue
         try:
             for _t in _json.loads(_jf.read_text()):
-                _t["_date"] = _jf.stem
+                # Skip trades flagged as inconclusive (e.g. force-flattened during cleanup).
+                if _t.get("discard"):
+                    continue
+                _t["_date"] = _stem_date
                 _all_trades.append(_t)
         except Exception:
             pass

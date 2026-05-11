@@ -61,14 +61,23 @@ def load_bars(symbol: str) -> pd.DataFrame:
 
 def journal_times(symbol: str, day: date) -> list[str]:
     """Return list of HH:MM strings the live agent fired at on `day` for `symbol`."""
-    f = _JOURNAL_DIR / f"{day.isoformat()}.json"
-    if not f.exists():
-        return []
-    try:
-        rows = json.loads(f.read_text())
-    except Exception:
-        return []
-    return [r["time"] for r in rows if r.get("symbol") == symbol and r.get("time")]
+    # Read both legacy `<date>.json` and per-symbol `<date>_<SYM>.json`.
+    candidates = [_JOURNAL_DIR / f"{day.isoformat()}.json",
+                  _JOURNAL_DIR / f"{day.isoformat()}_{symbol}.json"]
+    times: list[str] = []
+    for f in candidates:
+        if not f.exists():
+            continue
+        try:
+            rows = json.loads(f.read_text())
+        except Exception:
+            continue
+        for r in rows:
+            if r.get("discard"):
+                continue
+            if r.get("symbol") == symbol and r.get("time"):
+                times.append(r["time"])
+    return times
 
 
 class _SliceState:

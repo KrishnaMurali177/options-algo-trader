@@ -27,8 +27,10 @@ def load_trades(start: date | None = None, end: date | None = None) -> list[dict
     """Load every closed trigger across journal files in [start, end]."""
     trades = []
     for jf in sorted(JOURNAL_DIR.glob("*.json")):
+        # Accept both legacy `<date>.json` and per-symbol `<date>_<SYM>.json`.
+        stem_date = jf.stem.split("_")[0]
         try:
-            d = date.fromisoformat(jf.stem)
+            d = date.fromisoformat(stem_date)
         except ValueError:
             continue
         if start and d < start:
@@ -40,7 +42,10 @@ def load_trades(start: date | None = None, end: date | None = None) -> list[dict
         except Exception:
             continue
         for t in entries:
-            t["_journal_date"] = jf.stem
+            # Skip trades flagged as inconclusive (e.g. force-flattened during cleanup).
+            if t.get("discard"):
+                continue
+            t["_journal_date"] = stem_date
             trades.append(t)
     return trades
 

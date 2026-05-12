@@ -17,7 +17,7 @@ services:
   agent-spy:
     image: options-algo-trader
     container_name: options-agent-spy
-    command: python scripts/run_sweet_spot_agent.py --daemon --symbol SPY
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol SPY --verbose-rejects
     env_file:
       - options_agent/.env
     environment:
@@ -36,7 +36,7 @@ services:
   agent-qqq:
     image: options-algo-trader
     container_name: options-agent-qqq
-    command: python scripts/run_sweet_spot_agent.py --daemon --symbol QQQ
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol QQQ --verbose-rejects
     env_file:
       - options_agent/.env
     environment:

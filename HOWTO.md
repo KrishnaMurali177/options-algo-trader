@@ -73,12 +73,13 @@ Both agents run with golden defaults (validated over 730 days of backtesting):
 | `--scan-start-min` | 60 | Wait 60 min after open (10:30 AM ET) |
 | `--vix-max` | 30 | Skip day if VIX > 30 |
 | `--vix-spike-pct` | 20 | Skip day if VIX spiked > 20% |
+| `--verbose-rejects` | on | Log which filter rejected each scan (enabled in docker-compose) |
 
 To customize, edit the `command:` in `docker-compose.yml` for each agent service.
 
 ### Logs and Journal
 
-- Agent logs: `options_agent/logs/sweet_spot_agent.log`
+- Agent logs: `options_agent/logs/sweet_spot_agent_spy.log` / `sweet_spot_agent_qqq.log`
 - Trade journal: `options_agent/sweet_spot_journal/YYYY-MM-DD.json`
 - Cron health check: `options_agent/logs/cron_agent.log`
 
@@ -86,6 +87,7 @@ To customize, edit the `command:` in `docker-compose.yml` for each agent service
 
 | Command | Description |
 |---------|-------------|
+| `./run.sh all` | Start dashboard + both agents (everything) |
 | `./run.sh dashboard` | Start the Streamlit dashboard at http://localhost:8501 |
 | `./run.sh agents` | Start both SPY + QQQ agents (daemon, background) |
 | `./run.sh agent-spy` | Start only the SPY agent |

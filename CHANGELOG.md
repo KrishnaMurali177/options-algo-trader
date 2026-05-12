@@ -22,3 +22,6 @@
 - [2026-05-10] Modified: run.sh — Added agents, agent-spy, agent-qqq, status, and stop-agents commands
 - [2026-05-10] Modified: HOWTO.md — Rewrote with live agent setup, parameters table, cron config, and updated command list
 - [2026-05-10] Modified: options_agent/README.md — Updated Quick Start and Live Agent sections to use Docker commands
+- [2026-05-12] Modified: docker-compose.yml — Added --verbose-rejects flag to SPY and QQQ agent commands
+- [2026-05-12] Modified: run.sh — Added `all` command to start dashboard + both agents together; fixed agent builds to use shared image
+- [2026-05-12] Modified: HOWTO.md — Added `all` command, --verbose-rejects param, fixed agent log file paths

@@ -18,6 +18,7 @@ usage() {
     echo "Usage: ./run.sh <command>"
     echo ""
     echo "Commands:"
+    echo "  all          Start dashboard + both agents (everything)"
     echo "  dashboard    Start the Streamlit dashboard (http://localhost:8501)"
     echo "  agents       Start both SPY + QQQ agents (daemon, background)"
     echo "  agent-spy    Start only the SPY agent"
@@ -41,20 +42,29 @@ usage() {
 }
 
 case "${1:-}" in
+    all)
+        echo "Building image and starting dashboard + agents..."
+        docker-compose --profile live up --build -d
+        echo "Dashboard: http://localhost:8501"
+        echo "Agents: SPY + QQQ running. Use './run.sh status' to check."
+        ;;
     dashboard)
         docker-compose up --build dashboard
         ;;
     agents)
-        echo "Starting SPY + QQQ agents..."
-        docker-compose --profile live up -d --build agent-spy agent-qqq
+        echo "Building image and starting SPY + QQQ agents..."
+        docker-compose build dashboard
+        docker-compose --profile live up -d agent-spy agent-qqq
         echo "Both agents running. Use './run.sh status' to check."
         ;;
     agent-spy)
-        docker-compose --profile live up -d --build agent-spy
+        docker-compose build dashboard
+        docker-compose --profile live up -d agent-spy
         echo "SPY agent running."
         ;;
     agent-qqq)
-        docker-compose --profile live up -d --build agent-qqq
+        docker-compose build dashboard
+        docker-compose --profile live up -d agent-qqq
         echo "QQQ agent running."
         ;;
     status)

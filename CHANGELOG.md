@@ -3,6 +3,7 @@
 - [2026-05-05] Created: Dockerfile — Docker image for the options agent (Python 3.11, all dependencies)
 - [2026-05-05] Created: docker-compose.yml — Compose config with dashboard and live agent services
 - [2026-05-05] Created: run.sh — Convenience script for all Docker operations (dashboard, agent, backtest, replay, scan, test, shell)
+- [2026-05-11] Modified: docker-compose.yml — Share a single image across all services to avoid duplicate builds
 - [2026-05-05] Created: HOWTO.md — Docker setup and usage guide with all commands and configuration
 - [2026-05-05] Created: run.bat — Windows equivalent of run.sh for Docker operations
 - [2026-05-05] Modified: HOWTO.md — Added Windows instructions

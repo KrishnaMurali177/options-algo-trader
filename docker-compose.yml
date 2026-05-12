@@ -1,6 +1,7 @@
 services:
   dashboard:
     build: .
+    image: options-algo-trader
     container_name: options-dashboard
     ports:
       - "8501:8501"
@@ -14,29 +15,39 @@ services:
     restart: unless-stopped
 
   agent-spy:
-    build: .
+    image: options-algo-trader
     container_name: options-agent-spy
     command: python scripts/run_sweet_spot_agent.py --daemon --symbol SPY
     env_file:
       - options_agent/.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AGENT_SYMBOL=SPY
     volumes:
       - ./options_agent/logs:/app/logs
       - ./options_agent/sweet_spot_journal:/app/sweet_spot_journal
       - ./options_agent/data_cache:/app/data_cache
+      - ./options_agent/scripts:/app/scripts:ro
+      - ./options_agent/src:/app/src:ro
     restart: unless-stopped
     profiles:
       - live
 
   agent-qqq:
-    build: .
+    image: options-algo-trader
     container_name: options-agent-qqq
     command: python scripts/run_sweet_spot_agent.py --daemon --symbol QQQ
     env_file:
       - options_agent/.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AGENT_SYMBOL=QQQ
     volumes:
       - ./options_agent/logs:/app/logs
       - ./options_agent/sweet_spot_journal:/app/sweet_spot_journal
       - ./options_agent/data_cache:/app/data_cache
+      - ./options_agent/scripts:/app/scripts:ro
+      - ./options_agent/src:/app/src:ro
     restart: unless-stopped
     profiles:
       - live

@@ -238,15 +238,22 @@ LOG_DIR.mkdir(exist_ok=True)
 JOURNAL_DIR = Path(__file__).resolve().parent.parent / "sweet_spot_journal"
 JOURNAL_DIR.mkdir(exist_ok=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(LOG_DIR / "sweet_spot_agent.log"),
-    ],
-)
-logger = logging.getLogger("sweet_spot_agent")
+_SYMBOL_TAG = os.environ.get("AGENT_SYMBOL", "")
+
+def _setup_logging(symbol: str = "") -> logging.Logger:
+    tag = symbol or _SYMBOL_TAG or "agent"
+    log_file = LOG_DIR / f"sweet_spot_agent_{tag.lower()}.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f"%(asctime)s [{tag}] [%(levelname)s] %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(log_file),
+        ],
+    )
+    return logging.getLogger(f"sweet_spot_agent_{tag}")
+
+logger = _setup_logging()
 
 
 def get_et_now() -> datetime:
@@ -1053,6 +1060,98 @@ def _reconcile_journal(trader, triggers: list[dict], journal_file: Path) -> None
                 closed, open_n, pnl_total)
 
 
+HEARTBEAT_FILE = Path("/tmp/agent_heartbeat")
+
+def _write_heartbeat(state: str) -> None:
+    """Write heartbeat file for Docker healthcheck."""
+    HEARTBEAT_FILE.write_text(json.dumps({
+        "ts": datetime.now(ZoneInfo("UTC")).isoformat(),
+        "state": state,
+        "pid": os.getpid(),
+    }))
+
+
+def _safe_sleep(seconds: float, label: str = "waiting") -> None:
+    """Sleep in 30-second chunks with heartbeat — never use a single long sleep.
+
+    Long time.sleep() calls are unreliable in Docker on macOS (VM timer
+    suspension). Polling in short intervals guarantees wake-up.
+    """
+    end = time.monotonic() + seconds
+    heartbeat_interval = 300
+    last_heartbeat = 0.0
+    while True:
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            break
+        now_mono = time.monotonic()
+        if now_mono - last_heartbeat >= heartbeat_interval:
+            _write_heartbeat(label)
+            remaining_min = remaining / 60
+            if remaining_min > 5:
+                logger.info("Heartbeat: %s (%.0f min remaining)", label, remaining_min)
+            last_heartbeat = now_mono
+        time.sleep(min(30, remaining))
+
+
+def _startup_selftest(symbol: str) -> bool:
+    """Verify Alpaca connectivity and basic data flow before entering main loop."""
+    logger.info("Running startup self-test...")
+    ok = True
+
+    try:
+        from src.utils.alpaca_paper import AlpacaPaperTrader
+        trader = AlpacaPaperTrader()
+        pnl = trader.get_today_pnl()
+        logger.info("  Alpaca paper account: $%.0f equity, $%.0f buying power", pnl["equity"], pnl["buying_power"])
+    except Exception as e:
+        logger.error("  FAIL: Alpaca paper trader: %s", e)
+        ok = False
+
+    try:
+        bars = alpaca_fetch_bars(symbol, days_back=2, interval="5min")
+        logger.info("  Alpaca data: %d bars for %s", len(bars), symbol)
+        if len(bars) == 0:
+            logger.error("  FAIL: Zero bars returned for %s", symbol)
+            ok = False
+    except Exception as e:
+        logger.error("  FAIL: Alpaca data fetch: %s", e)
+        ok = False
+
+    if ok:
+        logger.info("Self-test PASSED")
+    else:
+        logger.error("Self-test FAILED — agent will still attempt to run")
+    return ok
+
+
+def _build_run_day_kwargs(args) -> dict:
+    return dict(
+        max_trades_per_day=args.max_trades_per_day,
+        max_stops_per_day=args.max_stops_per_day,
+        max_consecutive_losses=args.max_consecutive_losses,
+        scan_start_min=args.scan_start_min,
+        gainz_exit=not args.no_gainz_exit,
+        gainz_body_ratio=args.gainz_body_ratio,
+        gainz_rsi_overbought=args.gainz_rsi_overbought,
+        gainz_rsi_oversold=args.gainz_rsi_oversold,
+        gainz_min_profit_r=args.gainz_min_profit_r,
+        trade_shares=args.shares,
+        contracts=args.contracts,
+        target_delta=args.target_delta,
+        cascade_size_low=args.cascade_size_low,
+        cascade_size_mid=args.cascade_size_mid,
+        cascade_size_high=args.cascade_size_high,
+        regime_guard=args.regime_guard,
+        vix_max=args.vix_max,
+        vix_spike_pct=args.vix_spike_pct,
+        pb_ema=not args.no_pb_ema,
+        pb_ema_fast=args.pb_ema_fast,
+        pb_ema_slow=args.pb_ema_slow,
+        verbose_rejects=args.verbose_rejects,
+    )
+
+
 def main():
     parser = argparse.ArgumentParser(description="Autonomous Sweet Spot Paper Trading Agent")
     parser.add_argument("--symbol", "-s", default="SPY", help="Symbol to monitor (default: SPY)")
@@ -1107,84 +1206,57 @@ def main():
                         help="Skip days where VIX spiked >N%% day-over-day (0=disabled, default: 20)")
     args = parser.parse_args()
 
+    # Re-init logger with symbol tag now that we know the symbol
+    global logger
+    logger = _setup_logging(args.symbol)
+
     paper_trade = not args.no_paper
+    kwargs = _build_run_day_kwargs(args)
+
+    _startup_selftest(args.symbol)
 
     if args.daemon:
         logger.info("Starting in daemon mode — will run every trading day")
+        ran_today = None
         while True:
             now = get_et_now()
-            # Only run on weekdays
-            if now.weekday() < 5:
-                if now.hour < 9 or (now.hour == 9 and now.minute < 25):
-                    # Wait until 9:25 AM
-                    wait_until = now.replace(hour=9, minute=25, second=0, microsecond=0)
-                    sleep_sec = (wait_until - now).total_seconds()
-                    logger.info("Sleeping %.0f min until pre-market...", sleep_sec / 60)
-                    time.sleep(max(sleep_sec, 60))
-                elif now.hour < 16:
-                    run_day(args.symbol, args.qty, args.max_chop, paper_trade,
-                            max_trades_per_day=args.max_trades_per_day,
-                            max_stops_per_day=args.max_stops_per_day,
-                            max_consecutive_losses=args.max_consecutive_losses,
-                            scan_start_min=args.scan_start_min,
-                            gainz_exit=not args.no_gainz_exit,
-                            gainz_body_ratio=args.gainz_body_ratio,
-                            gainz_rsi_overbought=args.gainz_rsi_overbought,
-                            gainz_rsi_oversold=args.gainz_rsi_oversold,
-                            gainz_min_profit_r=args.gainz_min_profit_r,
-                            trade_shares=args.shares,
-                            contracts=args.contracts,
-                            target_delta=args.target_delta,
-                            cascade_size_low=args.cascade_size_low,
-                            cascade_size_mid=args.cascade_size_mid,
-                            cascade_size_high=args.cascade_size_high,
-                            regime_guard=args.regime_guard,
-                            vix_max=args.vix_max,
-                            vix_spike_pct=args.vix_spike_pct,
-                            pb_ema=not args.no_pb_ema,
-                            pb_ema_fast=args.pb_ema_fast,
-                            pb_ema_slow=args.pb_ema_slow,
-                            verbose_rejects=args.verbose_rejects)
-                    # After market close, sleep until next day 9:25 AM
-                    tomorrow_925 = (now + timedelta(days=1)).replace(hour=9, minute=25, second=0)
-                    sleep_sec = (tomorrow_925 - get_et_now()).total_seconds()
-                    logger.info("Market closed. Sleeping %.1f hours until tomorrow...", sleep_sec / 3600)
-                    time.sleep(max(sleep_sec, 3600))
-                else:
-                    # After hours — sleep until tomorrow
-                    time.sleep(3600)
-            else:
-                # Weekend — sleep until Monday 9:25
-                days_until_monday = (7 - now.weekday()) % 7 or 7
-                monday = (now + timedelta(days=days_until_monday)).replace(hour=9, minute=25, second=0)
-                sleep_sec = (monday - now).total_seconds()
-                logger.info("Weekend. Sleeping %.1f hours until Monday...", sleep_sec / 3600)
-                time.sleep(max(sleep_sec, 3600))
+            _write_heartbeat(f"daemon_loop day={now.strftime('%Y-%m-%d')} hour={now.hour}")
+
+            if now.weekday() >= 5:
+                logger.info("Weekend (%s). Sleeping...", now.strftime("%A"))
+                _safe_sleep(1800, label="weekend_wait")
+                continue
+
+            if now.hour < 9 or (now.hour == 9 and now.minute < 25):
+                target = now.replace(hour=9, minute=25, second=0, microsecond=0)
+                wait_sec = (target - now).total_seconds()
+                logger.info("Pre-market: sleeping %.0f min until 09:25 ET", wait_sec / 60)
+                _safe_sleep(wait_sec, label=f"pre_market_{args.symbol}")
+                continue
+
+            if now.hour >= 16:
+                logger.info("After hours. Sleeping until next check...")
+                _safe_sleep(1800, label="after_hours_wait")
+                continue
+
+            today_str = now.strftime("%Y-%m-%d")
+            if ran_today == today_str:
+                logger.info("Already ran today (%s). Sleeping until after hours...", today_str)
+                close = now.replace(hour=16, minute=5, second=0, microsecond=0)
+                _safe_sleep((close - now).total_seconds(), label="post_run_wait")
+                continue
+
+            logger.info("Market hours — launching run_day for %s", args.symbol)
+            try:
+                run_day(args.symbol, args.qty, args.max_chop, paper_trade, **kwargs)
+                ran_today = today_str
+                logger.info("run_day completed normally for %s", today_str)
+            except Exception:
+                logger.exception("run_day CRASHED")
+                ran_today = today_str
+                _safe_sleep(300, label="crash_cooldown")
     else:
-        # Single day run
-        run_day(args.symbol, args.qty, args.max_chop, paper_trade,
-                max_trades_per_day=args.max_trades_per_day,
-                max_stops_per_day=args.max_stops_per_day,
-                max_consecutive_losses=args.max_consecutive_losses,
-                scan_start_min=args.scan_start_min,
-                gainz_exit=not args.no_gainz_exit,
-                gainz_body_ratio=args.gainz_body_ratio,
-                gainz_rsi_overbought=args.gainz_rsi_overbought,
-                gainz_rsi_oversold=args.gainz_rsi_oversold,
-                gainz_min_profit_r=args.gainz_min_profit_r,
-                trade_shares=args.shares,
-                contracts=args.contracts,
-                target_delta=args.target_delta,
-                cascade_size_low=args.cascade_size_low,
-                cascade_size_mid=args.cascade_size_mid,
-                cascade_size_high=args.cascade_size_high,
-                regime_guard=args.regime_guard,
-                vix_max=args.vix_max,
-                vix_spike_pct=args.vix_spike_pct,
-                pb_ema=not args.no_pb_ema,
-                pb_ema_fast=args.pb_ema_fast,
-                pb_ema_slow=args.pb_ema_slow,
-                verbose_rejects=args.verbose_rejects)
+        run_day(args.symbol, args.qty, args.max_chop, paper_trade, **kwargs)
 
 
 if __name__ == "__main__":

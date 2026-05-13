@@ -238,22 +238,15 @@ LOG_DIR.mkdir(exist_ok=True)
 JOURNAL_DIR = Path(__file__).resolve().parent.parent / "sweet_spot_journal"
 JOURNAL_DIR.mkdir(exist_ok=True)
 
-_SYMBOL_TAG = os.environ.get("AGENT_SYMBOL", "")
-
-def _setup_logging(symbol: str = "") -> logging.Logger:
-    tag = symbol or _SYMBOL_TAG or "agent"
-    log_file = LOG_DIR / f"sweet_spot_agent_{tag.lower()}.log"
-    logging.basicConfig(
-        level=logging.INFO,
-        format=f"%(asctime)s [{tag}] [%(levelname)s] %(message)s",
-        handlers=[
-            logging.StreamHandler(),
-            logging.FileHandler(log_file),
-        ],
-    )
-    return logging.getLogger(f"sweet_spot_agent_{tag}")
-
-logger = _setup_logging()
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(LOG_DIR / "sweet_spot_agent.log"),
+    ],
+)
+logger = logging.getLogger("sweet_spot_agent")
 
 
 def get_et_now() -> datetime:
@@ -321,6 +314,21 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
                     "reason": f"OR momentum {or_momentum:+d} inside ±25 band",
                     "or_momentum": or_momentum, "recent_momentum": recent_momentum,
                     "price": indicators.current_price}
+
+        # Momentum flip: when recent 30-min momentum strongly disagrees with OR direction,
+        # flip the trade direction to follow recent momentum (golden default: threshold=40)
+        _flip_threshold = 40.0
+        _is_flip = False
+        if direction == "buy_put" and recent_momentum >= _flip_threshold:
+            logger.info("MOMENTUM FLIP: OR says %s (or_mom=%d) but recent_mom=%.0f → flipped to buy_call",
+                        direction, or_momentum, recent_momentum)
+            direction = "buy_call"
+            _is_flip = True
+        elif direction == "buy_call" and recent_momentum <= -_flip_threshold:
+            logger.info("MOMENTUM FLIP: OR says %s (or_mom=%d) but recent_mom=%.0f → flipped to buy_put",
+                        direction, or_momentum, recent_momentum)
+            direction = "buy_put"
+            _is_flip = True
 
         # Regime guard (off by golden default, mirror of replay logic)
         if regime_guard:
@@ -426,15 +434,17 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
             blend_low = range_low
 
         # ── Entry confirmation: price must be in upper/lower 25% of range or beyond ──
-        breakout_threshold = range_width * 0.25
-        if direction == "buy_call" and indicators.current_price < (range_high - breakout_threshold):
-            return {"status": "reject", "stage": "entry_zone",
-                    "reason": f"CALL price ${indicators.current_price:.2f} below upper-25% band (need ≥${range_high - breakout_threshold:.2f}, range ${range_low:.2f}-${range_high:.2f})",
-                    **diag_common}
-        if direction == "buy_put" and indicators.current_price > (range_low + breakout_threshold):
-            return {"status": "reject", "stage": "entry_zone",
-                    "reason": f"PUT price ${indicators.current_price:.2f} above lower-25% band (need ≤${range_low + breakout_threshold:.2f}, range ${range_low:.2f}-${range_high:.2f})",
-                    **diag_common}
+        # Skip for flip trades — reversal enters from the opposite zone by definition.
+        if not _is_flip:
+            breakout_threshold = range_width * 0.25
+            if direction == "buy_call" and indicators.current_price < (range_high - breakout_threshold):
+                return {"status": "reject", "stage": "entry_zone",
+                        "reason": f"CALL price ${indicators.current_price:.2f} below upper-25% band (need ≥${range_high - breakout_threshold:.2f}, range ${range_low:.2f}-${range_high:.2f})",
+                        **diag_common}
+            if direction == "buy_put" and indicators.current_price > (range_low + breakout_threshold):
+                return {"status": "reject", "stage": "entry_zone",
+                        "reason": f"PUT price ${indicators.current_price:.2f} above lower-25% band (need ≤${range_low + breakout_threshold:.2f}, range ${range_low:.2f}-${range_high:.2f})",
+                        **diag_common}
 
         # Target multiplier scales with cascade strength
         if cascade.explosion_score >= 8:
@@ -448,7 +458,22 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
         # so this matches the real fill); the active-range blend governs only the
         # stop/target midpoint, never the entry level.
         entry = indicators.current_price
-        if direction == "buy_call":
+        if _is_flip:
+            # Flip trades use pure active range (recent 30-min) for stop/target.
+            # OR midpoint stop is nonsensical for reversals.
+            recent_bars = bars.iloc[-ACTIVE_RANGE_BARS:] if len(bars) >= ACTIVE_RANGE_BARS else bars.iloc[-6:]
+            flip_high = float(recent_bars["High"].max())
+            flip_low = float(recent_bars["Low"].min())
+            atr_val = indicators.atr_14 if indicators.atr_14 else 1.0
+            if direction == "buy_call":
+                stop = flip_low - 0.02 * atr_val
+                risk = entry - stop
+                target_1 = entry + risk * target_mult if risk > 0 else entry
+            else:
+                stop = flip_high + 0.02 * atr_val
+                risk = stop - entry
+                target_1 = entry - risk * target_mult if risk > 0 else entry
+        elif direction == "buy_call":
             mid = (blend_high + blend_low) / 2
             stop = mid + 0.10 * (blend_high - blend_low)
             risk = entry - stop
@@ -482,6 +507,7 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
             "target_mult": target_mult,
             "range_high": round(range_high, 2),
             "range_low": round(range_low, 2),
+            "is_flip": _is_flip,
         }
 
     except Exception as e:
@@ -563,6 +589,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
     last_was_stagnation = False  # Track for extended post-stagnation cooldown
     scan_count = 0
     trades_today = 0
+    flip_trades_today = 0
     stops_today = 0
     consecutive_losses = 0
     open_directions: dict[str, str] = {}  # symbol/occ_symbol → "buy_call" / "buy_put"
@@ -834,10 +861,14 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             continue
 
         # ── Daily limits ──
-        if max_trades_per_day > 0 and trades_today >= max_trades_per_day:
-            logger.info("Daily trade limit reached (%d/%d). Monitoring open positions only.", trades_today, max_trades_per_day)
+        # Trade cap: regular trades capped, but flip trades get 1 extra allowance.
+        regular_trades = trades_today - flip_trades_today
+        at_regular_cap = max_trades_per_day > 0 and regular_trades >= max_trades_per_day
+        at_flip_cap = flip_trades_today >= 1  # max 1 flip trade per day
+        if at_regular_cap and at_flip_cap:
+            logger.info("Daily trade limit reached (%d regular + %d flip). Monitoring open positions only.", regular_trades, flip_trades_today)
             if not open_directions:
-                logger.info("Loop exit: daily trade cap (%d) reached and no open positions.", max_trades_per_day)
+                logger.info("Loop exit: daily trade cap reached and no open positions.")
                 break
             time.sleep(300)
             continue
@@ -870,118 +901,124 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
 
         if verdict.get("status") == "trigger":
             trigger = {k: v for k, v in verdict.items() if k != "status"}
-            # Deduplicate (15 min cooldown, 30 min after stagnation exit)
-            cooldown_sec = 1800 if last_was_stagnation else 900
-            # Block new entries when a same-direction option is already open
-            # (avoids duplicate buys on the same OCC after restart-recovery).
-            already_open_same_dir = any(
-                d == trigger["direction"] for d in open_directions.values()
-            )
-            if already_open_same_dir:
-                logger.info("✗ %s skip [open_position] %s already open in %s — not stacking",
-                            symbol, trigger["direction"], list(open_directions.keys()))
-            elif last_trigger and (now - last_trigger).total_seconds() < cooldown_sec:
-                logger.debug("Skipping duplicate trigger within cooldown (%d min)", cooldown_sec // 60)
+            # If at regular cap, only allow flip triggers through
+            if at_regular_cap and not trigger.get("is_flip", False):
+                logger.info("✗ %s skip [trade_cap] regular cap reached, non-flip trigger ignored", symbol)
             else:
-                last_trigger = now
-                trades_today += 1
-                triggers.append(trigger)
-                journal_file.write_text(json.dumps(triggers, indent=2, default=str))
-
-                dir_label = "CALL" if "call" in trigger["direction"] else "PUT"
-                logger.info(
-                    "⚡ SWEET SPOT: %s %s Q=%d E=%d C=%d Mom=%+d "
-                    "Entry=$%.2f Stop=$%.2f Target=$%.2f",
-                    dir_label, symbol, trigger["quality"], trigger["explosion"],
-                    trigger["chop"], trigger["or_momentum"],
-                    trigger["entry"], trigger["stop"], trigger["target"],
+                # Deduplicate (15 min cooldown, 30 min after stagnation exit)
+                cooldown_sec = 1800 if last_was_stagnation else 900
+                # Block new entries when a same-direction option is already open
+                # (avoids duplicate buys on the same OCC after restart-recovery).
+                already_open_same_dir = any(
+                    d == trigger["direction"] for d in open_directions.values()
                 )
+                if already_open_same_dir:
+                    logger.info("✗ %s skip [open_position] %s already open in %s — not stacking",
+                                symbol, trigger["direction"], list(open_directions.keys()))
+                elif last_trigger and (now - last_trigger).total_seconds() < cooldown_sec:
+                    logger.debug("Skipping duplicate trigger within cooldown (%d min)", cooldown_sec // 60)
+                else:
+                    last_trigger = now
+                    trades_today += 1
+                    if trigger.get("is_flip", False):
+                        flip_trades_today += 1
+                    triggers.append(trigger)
+                    journal_file.write_text(json.dumps(triggers, indent=2, default=str))
 
-                if trader:
-                    try:
-                        if trade_shares:
-                            # Legacy: trade shares with bracket order
-                            order = trader.place_sweet_spot_trade(
-                                symbol=symbol,
-                                direction=trigger["direction"],
-                                qty=qty,
-                                entry=None,  # Market for immediate fill
-                                stop=trigger["stop"],
-                                target=trigger["target"],
-                                time_in_force="day",
-                            )
-                            trigger["order_id"] = order["order_id"]
-                            trigger["trade_mode"] = "shares"
-                            open_directions[symbol] = trigger["direction"]
-                        else:
-                            # 0DTE options: fetch chain, pick contract, buy-to-open
-                            from src.utils.alpaca_data import get_0dte_chain
-                            opt_type = "call" if "call" in trigger["direction"] else "put"
-                            contract = get_0dte_chain(
-                                symbol, option_type=opt_type,
-                                target_delta=target_delta,
-                                spot_price=trigger.get("price"),
-                            )
-                            if contract:
-                                # Cascade-tier contract sizing
-                                explosion = trigger.get("explosion", 4)
-                                if explosion >= 8:
-                                    num_contracts = contracts * cascade_size_high
-                                elif explosion >= 6:
-                                    num_contracts = contracts * cascade_size_mid
-                                else:
-                                    num_contracts = contracts * cascade_size_low
+                    dir_label = "CALL" if "call" in trigger["direction"] else "PUT"
+                    logger.info(
+                        "⚡ SWEET SPOT: %s %s Q=%d E=%d C=%d Mom=%+d "
+                        "Entry=$%.2f Stop=$%.2f Target=$%.2f",
+                        dir_label, symbol, trigger["quality"], trigger["explosion"],
+                        trigger["chop"], trigger["or_momentum"],
+                        trigger["entry"], trigger["stop"], trigger["target"],
+                    )
 
-                                order = trader.place_options_trade(
-                                    occ_symbol=contract["occ_symbol"],
-                                    direction=trigger["direction"],
-                                    qty=num_contracts,
-                                    # No limit_price = market order (0DTE needs instant fill)
-                                    time_in_force="day",
-                                )
-                                trigger["order_id"] = order["order_id"]
-                                trigger["occ_symbol"] = contract["occ_symbol"]
-                                trigger["option_strike"] = contract["strike"]
-                                trigger["option_delta"] = contract["delta"]
-                                trigger["option_premium"] = contract["mid"]
-                                trigger["trade_mode"] = "0dte_option"
-                                trigger["num_contracts"] = num_contracts
-
-                                # Track for stop/target monitoring (underlying-based)
-                                open_options[contract["occ_symbol"]] = {
-                                    "entry_premium": contract["mid"],
-                                    "stop_price": trigger["stop"],
-                                    "target_price": trigger["target"],
-                                    "original_target_dist": abs(trigger["target"] - trigger["entry"]),
-                                    "direction": trigger["direction"],
-                                    "delta": contract["delta"],
-                                    "entry_time": get_et_now(),
-                                    "entry_underlying": trigger.get("price", trigger["entry"]),
-                                    "max_favorable_excursion": 0.0,  # MFE tracking for stagnation skip
-                                }
-                                open_directions[contract["occ_symbol"]] = trigger["direction"]
-                                logger.info("  📝 0DTE %s order: %s strike=$%.2f Δ=%.2f premium=$%.2f × %d contracts",
-                                            opt_type.upper(), contract["occ_symbol"],
-                                            contract["strike"], contract["delta"], contract["mid"], num_contracts)
-                            else:
-                                logger.warning("  ⚠️ No 0DTE contract found — falling back to shares")
+                    if trader:
+                        try:
+                            if trade_shares:
+                                # Legacy: trade shares with bracket order
                                 order = trader.place_sweet_spot_trade(
                                     symbol=symbol,
                                     direction=trigger["direction"],
                                     qty=qty,
-                                    entry=None,
+                                    entry=None,  # Market for immediate fill
                                     stop=trigger["stop"],
                                     target=trigger["target"],
                                     time_in_force="day",
                                 )
                                 trigger["order_id"] = order["order_id"]
-                                trigger["trade_mode"] = "shares_fallback"
+                                trigger["trade_mode"] = "shares"
                                 open_directions[symbol] = trigger["direction"]
+                            else:
+                                # 0DTE options: fetch chain, pick contract, buy-to-open
+                                from src.utils.alpaca_data import get_0dte_chain
+                                opt_type = "call" if "call" in trigger["direction"] else "put"
+                                contract = get_0dte_chain(
+                                    symbol, option_type=opt_type,
+                                    target_delta=target_delta,
+                                    spot_price=trigger.get("price"),
+                                )
+                                if contract:
+                                    # Cascade-tier contract sizing
+                                    explosion = trigger.get("explosion", 4)
+                                    if explosion >= 8:
+                                        num_contracts = contracts * cascade_size_high
+                                    elif explosion >= 6:
+                                        num_contracts = contracts * cascade_size_mid
+                                    else:
+                                        num_contracts = contracts * cascade_size_low
 
-                        journal_file.write_text(json.dumps(triggers, indent=2, default=str))
-                        logger.info("  📝 Order placed: %s", trigger.get("order_id", "?")[:12])
-                    except Exception as e:
-                        logger.error("  ⚠️ Order failed: %s", e)
+                                    order = trader.place_options_trade(
+                                        occ_symbol=contract["occ_symbol"],
+                                        direction=trigger["direction"],
+                                        qty=num_contracts,
+                                        # No limit_price = market order (0DTE needs instant fill)
+                                        time_in_force="day",
+                                    )
+                                    trigger["order_id"] = order["order_id"]
+                                    trigger["occ_symbol"] = contract["occ_symbol"]
+                                    trigger["option_strike"] = contract["strike"]
+                                    trigger["option_delta"] = contract["delta"]
+                                    trigger["option_premium"] = contract["mid"]
+                                    trigger["trade_mode"] = "0dte_option"
+                                    trigger["num_contracts"] = num_contracts
+
+                                    # Track for stop/target monitoring (underlying-based)
+                                    open_options[contract["occ_symbol"]] = {
+                                        "entry_premium": contract["mid"],
+                                        "stop_price": trigger["stop"],
+                                        "target_price": trigger["target"],
+                                        "original_target_dist": abs(trigger["target"] - trigger["entry"]),
+                                        "direction": trigger["direction"],
+                                        "delta": contract["delta"],
+                                        "entry_time": get_et_now(),
+                                        "entry_underlying": trigger.get("price", trigger["entry"]),
+                                        "max_favorable_excursion": 0.0,  # MFE tracking for stagnation skip
+                                    }
+                                    open_directions[contract["occ_symbol"]] = trigger["direction"]
+                                    logger.info("  📝 0DTE %s order: %s strike=$%.2f Δ=%.2f premium=$%.2f × %d contracts",
+                                                opt_type.upper(), contract["occ_symbol"],
+                                                contract["strike"], contract["delta"], contract["mid"], num_contracts)
+                                else:
+                                    logger.warning("  ⚠️ No 0DTE contract found — falling back to shares")
+                                    order = trader.place_sweet_spot_trade(
+                                        symbol=symbol,
+                                        direction=trigger["direction"],
+                                        qty=qty,
+                                        entry=None,
+                                        stop=trigger["stop"],
+                                        target=trigger["target"],
+                                        time_in_force="day",
+                                    )
+                                    trigger["order_id"] = order["order_id"]
+                                    trigger["trade_mode"] = "shares_fallback"
+                                    open_directions[symbol] = trigger["direction"]
+
+                            journal_file.write_text(json.dumps(triggers, indent=2, default=str))
+                            logger.info("  📝 Order placed: %s", trigger.get("order_id", "?")[:12])
+                        except Exception as e:
+                            logger.error("  ⚠️ Order failed: %s", e)
 
         time.sleep(300)  # 5 min interval
 
@@ -1060,98 +1097,6 @@ def _reconcile_journal(trader, triggers: list[dict], journal_file: Path) -> None
                 closed, open_n, pnl_total)
 
 
-HEARTBEAT_FILE = Path("/tmp/agent_heartbeat")
-
-def _write_heartbeat(state: str) -> None:
-    """Write heartbeat file for Docker healthcheck."""
-    HEARTBEAT_FILE.write_text(json.dumps({
-        "ts": datetime.now(ZoneInfo("UTC")).isoformat(),
-        "state": state,
-        "pid": os.getpid(),
-    }))
-
-
-def _safe_sleep(seconds: float, label: str = "waiting") -> None:
-    """Sleep in 30-second chunks with heartbeat — never use a single long sleep.
-
-    Long time.sleep() calls are unreliable in Docker on macOS (VM timer
-    suspension). Polling in short intervals guarantees wake-up.
-    """
-    end = time.monotonic() + seconds
-    heartbeat_interval = 300
-    last_heartbeat = 0.0
-    while True:
-        remaining = end - time.monotonic()
-        if remaining <= 0:
-            break
-        now_mono = time.monotonic()
-        if now_mono - last_heartbeat >= heartbeat_interval:
-            _write_heartbeat(label)
-            remaining_min = remaining / 60
-            if remaining_min > 5:
-                logger.info("Heartbeat: %s (%.0f min remaining)", label, remaining_min)
-            last_heartbeat = now_mono
-        time.sleep(min(30, remaining))
-
-
-def _startup_selftest(symbol: str) -> bool:
-    """Verify Alpaca connectivity and basic data flow before entering main loop."""
-    logger.info("Running startup self-test...")
-    ok = True
-
-    try:
-        from src.utils.alpaca_paper import AlpacaPaperTrader
-        trader = AlpacaPaperTrader()
-        pnl = trader.get_today_pnl()
-        logger.info("  Alpaca paper account: $%.0f equity, $%.0f buying power", pnl["equity"], pnl["buying_power"])
-    except Exception as e:
-        logger.error("  FAIL: Alpaca paper trader: %s", e)
-        ok = False
-
-    try:
-        bars = alpaca_fetch_bars(symbol, days_back=2, interval="5min")
-        logger.info("  Alpaca data: %d bars for %s", len(bars), symbol)
-        if len(bars) == 0:
-            logger.error("  FAIL: Zero bars returned for %s", symbol)
-            ok = False
-    except Exception as e:
-        logger.error("  FAIL: Alpaca data fetch: %s", e)
-        ok = False
-
-    if ok:
-        logger.info("Self-test PASSED")
-    else:
-        logger.error("Self-test FAILED — agent will still attempt to run")
-    return ok
-
-
-def _build_run_day_kwargs(args) -> dict:
-    return dict(
-        max_trades_per_day=args.max_trades_per_day,
-        max_stops_per_day=args.max_stops_per_day,
-        max_consecutive_losses=args.max_consecutive_losses,
-        scan_start_min=args.scan_start_min,
-        gainz_exit=not args.no_gainz_exit,
-        gainz_body_ratio=args.gainz_body_ratio,
-        gainz_rsi_overbought=args.gainz_rsi_overbought,
-        gainz_rsi_oversold=args.gainz_rsi_oversold,
-        gainz_min_profit_r=args.gainz_min_profit_r,
-        trade_shares=args.shares,
-        contracts=args.contracts,
-        target_delta=args.target_delta,
-        cascade_size_low=args.cascade_size_low,
-        cascade_size_mid=args.cascade_size_mid,
-        cascade_size_high=args.cascade_size_high,
-        regime_guard=args.regime_guard,
-        vix_max=args.vix_max,
-        vix_spike_pct=args.vix_spike_pct,
-        pb_ema=not args.no_pb_ema,
-        pb_ema_fast=args.pb_ema_fast,
-        pb_ema_slow=args.pb_ema_slow,
-        verbose_rejects=args.verbose_rejects,
-    )
-
-
 def main():
     parser = argparse.ArgumentParser(description="Autonomous Sweet Spot Paper Trading Agent")
     parser.add_argument("--symbol", "-s", default="SPY", help="Symbol to monitor (default: SPY)")
@@ -1206,57 +1151,84 @@ def main():
                         help="Skip days where VIX spiked >N%% day-over-day (0=disabled, default: 20)")
     args = parser.parse_args()
 
-    # Re-init logger with symbol tag now that we know the symbol
-    global logger
-    logger = _setup_logging(args.symbol)
-
     paper_trade = not args.no_paper
-    kwargs = _build_run_day_kwargs(args)
-
-    _startup_selftest(args.symbol)
 
     if args.daemon:
         logger.info("Starting in daemon mode — will run every trading day")
-        ran_today = None
         while True:
             now = get_et_now()
-            _write_heartbeat(f"daemon_loop day={now.strftime('%Y-%m-%d')} hour={now.hour}")
-
-            if now.weekday() >= 5:
-                logger.info("Weekend (%s). Sleeping...", now.strftime("%A"))
-                _safe_sleep(1800, label="weekend_wait")
-                continue
-
-            if now.hour < 9 or (now.hour == 9 and now.minute < 25):
-                target = now.replace(hour=9, minute=25, second=0, microsecond=0)
-                wait_sec = (target - now).total_seconds()
-                logger.info("Pre-market: sleeping %.0f min until 09:25 ET", wait_sec / 60)
-                _safe_sleep(wait_sec, label=f"pre_market_{args.symbol}")
-                continue
-
-            if now.hour >= 16:
-                logger.info("After hours. Sleeping until next check...")
-                _safe_sleep(1800, label="after_hours_wait")
-                continue
-
-            today_str = now.strftime("%Y-%m-%d")
-            if ran_today == today_str:
-                logger.info("Already ran today (%s). Sleeping until after hours...", today_str)
-                close = now.replace(hour=16, minute=5, second=0, microsecond=0)
-                _safe_sleep((close - now).total_seconds(), label="post_run_wait")
-                continue
-
-            logger.info("Market hours — launching run_day for %s", args.symbol)
-            try:
-                run_day(args.symbol, args.qty, args.max_chop, paper_trade, **kwargs)
-                ran_today = today_str
-                logger.info("run_day completed normally for %s", today_str)
-            except Exception:
-                logger.exception("run_day CRASHED")
-                ran_today = today_str
-                _safe_sleep(300, label="crash_cooldown")
+            # Only run on weekdays
+            if now.weekday() < 5:
+                if now.hour < 9 or (now.hour == 9 and now.minute < 25):
+                    # Wait until 9:25 AM
+                    wait_until = now.replace(hour=9, minute=25, second=0, microsecond=0)
+                    sleep_sec = (wait_until - now).total_seconds()
+                    logger.info("Sleeping %.0f min until pre-market...", sleep_sec / 60)
+                    time.sleep(max(sleep_sec, 60))
+                elif now.hour < 16:
+                    run_day(args.symbol, args.qty, args.max_chop, paper_trade,
+                            max_trades_per_day=args.max_trades_per_day,
+                            max_stops_per_day=args.max_stops_per_day,
+                            max_consecutive_losses=args.max_consecutive_losses,
+                            scan_start_min=args.scan_start_min,
+                            gainz_exit=not args.no_gainz_exit,
+                            gainz_body_ratio=args.gainz_body_ratio,
+                            gainz_rsi_overbought=args.gainz_rsi_overbought,
+                            gainz_rsi_oversold=args.gainz_rsi_oversold,
+                            gainz_min_profit_r=args.gainz_min_profit_r,
+                            trade_shares=args.shares,
+                            contracts=args.contracts,
+                            target_delta=args.target_delta,
+                            cascade_size_low=args.cascade_size_low,
+                            cascade_size_mid=args.cascade_size_mid,
+                            cascade_size_high=args.cascade_size_high,
+                            regime_guard=args.regime_guard,
+                            vix_max=args.vix_max,
+                            vix_spike_pct=args.vix_spike_pct,
+                            pb_ema=not args.no_pb_ema,
+                            pb_ema_fast=args.pb_ema_fast,
+                            pb_ema_slow=args.pb_ema_slow,
+                            verbose_rejects=args.verbose_rejects)
+                    # After market close, sleep until next day 9:25 AM
+                    tomorrow_925 = (now + timedelta(days=1)).replace(hour=9, minute=25, second=0)
+                    sleep_sec = (tomorrow_925 - get_et_now()).total_seconds()
+                    logger.info("Market closed. Sleeping %.1f hours until tomorrow...", sleep_sec / 3600)
+                    time.sleep(max(sleep_sec, 3600))
+                else:
+                    # After hours — sleep until tomorrow
+                    time.sleep(3600)
+            else:
+                # Weekend — sleep until Monday 9:25
+                days_until_monday = (7 - now.weekday()) % 7 or 7
+                monday = (now + timedelta(days=days_until_monday)).replace(hour=9, minute=25, second=0)
+                sleep_sec = (monday - now).total_seconds()
+                logger.info("Weekend. Sleeping %.1f hours until Monday...", sleep_sec / 3600)
+                time.sleep(max(sleep_sec, 3600))
     else:
-        run_day(args.symbol, args.qty, args.max_chop, paper_trade, **kwargs)
+        # Single day run
+        run_day(args.symbol, args.qty, args.max_chop, paper_trade,
+                max_trades_per_day=args.max_trades_per_day,
+                max_stops_per_day=args.max_stops_per_day,
+                max_consecutive_losses=args.max_consecutive_losses,
+                scan_start_min=args.scan_start_min,
+                gainz_exit=not args.no_gainz_exit,
+                gainz_body_ratio=args.gainz_body_ratio,
+                gainz_rsi_overbought=args.gainz_rsi_overbought,
+                gainz_rsi_oversold=args.gainz_rsi_oversold,
+                gainz_min_profit_r=args.gainz_min_profit_r,
+                trade_shares=args.shares,
+                contracts=args.contracts,
+                target_delta=args.target_delta,
+                cascade_size_low=args.cascade_size_low,
+                cascade_size_mid=args.cascade_size_mid,
+                cascade_size_high=args.cascade_size_high,
+                regime_guard=args.regime_guard,
+                vix_max=args.vix_max,
+                vix_spike_pct=args.vix_spike_pct,
+                pb_ema=not args.no_pb_ema,
+                pb_ema_fast=args.pb_ema_fast,
+                pb_ema_slow=args.pb_ema_slow,
+                verbose_rejects=args.verbose_rejects)
 
 
 if __name__ == "__main__":

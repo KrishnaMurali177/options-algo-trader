@@ -444,6 +444,7 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 | **Option delta** | **0.50** (ATM) | Target delta for 0DTE contract selection |
 | **Real options pricing** | **ON** | Uses Alpaca historical 0DTE bars; synth fallback when unavailable (`--no-real-options` for synth-only) |
 | **Base contracts** | **1** | Per trade (scaled by cascade tier) |
+| **Flip trade allowance** | **ON** (1/day) | Momentum flip trades bypass daily trade cap (separate allowance of 1 per day), skip entry confirmation (reversal enters from opposite zone), and use active-range stop/target (OR midpoint stop is nonsensical for reversals). Validated 2yr: SPY PF 1.63→1.65, Sharpe 2.72→2.81, P&L +$156→$162; QQQ P&L +$125→$128. |
 
 ### Stagnation Exit (theta-bleed protection)
 
@@ -547,17 +548,21 @@ This filter uses daily closing VIX data. During the Aug 2024–Mar 2025 drawdown
 
 | Metric | SPY | QQQ | VOO |
 |--------|-----|-----|-----|
-| Triggers | 608 (1.2/day) | 569 (1.1/day) | 697 (1.4/day) |
-| Win Rate | **59.7%** | **52.5%** | **58.8%** |
-| Profit Factor | **1.60** | **1.35** | **1.97** |
-| Total P&L (cascade-sized) | **+$151.59** | **+$117.20** | **+$193.08** |
-| Sharpe Ratio | **2.63** | **1.61** | **3.93** |
-| Sortino Ratio | **5.56** | **3.39** | **9.15** |
-| Max Drawdown | **$11.10 (7.3%)** | **$19.14 (15.4%)** | **$11.88 (6.2%)** |
-| Calmar Ratio | **13.66** | **6.12** | **16.25** |
-| Longest Underwater | 88 days | 117 days | 57 days |
+| Triggers | 612 (1.2/day) | 570 (1.1/day) | 697 (1.4/day) |
+| Win Rate | **60.1%** | **52.6%** | **58.8%** |
+| Profit Factor | **1.65** | **1.38** | **1.97** |
+| Total P&L (cascade-sized) | **+$162.37** | **+$127.69** | **+$193.08** |
+| Sharpe Ratio | **2.81** | **1.75** | **3.93** |
+| Sortino Ratio | **3.32** | **2.25** | **9.15** |
+| Max Drawdown | **$11.10 (6.8%)** | **$19.14 (14.6%)** | **$11.88 (6.2%)** |
+| Calmar Ratio | **14.63** | **6.67** | **16.25** |
+| Longest Underwater | 88 days | 124 days | 57 days |
 
-> Golden defaults: tiered stagnation ON (bar 8 early exit + 6-bar stag cooldown), stagnation 12 bars / 0.3R, decay halflife 8 bars, PB EMA 13/55, cascade 3/3/3, max-chop 5, max-stops 1, regime guard OFF.
+> Golden defaults: tiered stagnation ON (bar 8 early exit + 6-bar stag cooldown), stagnation 12 bars / 0.3R, decay halflife 8 bars, PB EMA 13/55, cascade 3/3/3, max-chop 5, max-stops 1, regime guard OFF, **momentum flip ON (threshold 40)**, **flip trade allowance ON (1/day)**.
+>
+> **Momentum Flip** (added May 2026): When recent 30-min momentum strongly disagrees with OR direction (|recent_mom| ≥ 40), the trade direction flips to follow recent momentum instead of the stale Opening Range signal. This prevents counter-trend entries on reversal days. 2-year A/B: +1.8% P&L, +0.3% win rate, +3.3% Sharpe, zero increase in drawdown.
+>
+> **Flip Trade Allowance** (added May 2026): Momentum flip trades get a separate allowance beyond the daily trade cap (max 1 flip/day). Flip trades also bypass entry confirmation (reversal enters from the opposite zone) and use active-range stop/target geometry (OR midpoint stop is nonsensical for reversals). 2-year A/B vs base flip: SPY +3.6% P&L, +3.3% Sharpe; QQQ +2.1% P&L, +1.7% Sharpe; zero drawdown increase on either.
 
 **1-Year Replay Results (SPY, 252 days, May 2025–May 2026, Golden Defaults, Real Alpaca 0DTE Options):**
 

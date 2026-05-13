@@ -68,6 +68,37 @@ def _is_cache_fresh(path: Path, max_age_hours: int = 12) -> bool:
     return (datetime.now() - mtime) < timedelta(hours=max_age_hours)
 
 
+_INTERVAL_SECONDS = {"5min": 300, "15min": 900, "1hour": 3600, "1day": 86400}
+
+
+def _drop_partial_trailing_bar(df: pd.DataFrame, interval: str) -> pd.DataFrame:
+    """Drop the trailing bar if it has not yet fully closed.
+
+    Alpaca timestamps bars at their *open*, so a 5-min bar starting at 12:20
+    ET is still forming until 12:25 ET. Using a partial bar's Close as the
+    terminal value of every indicator (RSI/MACD/ZLEMA/BB/ATR/VWAP) systematically
+    biases the live agent's quality score upward relative to the replay's
+    closed-bar view.
+    """
+    if df.empty:
+        return df
+    bar_sec = _INTERVAL_SECONDS.get(interval)
+    if not bar_sec:
+        return df
+    last_ts = df.index[-1]
+    if last_ts.tz is None:
+        last_ts = last_ts.tz_localize("UTC")
+    now_utc = datetime.now(timezone.utc)
+    age_sec = (now_utc - last_ts.tz_convert("UTC").to_pydatetime()).total_seconds()
+    if age_sec < bar_sec:
+        logger.debug(
+            "Dropping partial trailing %s bar (open=%s, age=%.0fs < %ds)",
+            interval, last_ts.isoformat(), age_sec, bar_sec,
+        )
+        return df.iloc[:-1]
+    return df
+
+
 def fetch_bars(
     symbol: str,
     days_back: int = 365,
@@ -169,6 +200,12 @@ def fetch_bars(
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
     df.index = df.index.tz_convert("America/New_York")
+
+    # Drop trailing partial bar: Alpaca returns the in-progress bar (its
+    # timestamp is the bar's *open*, so a 12:20 5-min bar is still forming
+    # until 12:25). Indicators built off a partial close drift by ~1 quality
+    # point and skew the live agent's gates vs. the replay's closed-bar view.
+    df = _drop_partial_trailing_bar(df, interval)
 
     # Cache to Parquet
     df.to_parquet(cache)

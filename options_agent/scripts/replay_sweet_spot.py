@@ -204,8 +204,12 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                  stag_cooldown_bars: int = 6,
                  r_anchored_risk: bool = False,
                  r_anchor_pct: float = 0.25,
-                 extension_veto: bool = False,
-                 extension_max_atr: float = 2.0) -> list[dict]:
+                   extension_veto: bool = False,
+                   extension_max_atr: float = 2.0,
+                    momentum_flip: bool = False,
+                    momentum_flip_threshold: float = 40.0,
+                    max_flip_trades: int = 1,
+                    debug: bool = False) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
     Uses the EXACT same analyzers as the live agent:
@@ -269,6 +273,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
     stops_today = 0  # Track stop-outs for daily loss limit
     consecutive_losses = 0  # Track streak for streak breaker
     daily_pnl_cumulative = 0.0  # Track cumulative daily P&L
+    flip_trades_today = 0  # Track momentum-flip trades (separate allowance)
 
     # Scan every bar (5 min) from scan_start to scan_end
     scan_bars = post_or.between_time(effective_scan_start if dynamic_or else scan_start, scan_end)
@@ -338,15 +343,23 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
     day_pb_ema_slow = day_close.ewm(span=pb_ema_slow, adjust=False).mean() if pb_ema else None
 
     for i, (ts, bar) in enumerate(scan_bars.iterrows()):
-        # ── Daily limits ──
-        if max_trades_per_day > 0 and len(triggers) >= max_trades_per_day:
-            break
+        # ── Daily limits (hard stops — no flip override) ──
         if max_stops_per_day > 0 and stops_today >= max_stops_per_day:
             break
         if max_consecutive_losses > 0 and consecutive_losses >= max_consecutive_losses:
             break
         if daily_loss_limit > 0 and daily_pnl_cumulative <= -daily_loss_limit:
             break
+
+        # Trade cap: regular trades capped at max_trades_per_day, but momentum
+        # flip trades get a separate allowance (max_flip_trades) beyond the cap.
+        regular_trades = len(triggers) - flip_trades_today
+        at_regular_cap = max_trades_per_day > 0 and regular_trades >= max_trades_per_day
+        at_flip_cap = flip_trades_today >= max_flip_trades
+        if at_regular_cap and at_flip_cap:
+            break
+
+        is_flip = False  # will be set True if momentum flip fires
 
         # Cooldown: skip if triggered within last N bars
         effective_cooldown = stag_cooldown_bars if (tiered_stagnation and last_was_stagnation) else cooldown_bars
@@ -437,6 +450,32 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         elif or_momentum <= -or_threshold:
             direction = "buy_put"
         else:
+            if debug:
+                bar_time = ts.strftime("%H:%M")
+                logger.info("  [DEBUG] %s  or_mom=%d (threshold=%d) → NO DIRECTION, skipped",
+                            bar_time, or_momentum, or_threshold)
+            continue
+
+        # ── Momentum Flip: override OR direction with recent momentum ──
+        if momentum_flip:
+            # If recent momentum strongly disagrees with OR direction, flip
+            if direction == "buy_put" and recent_momentum >= momentum_flip_threshold:
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  MOMENTUM FLIP: OR says %s (or_mom=%d) but recent_mom=%.0f → flipped to buy_call",
+                                bar_time, direction, or_momentum, recent_momentum)
+                direction = "buy_call"
+                is_flip = True
+            elif direction == "buy_call" and recent_momentum <= -momentum_flip_threshold:
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  MOMENTUM FLIP: OR says %s (or_mom=%d) but recent_mom=%.0f → flipped to buy_put",
+                                bar_time, direction, or_momentum, recent_momentum)
+                direction = "buy_put"
+                is_flip = True
+
+        # ── Post-flip trade cap: skip non-flip trades if at regular cap ──
+        if at_regular_cap and not is_flip:
             continue
 
         # ── Regime guard (same as live agent dashboard guardrails) ──
@@ -448,8 +487,16 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             bearish_regime = sma_20 < sma_50
 
             if direction == "buy_put" and bullish_regime and rsi_val <= 70:
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s or_mom=%d → REGIME GUARD (bullish regime, RSI=%.1f)",
+                                bar_time, direction, or_momentum, rsi_val)
                 continue
             if direction == "buy_call" and bearish_regime and rsi_val >= 30:
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s or_mom=%d → REGIME GUARD (bearish regime, RSI=%.1f)",
+                                bar_time, direction, or_momentum, rsi_val)
                 continue
 
         # ── Quality Score (EXACT same as live agent) ──
@@ -476,6 +523,10 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         quality = quality_result.score
 
         if not (min_quality <= quality <= max_quality):
+            if debug:
+                bar_time = ts.strftime("%H:%M")
+                logger.info("  [DEBUG] %s  dir=%s or_mom=%d Q=%d (range %d-%d) → QUALITY REJECT",
+                            bar_time, direction, or_momentum, quality, min_quality, max_quality)
             continue
 
         # ── Momentum Cascade (EXACT same as live agent) ──
@@ -496,6 +547,10 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             else min_cascade
         )
         if explosion < effective_min_cascade:
+            if debug:
+                bar_time = ts.strftime("%H:%M")
+                logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d (min=%d) → CASCADE REJECT",
+                            bar_time, direction, quality, explosion, effective_min_cascade)
             continue
 
         # ── Choppiness ──
@@ -505,6 +560,10 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         # efficiency but −0.2% total P&L over 2yr — insufficient for golden default.
         chop = compute_choppiness(bars_to_now, vix=vix, atr=atr_val)
         if chop.chop_score > max_chop:
+            if debug:
+                bar_time = ts.strftime("%H:%M")
+                logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d C=%d (max=%d) → CHOP REJECT",
+                            bar_time, direction, quality, explosion, chop.chop_score, max_chop)
             continue
 
         # ── PB EMA inside-band gate (symmetric chop reject) ──
@@ -515,6 +574,10 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             ema_s = float(day_pb_ema_slow.iloc[:n].iloc[-1])
             band_hi, band_lo = max(ema_f, ema_s), min(ema_f, ema_s)
             if band_lo < price < band_hi:
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d C=%d → PB_EMA REJECT (price %.2f in [%.2f, %.2f])",
+                                bar_time, direction, quality, explosion, chop.chop_score, price, band_lo, band_hi)
                 continue
 
         # ── Extension veto (mean-reversion exhaustion filter) ──
@@ -525,19 +588,42 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         if extension_veto and atr_val > 0:
             ext_atr = (price - indicators.sma_20) / atr_val
             if direction == "buy_call" and ext_atr > extension_max_atr:
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d C=%d → EXTENSION VETO (ext_atr=%.2f > %.2f)",
+                                bar_time, direction, quality, explosion, chop.chop_score, ext_atr, extension_max_atr)
                 continue
             if direction == "buy_put" and -ext_atr > extension_max_atr:
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d C=%d → EXTENSION VETO (ext_atr=%.2f > %.2f)",
+                                bar_time, direction, quality, explosion, chop.chop_score, -ext_atr, extension_max_atr)
                 continue
 
         # ── TRIGGER! ──
+        if debug:
+            bar_time = ts.strftime("%H:%M")
+            logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d C=%d or_mom=%d → TRIGGER ✓",
+                        bar_time, direction, quality, explosion, chop.chop_score, or_momentum)
         last_trigger_idx = i
 
         # ── Entry confirmation: price must be in upper/lower N% of range or beyond ──
-        breakout_threshold = range_width * breakout_pct
-        if direction == "buy_call" and price < (range_high - breakout_threshold):
-            continue
-        if direction == "buy_put" and price > (range_low + breakout_threshold):
-            continue
+        # Skip for flip trades — a flip means reversal from the opposite zone,
+        # so price is naturally in the "wrong" zone for the new direction.
+        if not is_flip:
+            breakout_threshold = range_width * breakout_pct
+            if direction == "buy_call" and price < (range_high - breakout_threshold):
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s → ENTRY CONFIRM REJECT (price %.2f < %.2f)",
+                                bar_time, direction, price, range_high - breakout_threshold)
+                continue
+            if direction == "buy_put" and price > (range_low + breakout_threshold):
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s → ENTRY CONFIRM REJECT (price %.2f > %.2f)",
+                                bar_time, direction, price, range_low + breakout_threshold)
+                continue
 
         # Target mult (same as live agent)
         if explosion >= 8:
@@ -581,6 +667,29 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 target = entry + risk * target_mult
             else:
                 stop = entry + risk
+                target = entry - risk * target_mult
+        elif is_flip:
+            # Flip trades use pure active range (recent 30-min) for stop/target.
+            # The OR range geometry breaks for flips because entry is on the
+            # "wrong" side of the midpoint for the new direction.
+            recent_bars = bars_to_now.iloc[-active_range_bars:] if active_range else bars_to_now.iloc[-6:]
+            flip_high = float(recent_bars["High"].max())
+            flip_low = float(recent_bars["Low"].min())
+            flip_width = flip_high - flip_low
+            if flip_width <= 0:
+                continue
+            entry = price
+            if direction == "buy_call":
+                stop = flip_low - 0.02 * atr_val
+                risk = entry - stop
+                if risk <= 0:
+                    continue
+                target = entry + risk * target_mult
+            else:
+                stop = flip_high + 0.02 * atr_val
+                risk = stop - entry
+                if risk <= 0:
+                    continue
                 target = entry - risk * target_mult
         elif direction == "buy_call":
             entry = price
@@ -900,7 +1009,11 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             "occ_symbol": occ_symbol if simulate_options else None,
             "pricing": ("real" if (simulate_options and priced_real)
                         else "synth" if simulate_options else "shares"),
+            "is_flip": is_flip,
         })
+
+        if is_flip:
+            flip_trades_today += 1
 
     return triggers
 
@@ -1062,6 +1175,18 @@ def main():
                              "Tests Malyarovich-style mean-reversion exhaustion idea.")
     parser.add_argument("--extension-max-atr", type=float, default=2.0,
                         help="Max |price − SMA-20| / ATR before extension-veto rejects entry (default: 2.0)")
+    parser.add_argument("--debug-date", type=str, default=None,
+                        help="Print per-bar debug scores for a specific date (YYYY-MM-DD). "
+                             "No performance impact on other days.")
+    parser.add_argument("--momentum-flip", action="store_true", default=True,
+                        help="Golden default ON: when recent 30-min momentum strongly disagrees with OR direction, "
+                             "flip the trade direction to follow recent momentum instead of OR.")
+    parser.add_argument("--no-momentum-flip", dest="momentum_flip", action="store_false",
+                        help="Disable momentum flip (revert to OR-only direction).")
+    parser.add_argument("--momentum-flip-threshold", type=float, default=40.0,
+                        help="Recent momentum score threshold to trigger direction flip (default: 40)")
+    parser.add_argument("--max-flip-trades", type=int, default=1,
+                        help="Max additional flip trades per day beyond max-trades-per-day (default: 1)")
     args = parser.parse_args()
 
     if args.research_mode:
@@ -1074,6 +1199,11 @@ def main():
         args.no_decay_aware_targets = True
         args.no_pb_ema = True
         logger.info("research-mode: loose defaults applied (chop 10, max-Q 8, scan from 10:35, no caps, no Gainz, no decay targets, no PB EMA)")
+
+    # Parse debug date
+    debug_date = None
+    if args.debug_date:
+        debug_date = date.fromisoformat(args.debug_date)
 
     # Fetch data via Alpaca
     try:
@@ -1210,7 +1340,11 @@ def main():
                               r_anchored_risk=args.r_anchored_risk,
                               r_anchor_pct=args.r_anchor_pct,
                               extension_veto=args.extension_veto,
-                              extension_max_atr=args.extension_max_atr)
+                              extension_max_atr=args.extension_max_atr,
+                              momentum_flip=args.momentum_flip,
+                              momentum_flip_threshold=args.momentum_flip_threshold,
+                              max_flip_trades=args.max_flip_trades,
+                              debug=(debug_date is not None and day == debug_date))
         all_triggers.extend(triggers)
 
     # ── Results ──

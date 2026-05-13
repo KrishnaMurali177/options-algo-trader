@@ -187,11 +187,25 @@ def _build_indicators_replay_parity(
 
 
 def _fetch_current_vix() -> float:
-    """Fetch latest VIX close. Returns 20.0 (neutral) on failure."""
+    """Fetch the most recent *settled* daily VIX close.
+
+    Replay parity: the backtest reads closed daily VIX. yfinance's 1d row for
+    the current session is a partial candle whose Close updates intraday — when
+    VIX is hovering near a scorer threshold (e.g. 18), that flicker can shift
+    quality by ±1 vs. replay and reject setups the backtest would have taken.
+
+    Strategy: drop the latest row if its date == today (ET) — fall back to the
+    prior session's settled close. Returns 20.0 (neutral) on failure.
+    """
     try:
         vix_df = yf.download("^VIX", period="5d", interval="1d", progress=False)
         if isinstance(vix_df.columns, pd.MultiIndex):
             vix_df.columns = vix_df.columns.get_level_values(0)
+        today_et = get_et_now().date()
+        last_ts = vix_df.index[-1]
+        last_date = last_ts.date() if hasattr(last_ts, "date") else last_ts
+        if last_date == today_et and len(vix_df) >= 2:
+            return float(vix_df["Close"].iloc[-2])
         return float(vix_df["Close"].iloc[-1])
     except Exception as e:
         logger.warning("VIX fetch failed (%s) — defaulting to 20.0", e)

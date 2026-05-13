@@ -42,10 +42,28 @@ usage() {
     echo "  ./run.sh replay -- --days 365"
 }
 
+CAFFEINATE_PID_FILE="/tmp/options-agent-caffeinate.pid"
+
+_start_caffeinate() {
+    _stop_caffeinate 2>/dev/null
+    caffeinate -s &
+    echo $! > "$CAFFEINATE_PID_FILE"
+    echo "Sleep prevention enabled (caffeinate PID: $!)"
+}
+
+_stop_caffeinate() {
+    if [ -f "$CAFFEINATE_PID_FILE" ]; then
+        kill "$(cat "$CAFFEINATE_PID_FILE")" 2>/dev/null || true
+        rm -f "$CAFFEINATE_PID_FILE"
+        echo "Sleep prevention disabled."
+    fi
+}
+
 case "${1:-}" in
     all)
         echo "Building image and starting dashboard + agents..."
         docker-compose --profile live up --build -d
+        _start_caffeinate
         echo "Dashboard: http://localhost:8501"
         echo "Agents: SPY + QQQ running. Use './run.sh status' to check."
         ;;
@@ -56,16 +74,19 @@ case "${1:-}" in
         echo "Building image and starting SPY + QQQ agents..."
         docker-compose build dashboard
         docker-compose --profile live up -d agent-spy agent-qqq
+        _start_caffeinate
         echo "Both agents running. Use './run.sh status' to check."
         ;;
     agent-spy)
         docker-compose build dashboard
         docker-compose --profile live up -d agent-spy
+        _start_caffeinate
         echo "SPY agent running."
         ;;
     agent-qqq)
         docker-compose build dashboard
         docker-compose --profile live up -d agent-qqq
+        _start_caffeinate
         echo "QQQ agent running."
         ;;
     status)
@@ -81,6 +102,7 @@ case "${1:-}" in
     stop-agents)
         echo "Stopping agents..."
         docker-compose --profile live stop agent-spy agent-qqq
+        _stop_caffeinate
         echo "Agents stopped."
         ;;
     restart)
@@ -90,6 +112,7 @@ case "${1:-}" in
         docker-compose build dashboard
         echo "Starting dashboard + agents..."
         docker-compose --profile live up -d
+        _start_caffeinate
         echo "All restarted. Dashboard: http://localhost:8501"
         echo "Use './run.sh status' to check agents."
         ;;
@@ -113,6 +136,7 @@ case "${1:-}" in
         ;;
     down)
         docker-compose --profile live down
+        _stop_caffeinate
         ;;
     build)
         docker-compose build

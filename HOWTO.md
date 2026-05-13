@@ -79,7 +79,7 @@ To customize, edit the `command:` in `docker-compose.yml` for each agent service
 
 ### Logs and Journal
 
-- Agent logs: `options_agent/logs/sweet_spot_agent_spy.log` / `sweet_spot_agent_qqq.log`
+- Agent logs: `options_agent/logs/sweet_spot_agent_spy_YYYY-MM-DD.log` / `sweet_spot_agent_qqq_YYYY-MM-DD.log` (append mode, one file per day; `sweet_spot_agent_spy.log` symlinks to today's)
 - Trade journal: `options_agent/sweet_spot_journal/YYYY-MM-DD.json`
 - Cron health check: `options_agent/logs/cron_agent.log`
 

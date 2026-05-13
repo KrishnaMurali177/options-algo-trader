@@ -25,6 +25,7 @@ usage() {
     echo "  agent-qqq    Start only the QQQ agent"
     echo "  status       Show running agent containers and recent logs"
     echo "  stop-agents  Stop all agents"
+    echo "  restart      Rebuild and restart everything"
     echo "  backtest     Run backtest (pass extra args after --)"
     echo "  replay       Run replay sweet spot (pass extra args after --)"
     echo "  scan         Scan today's sweet spots"
@@ -82,6 +83,16 @@ case "${1:-}" in
         docker-compose --profile live stop agent-spy agent-qqq
         echo "Agents stopped."
         ;;
+    restart)
+        echo "Stopping all containers..."
+        docker-compose --profile live down
+        echo "Rebuilding image..."
+        docker-compose build dashboard
+        echo "Starting dashboard + agents..."
+        docker-compose --profile live up -d
+        echo "All restarted. Dashboard: http://localhost:8501"
+        echo "Use './run.sh status' to check agents."
+        ;;
     backtest)
         shift
         docker-compose run --rm --no-deps dashboard python scripts/backtest.py "$@"
@@ -101,7 +112,7 @@ case "${1:-}" in
         docker-compose run --rm --no-deps dashboard bash
         ;;
     down)
-        docker-compose down
+        docker-compose --profile live down
         ;;
     build)
         docker-compose build

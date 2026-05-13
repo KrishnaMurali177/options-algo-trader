@@ -25,3 +25,8 @@
 - [2026-05-12] Modified: docker-compose.yml — Added --verbose-rejects flag to SPY and QQQ agent commands
 - [2026-05-12] Modified: run.sh — Added `all` command to start dashboard + both agents together; fixed agent builds to use shared image
 - [2026-05-12] Modified: HOWTO.md — Added `all` command, --verbose-rejects param, fixed agent log file paths
+- [2026-05-13] Modified: run.sh — Added `restart` command to rebuild and restart all containers; fixed `down` to include live profile so agents are stopped too
+- [2026-05-13] Modified: options_agent/scripts/run_sweet_spot_agent.py — Switched logging to dated files (append mode) so logs survive restarts; symlinks latest
+- [2026-05-13] Modified: HOWTO.md — Updated log file naming to reflect dated format
+- [2026-05-13] Modified: options_agent/scripts/run_sweet_spot_agent.py — Added heartbeat writes to all sleep points in run_day() to fix false unhealthy status
+- [2026-05-13] Modified: run.sh — Added caffeinate to prevent macOS sleep while agents are running; auto-starts on agents/all/restart, stops on stop-agents/down

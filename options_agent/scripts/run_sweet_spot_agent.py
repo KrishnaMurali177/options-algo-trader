@@ -252,15 +252,29 @@ LOG_DIR.mkdir(exist_ok=True)
 JOURNAL_DIR = Path(__file__).resolve().parent.parent / "sweet_spot_journal"
 JOURNAL_DIR.mkdir(exist_ok=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(LOG_DIR / "sweet_spot_agent.log"),
-    ],
-)
-logger = logging.getLogger("sweet_spot_agent")
+_SYMBOL_TAG = os.environ.get("AGENT_SYMBOL", "")
+
+def _setup_logging(symbol: str = "") -> logging.Logger:
+    tag = symbol or _SYMBOL_TAG or "agent"
+    today = datetime.now().strftime("%Y-%m-%d")
+    log_file = LOG_DIR / f"sweet_spot_agent_{tag.lower()}_{today}.log"
+    latest_link = LOG_DIR / f"sweet_spot_agent_{tag.lower()}.log"
+    logging.basicConfig(
+        level=logging.INFO,
+        format=f"%(asctime)s [{tag}] [%(levelname)s] %(message)s",
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler(log_file, mode="a"),
+        ],
+    )
+    try:
+        latest_link.unlink(missing_ok=True)
+        latest_link.symlink_to(log_file.name)
+    except OSError:
+        pass
+    return logging.getLogger(f"sweet_spot_agent_{tag}")
+
+logger = _setup_logging()
 
 
 def get_et_now() -> datetime:
@@ -654,6 +668,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                 logger.info("Loop exit: past market close (%02d:%02d ET)", now.hour, now.minute)
                 break
             logger.info("Outside market hours (%02d:%02d ET, weekday=%d) — sleeping 60s", now.hour, now.minute, now.weekday())
+            _write_heartbeat(f"run_day_{symbol}_outside_hours")
             time.sleep(60)
             continue
 
@@ -865,12 +880,14 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             if not open_directions:
                 logger.info("Loop exit: past 14:00 entry cutoff (%02d:%02d ET) and no open positions.", now.hour, now.minute)
                 break
+            _write_heartbeat(f"run_day_{symbol}_monitoring_positions")
             time.sleep(300)
             continue
 
         # Wait for OR to form + scan start delay
         if not is_past_or(min_after_open=scan_start_min):
             logger.info("Waiting for scan window (OR + %d min)...", scan_start_min)
+            _write_heartbeat(f"run_day_{symbol}_waiting_scan_window")
             time.sleep(60)
             continue
 
@@ -884,6 +901,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             if not open_directions:
                 logger.info("Loop exit: daily trade cap reached and no open positions.")
                 break
+            _write_heartbeat(f"run_day_{symbol}_trade_cap_monitoring")
             time.sleep(300)
             continue
         if max_stops_per_day > 0 and stops_today >= max_stops_per_day:
@@ -1034,6 +1052,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                         except Exception as e:
                             logger.error("  ⚠️ Order failed: %s", e)
 
+        _write_heartbeat(f"run_day_{symbol}_scanning")
         time.sleep(300)  # 5 min interval
 
     # ── EOD Reconciliation: backfill outcomes for every trigger ──
@@ -1054,6 +1073,30 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                 p["symbol"], p["qty"], p["entry_price"], p["unrealized_pnl"])
         except Exception as e:
             logger.error("  EOD summary failed: %s", e)
+
+
+HEARTBEAT_FILE = Path("/tmp/agent_heartbeat")
+
+def _write_heartbeat(state: str) -> None:
+    HEARTBEAT_FILE.write_text(json.dumps({
+        "ts": datetime.now(ZoneInfo("UTC")).isoformat(),
+        "state": state,
+        "pid": os.getpid(),
+    }))
+
+def _safe_sleep(seconds: float, label: str = "waiting") -> None:
+    """Sleep in 30-second chunks with periodic heartbeat.
+
+    Long time.sleep() causes Docker healthcheck to mark container unhealthy
+    (threshold: 600s). This keeps the heartbeat alive during overnight/weekend waits.
+    """
+    end = time.monotonic() + seconds
+    while True:
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            break
+        _write_heartbeat(label)
+        time.sleep(min(300, remaining))
 
 
 def _reconcile_journal(trader, triggers: list[dict], journal_file: Path) -> None:
@@ -1178,7 +1221,7 @@ def main():
                     wait_until = now.replace(hour=9, minute=25, second=0, microsecond=0)
                     sleep_sec = (wait_until - now).total_seconds()
                     logger.info("Sleeping %.0f min until pre-market...", sleep_sec / 60)
-                    time.sleep(max(sleep_sec, 60))
+                    _safe_sleep(max(sleep_sec, 60), f"daemon_{args.symbol}_pre_market")
                 elif now.hour < 16:
                     run_day(args.symbol, args.qty, args.max_chop, paper_trade,
                             max_trades_per_day=args.max_trades_per_day,
@@ -1207,17 +1250,17 @@ def main():
                     tomorrow_925 = (now + timedelta(days=1)).replace(hour=9, minute=25, second=0)
                     sleep_sec = (tomorrow_925 - get_et_now()).total_seconds()
                     logger.info("Market closed. Sleeping %.1f hours until tomorrow...", sleep_sec / 3600)
-                    time.sleep(max(sleep_sec, 3600))
+                    _safe_sleep(max(sleep_sec, 3600), f"daemon_{args.symbol}_post_market")
                 else:
                     # After hours — sleep until tomorrow
-                    time.sleep(3600)
+                    _safe_sleep(3600, f"daemon_{args.symbol}_after_hours")
             else:
                 # Weekend — sleep until Monday 9:25
                 days_until_monday = (7 - now.weekday()) % 7 or 7
                 monday = (now + timedelta(days=days_until_monday)).replace(hour=9, minute=25, second=0)
                 sleep_sec = (monday - now).total_seconds()
                 logger.info("Weekend. Sleeping %.1f hours until Monday...", sleep_sec / 3600)
-                time.sleep(max(sleep_sec, 3600))
+                _safe_sleep(max(sleep_sec, 3600), f"daemon_{args.symbol}_weekend")
     else:
         # Single day run
         run_day(args.symbol, args.qty, args.max_chop, paper_trade,

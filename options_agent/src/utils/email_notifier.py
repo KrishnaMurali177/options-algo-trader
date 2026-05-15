@@ -59,15 +59,17 @@ def _get_gmail_service(credentials_file: str = "", token_file: str = ""):
 
 class TradeEmailNotifier:
     def __init__(self, recipient: str, credentials_file: str = "", token_file: str = ""):
-        self.recipient = recipient
+        self.recipients = [r.strip() for r in recipient.split(",") if r.strip()] if recipient else []
         self.credentials_file = credentials_file
         self.token_file = token_file
         self._service = None
-        self.enabled = bool(recipient) and _GMAIL_AVAILABLE
-        if not recipient:
+        self.enabled = bool(self.recipients) and _GMAIL_AVAILABLE
+        if not self.recipients:
             logger.info("Email notifier disabled — no GMAIL_RECIPIENT configured")
         elif not _GMAIL_AVAILABLE:
             logger.info("Email notifier disabled — Gmail API packages not installed")
+        else:
+            logger.info("Email notifier enabled for %d recipient(s)", len(self.recipients))
 
     def _get_service(self, force_new: bool = False):
         if self._service is None or force_new:
@@ -93,7 +95,7 @@ class TradeEmailNotifier:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"] = "me"
-        msg["To"] = self.recipient
+        msg["To"] = ", ".join(self.recipients)
         msg.attach(MIMEText(html_body, "html"))
         raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
         body = {"raw": raw}

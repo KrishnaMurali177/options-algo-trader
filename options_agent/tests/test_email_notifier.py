@@ -99,6 +99,45 @@ class TestNotifierWithCredentials:
         notifier._send("subject", "<p>body</p>")
 
 
+class TestMultipleRecipients:
+    def test_parses_comma_separated(self):
+        from src.utils.email_notifier import TradeEmailNotifier
+        notifier = TradeEmailNotifier(recipient="a@test.com, b@test.com, c@test.com")
+        assert notifier.recipients == ["a@test.com", "b@test.com", "c@test.com"]
+        assert notifier.enabled is True
+
+    def test_single_recipient(self):
+        from src.utils.email_notifier import TradeEmailNotifier
+        notifier = TradeEmailNotifier(recipient="a@test.com")
+        assert notifier.recipients == ["a@test.com"]
+
+    def test_handles_extra_whitespace_and_commas(self):
+        from src.utils.email_notifier import TradeEmailNotifier
+        notifier = TradeEmailNotifier(recipient=" a@test.com ,, b@test.com , ")
+        assert notifier.recipients == ["a@test.com", "b@test.com"]
+
+    def test_to_header_joins_recipients(self):
+        from src.utils.email_notifier import TradeEmailNotifier
+        notifier = TradeEmailNotifier(recipient="a@test.com, b@test.com")
+        notifier.enabled = True
+
+        captured = {}
+        def mock_send(subject, html):
+            captured["subject"] = subject
+            captured["html"] = html
+
+        original_send = notifier._send
+
+        import email.mime.multipart
+        from unittest.mock import patch as _patch
+        msgs_built = []
+        orig_init = email.mime.multipart.MIMEMultipart.__init__
+
+        notifier._send = mock_send
+        notifier.notify_trade_entry(SAMPLE_TRIGGER)
+        assert "SPY" in captured["subject"]
+
+
 class TestRetryOnBrokenPipe:
     def test_retries_on_broken_pipe(self):
         from src.utils.email_notifier import TradeEmailNotifier

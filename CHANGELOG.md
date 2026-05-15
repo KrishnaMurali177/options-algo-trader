@@ -1,5 +1,7 @@
 # Changelog
 
+- [2026-05-14] Modified: options_agent/src/utils/email_notifier.py — Support comma-separated multiple recipients in GMAIL_RECIPIENT
+- [2026-05-14] Modified: options_agent/src/utils/discord_notifier.py — Added User-Agent header to fix Cloudflare 403 blocks
 - [2026-05-14] Created: options_agent/src/utils/discord_notifier.py — Discord webhook notifications for trade entry/exit with rich embeds
 - [2026-05-14] Created: options_agent/src/utils/trade_notifier.py — Unified dispatcher for Gmail + Discord notifications
 - [2026-05-14] Created: options_agent/tests/test_discord_notifier.py — 15 tests for Discord notifier and TradeNotifier dispatcher

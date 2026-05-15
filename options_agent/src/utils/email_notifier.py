@@ -231,11 +231,123 @@ class TradeEmailNotifier:
         """
         self._send(subject, html)
 
+    def notify_status_update(self, trades: list[dict], open_trades: list[dict],
+                             total_scans: int, scan_triggers: int,
+                             scan_rejects: int) -> None:
+        now = datetime.now(ET)
+        now_str = now.strftime("%I:%M %p ET")
+
+        closed = [t for t in trades if t.get("closed")]
+        total_dollar_pnl = 0.0
+        has_fills = False
+        trade_rows = ""
+        for t in closed:
+            direction = t.get("direction", "?")
+            dir_label = "CALL" if "call" in direction else "PUT"
+            symbol = t.get("symbol", "?")
+            actual_entry = t.get("actual_entry")
+            actual_exit = t.get("actual_exit")
+            num_contracts = t.get("num_contracts", 1)
+            exit_reason = t.get("exit_reason", "?")
+            entry_time = t.get("time", "?")
+            reason_labels = {
+                "stop": "Stop", "decay_target": "Target (decay)",
+                "target": "Target", "theta_exit": "Theta",
+                "stagnation": "Stagnation", "time_stop": "Time Stop",
+                "gainz": "Gainz", "gainz_exit": "Gainz",
+            }
+            reason_display = reason_labels.get(exit_reason, exit_reason)
+
+            if actual_entry and actual_exit:
+                has_fills = True
+                pnl = (actual_exit - actual_entry) * num_contracts * 100
+                total_dollar_pnl += pnl
+                color = "#2e7d32" if pnl >= 0 else "#c62828"
+                trade_rows += f'''<tr>
+                    <td style="padding:4px 8px;">{dir_label} {symbol}</td>
+                    <td>{entry_time}</td>
+                    <td>${actual_entry:.2f} → ${actual_exit:.2f}</td>
+                    <td style="color:{color}; font-weight:bold;">${pnl:+,.0f}</td>
+                    <td>{reason_display}</td>
+                </tr>\n'''
+            else:
+                entry = t.get("entry", 0)
+                exit_price = t.get("underlying_exit_price", 0)
+                stop = t.get("stop", 0)
+                risk = abs(entry - stop)
+                pnl_pts = (exit_price - entry) if "call" in direction else (entry - exit_price)
+                pnl_r = pnl_pts / risk if risk > 0 else 0
+                color = "#2e7d32" if pnl_pts >= 0 else "#c62828"
+                sign = "+" if pnl_r >= 0 else ""
+                trade_rows += f'''<tr>
+                    <td style="padding:4px 8px;">{dir_label} {symbol}</td>
+                    <td>{entry_time}</td>
+                    <td>${entry:.2f} → ${exit_price:.2f}</td>
+                    <td style="color:{color}; font-weight:bold;">{sign}{pnl_r:.2f}R</td>
+                    <td>{reason_display}</td>
+                </tr>\n'''
+
+        if not trade_rows:
+            trade_rows = '<tr><td colspan="5" style="padding:8px; color:#888;">No closed trades yet</td></tr>'
+
+        open_rows = ""
+        for t in open_trades:
+            dir_label = "CALL" if "call" in t.get("direction", "") else "PUT"
+            occ = t.get("occ_symbol", "")
+            open_rows += f'''<tr>
+                <td style="padding:4px 8px;">{dir_label} {t.get("symbol","?")}</td>
+                <td>Entry ${t.get("entry",0):.2f}</td>
+                <td>Stop ${t.get("stop",0):.2f}</td>
+                <td>Target ${t.get("target",0):.2f}</td>
+            </tr>\n'''
+        if not open_rows:
+            open_rows = '<tr><td colspan="4" style="padding:8px; color:#888;">No open positions</td></tr>'
+
+        if has_fills:
+            day_color = "#2e7d32" if total_dollar_pnl >= 0 else "#c62828"
+            pnl_display = f"${total_dollar_pnl:+,.0f}"
+        else:
+            pnl_display = "—"
+            day_color = "#555"
+
+        subject = f"Agent Status {now.strftime('%H:%M')}: {len(closed)} trades, {total_scans} scans | {pnl_display}"
+
+        html = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 600px;">
+            <h2>📊 Agent Status — {now_str}</h2>
+
+            <table style="border-collapse: collapse; margin-bottom: 16px;">
+                <tr><td style="padding:4px 16px; font-weight:bold;">Realized P&L</td>
+                    <td style="color:{day_color}; font-weight:bold; font-size:16px;">{pnl_display}</td></tr>
+                <tr><td style="padding:4px 16px; font-weight:bold;">Closed Trades</td><td>{len(closed)}</td></tr>
+                <tr><td style="padding:4px 16px; font-weight:bold;">Open Positions</td><td>{len(open_trades)}</td></tr>
+                <tr><td style="padding:4px 16px; font-weight:bold;">Scans Today</td>
+                    <td>{total_scans} ({scan_triggers} triggers, {scan_rejects} rejects)</td></tr>
+            </table>
+
+            <h3>Closed Trades</h3>
+            <table style="border-collapse: collapse; width: 100%; font-size: 13px;">
+                <tr style="background:#f5f5f5; font-weight:bold;">
+                    <td style="padding:4px 8px;">Symbol</td><td>Time</td><td>Fill</td><td>P&L</td><td>Reason</td>
+                </tr>
+                {trade_rows}
+            </table>
+
+            <h3>Open Positions</h3>
+            <table style="border-collapse: collapse; width: 100%; font-size: 13px;">
+                {open_rows}
+            </table>
+        </div>
+        """
+        self._send(subject, html)
+
     def notify_daily_report(self, date_str: str, trades: list[dict],
                             total_scans: int) -> None:
         wins = 0
         losses = 0
         total_r = 0.0
+        total_dollar_pnl = 0.0
+        has_fills = False
         trade_rows = ""
 
         for t in trades:
@@ -247,6 +359,9 @@ class TradeEmailNotifier:
             exit_price = t.get("underlying_exit_price", 0)
             exit_reason = t.get("exit_reason", "?")
             occ = t.get("occ_symbol", "")
+            num_contracts = t.get("num_contracts", 1)
+            actual_entry = t.get("actual_entry")
+            actual_exit = t.get("actual_exit")
             risk = abs(entry - stop)
 
             if "call" in direction:
@@ -255,7 +370,15 @@ class TradeEmailNotifier:
                 pnl_pts = entry - exit_price
             pnl_r = pnl_pts / risk if risk > 0 else 0
             total_r += pnl_r
-            win = pnl_pts >= 0
+
+            if actual_entry and actual_exit:
+                has_fills = True
+                option_pnl = (actual_exit - actual_entry) * num_contracts * 100
+                total_dollar_pnl += option_pnl
+            else:
+                option_pnl = None
+
+            win = (option_pnl >= 0) if option_pnl is not None else (pnl_pts >= 0)
             if win:
                 wins += 1
             else:
@@ -269,15 +392,24 @@ class TradeEmailNotifier:
             }
             reason_display = reason_labels.get(exit_reason, exit_reason)
             color = "#2e7d32" if win else "#c62828"
-            sign = "+" if pnl_r >= 0 else ""
             entry_time = t.get("time", "?")
+
+            if actual_entry and actual_exit:
+                entry_col = f"${actual_entry:.2f}"
+                exit_col = f"${actual_exit:.2f}"
+                pnl_col = f'<span style="color:{color}; font-weight:bold;">${option_pnl:+.0f}</span>'
+            else:
+                entry_col = f"${entry:.2f}"
+                exit_col = f"${exit_price:.2f}"
+                sign = "+" if pnl_r >= 0 else ""
+                pnl_col = f'<span style="color:{color}; font-weight:bold;">{sign}{pnl_r:.2f}R</span>'
 
             trade_rows += f'''<tr>
                 <td style="padding:4px 12px;">{dir_label} {symbol}</td>
                 <td>{entry_time}</td>
-                <td>${entry:.2f}</td>
-                <td>${exit_price:.2f}</td>
-                <td style="color:{color}; font-weight:bold;">{sign}{pnl_r:.2f}R</td>
+                <td>{entry_col}</td>
+                <td>{exit_col}</td>
+                <td>{pnl_col}</td>
                 <td>{reason_display}</td>
                 <td style="font-size:11px; color:#888;">{occ}</td>
             </tr>\n'''
@@ -287,11 +419,22 @@ class TradeEmailNotifier:
 
         total_trades = wins + losses
         win_rate = f"{wins / total_trades * 100:.0f}%" if total_trades > 0 else "N/A"
-        day_color = "#2e7d32" if total_r >= 0 else "#c62828"
-        day_sign = "+" if total_r >= 0 else ""
-        day_emoji = "📈" if total_r >= 0 else "📉"
 
-        subject = f"Daily Report {date_str}: {day_sign}{total_r:.2f}R | {wins}W {losses}L | {total_scans} scans"
+        if has_fills:
+            day_color = "#2e7d32" if total_dollar_pnl >= 0 else "#c62828"
+            day_sign = "+" if total_dollar_pnl >= 0 else ""
+            day_emoji = "📈" if total_dollar_pnl >= 0 else "📉"
+            pnl_display = f"${total_dollar_pnl:+,.0f}"
+            subject = f"Daily Report {date_str}: {day_sign}${abs(total_dollar_pnl):,.0f} | {wins}W {losses}L | {total_scans} scans"
+        else:
+            day_sign = "+" if total_r >= 0 else ""
+            day_color = "#2e7d32" if total_r >= 0 else "#c62828"
+            day_emoji = "📈" if total_r >= 0 else "📉"
+            pnl_display = f"{day_sign}{total_r:.2f}R"
+            subject = f"Daily Report {date_str}: {day_sign}{total_r:.2f}R | {wins}W {losses}L | {total_scans} scans"
+
+        entry_exit_header = "Buy" if has_fills else "Entry"
+        exit_header = "Sell" if has_fills else "Exit"
 
         html = f"""
         <div style="font-family: Arial, sans-serif; max-width: 700px;">
@@ -300,7 +443,7 @@ class TradeEmailNotifier:
             <table style="border-collapse: collapse; margin-bottom: 16px;">
                 <tr>
                     <td style="padding:4px 16px; font-weight:bold;">Net P&L</td>
-                    <td style="color:{day_color}; font-weight:bold; font-size:18px;">{day_sign}{total_r:.2f}R</td>
+                    <td style="color:{day_color}; font-weight:bold; font-size:18px;">{pnl_display}</td>
                 </tr>
                 <tr>
                     <td style="padding:4px 16px; font-weight:bold;">Record</td>
@@ -321,8 +464,8 @@ class TradeEmailNotifier:
                 <tr style="background:#f5f5f5; font-weight:bold;">
                     <td style="padding:4px 12px;">Symbol</td>
                     <td>Time</td>
-                    <td>Entry</td>
-                    <td>Exit</td>
+                    <td>{entry_exit_header}</td>
+                    <td>{exit_header}</td>
                     <td>P&L</td>
                     <td>Reason</td>
                     <td>Contract</td>

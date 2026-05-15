@@ -2,6 +2,7 @@
 """Send daily trade report via all configured notification channels."""
 
 import json
+import logging
 import os
 import sys
 from datetime import datetime
@@ -11,6 +12,9 @@ from zoneinfo import ZoneInfo
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from src.utils.trade_notifier import TradeNotifier
+from src.utils.alpaca_fills import enrich_trades_with_fills
+
+logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
 JOURNAL_DIR = Path(__file__).resolve().parent.parent / "sweet_spot_journal"
@@ -37,6 +41,7 @@ def count_scans(date_str: str) -> int:
 def main():
     date_str = sys.argv[1] if len(sys.argv) > 1 else datetime.now(ET).strftime("%Y-%m-%d")
     trades = load_trades(date_str)
+    enrich_trades_with_fills(trades)
     total_scans = count_scans(date_str)
 
     notifier = TradeNotifier(

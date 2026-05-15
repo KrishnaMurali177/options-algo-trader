@@ -156,11 +156,97 @@ class DiscordNotifier:
             }]
         })
 
+    def notify_status_update(self, trades: list[dict], open_trades: list[dict],
+                             total_scans: int, scan_triggers: int,
+                             scan_rejects: int) -> None:
+        now = datetime.now(ET)
+        now_str = now.strftime("%I:%M %p ET")
+
+        closed = [t for t in trades if t.get("closed")]
+        total_dollar_pnl = 0.0
+        has_fills = False
+        trade_lines = []
+        for t in closed:
+            direction = t.get("direction", "?")
+            dir_label = "CALL" if "call" in direction else "PUT"
+            symbol = t.get("symbol", "?")
+            actual_entry = t.get("actual_entry")
+            actual_exit = t.get("actual_exit")
+            num_contracts = t.get("num_contracts", 1)
+            exit_reason = t.get("exit_reason", "?")
+            entry_time = t.get("time", "?")
+            reason_short = REASON_LABELS.get(exit_reason, exit_reason.upper())
+
+            if actual_entry and actual_exit:
+                has_fills = True
+                pnl = (actual_exit - actual_entry) * num_contracts * 100
+                total_dollar_pnl += pnl
+                icon = "✅" if pnl >= 0 else "❌"
+                trade_lines.append(
+                    f"{icon} `{entry_time}` {dir_label} **{symbol}** "
+                    f"${actual_entry:.2f} → ${actual_exit:.2f} **${pnl:+,.0f}** ({reason_short})"
+                )
+            else:
+                entry = t.get("entry", 0)
+                exit_price = t.get("underlying_exit_price", 0)
+                stop = t.get("stop", 0)
+                risk = abs(entry - stop)
+                pnl_pts = (exit_price - entry) if "call" in direction else (entry - exit_price)
+                pnl_r = pnl_pts / risk if risk > 0 else 0
+                sign = "+" if pnl_r >= 0 else ""
+                icon = "✅" if pnl_pts >= 0 else "❌"
+                trade_lines.append(
+                    f"{icon} `{entry_time}` {dir_label} **{symbol}** "
+                    f"${entry:.2f} → ${exit_price:.2f} **{sign}{pnl_r:.2f}R** ({reason_short})"
+                )
+
+        open_lines = []
+        for t in open_trades:
+            dir_label = "CALL" if "call" in t.get("direction", "") else "PUT"
+            open_lines.append(
+                f"🔵 {dir_label} **{t.get('symbol','?')}** "
+                f"Entry ${t.get('entry',0):.2f} | Stop ${t.get('stop',0):.2f} | Target ${t.get('target',0):.2f}"
+            )
+
+        desc_parts = []
+        if trade_lines:
+            desc_parts.append("**Closed Trades**\n" + "\n".join(trade_lines))
+        else:
+            desc_parts.append("*No closed trades yet*")
+        if open_lines:
+            desc_parts.append("**Open Positions**\n" + "\n".join(open_lines))
+        else:
+            desc_parts.append("*No open positions*")
+
+        desc = "\n\n".join(desc_parts)
+
+        if has_fills:
+            pnl_display = f"**${total_dollar_pnl:+,.0f}**"
+        else:
+            pnl_display = "**—**"
+
+        color = 0x3498db
+
+        self._post({
+            "embeds": [{
+                "title": f"\U0001f4ca Agent Status — {now_str}",
+                "color": color,
+                "description": desc,
+                "fields": [
+                    {"name": "Realized P&L", "value": pnl_display, "inline": True},
+                    {"name": "Trades", "value": f"{len(closed)} closed, {len(open_trades)} open", "inline": True},
+                    {"name": "Scans", "value": f"{total_scans} ({scan_triggers} trig, {scan_rejects} rej)", "inline": True},
+                ],
+            }]
+        })
+
     def notify_daily_report(self, date_str: str, trades: list[dict],
                             total_scans: int) -> None:
         wins = 0
         losses = 0
         total_r = 0.0
+        total_dollar_pnl = 0.0
+        has_fills = False
         trade_lines = []
 
         for t in trades:
@@ -171,6 +257,9 @@ class DiscordNotifier:
             stop = t.get("stop", 0)
             exit_price = t.get("underlying_exit_price", 0)
             exit_reason = t.get("exit_reason", "?")
+            num_contracts = t.get("num_contracts", 1)
+            actual_entry = t.get("actual_entry")
+            actual_exit = t.get("actual_exit")
             risk = abs(entry - stop)
 
             if "call" in direction:
@@ -179,26 +268,49 @@ class DiscordNotifier:
                 pnl_pts = entry - exit_price
             pnl_r = pnl_pts / risk if risk > 0 else 0
             total_r += pnl_r
-            win = pnl_pts >= 0
+
+            if actual_entry and actual_exit:
+                has_fills = True
+                option_pnl = (actual_exit - actual_entry) * num_contracts * 100
+                total_dollar_pnl += option_pnl
+            else:
+                option_pnl = None
+
+            win = (option_pnl >= 0) if option_pnl is not None else (pnl_pts >= 0)
             if win:
                 wins += 1
             else:
                 losses += 1
 
             reason_short = REASON_LABELS.get(exit_reason, exit_reason.upper())
-            sign = "+" if pnl_r >= 0 else ""
             icon = "✅" if win else "❌"
             entry_time = t.get("time", "?")
-            trade_lines.append(
-                f"{icon} `{entry_time}` {dir_label} **{symbol}** "
-                f"${entry:.2f} → ${exit_price:.2f} **{sign}{pnl_r:.2f}R** ({reason_short})"
-            )
+
+            if actual_entry and actual_exit:
+                trade_lines.append(
+                    f"{icon} `{entry_time}` {dir_label} **{symbol}** "
+                    f"${actual_entry:.2f} → ${actual_exit:.2f} "
+                    f"**${option_pnl:+,.0f}** ({reason_short})"
+                )
+            else:
+                sign = "+" if pnl_r >= 0 else ""
+                trade_lines.append(
+                    f"{icon} `{entry_time}` {dir_label} **{symbol}** "
+                    f"${entry:.2f} → ${exit_price:.2f} **{sign}{pnl_r:.2f}R** ({reason_short})"
+                )
 
         total_trades = wins + losses
         win_rate = f"{wins / total_trades * 100:.0f}%" if total_trades > 0 else "N/A"
-        day_sign = "+" if total_r >= 0 else ""
-        day_emoji = "\U0001f4c8" if total_r >= 0 else "\U0001f4c9"
-        color = 0x2e7d32 if total_r >= 0 else 0xc62828
+
+        if has_fills:
+            day_sign = "+" if total_dollar_pnl >= 0 else ""
+            pnl_display = f"**${total_dollar_pnl:+,.0f}**"
+        else:
+            day_sign = "+" if total_r >= 0 else ""
+            pnl_display = f"**{day_sign}{total_r:.2f}R**"
+
+        day_emoji = "\U0001f4c8" if (total_dollar_pnl >= 0 if has_fills else total_r >= 0) else "\U0001f4c9"
+        color = 0x2e7d32 if (total_dollar_pnl >= 0 if has_fills else total_r >= 0) else 0xc62828
 
         desc = "\n".join(trade_lines) if trade_lines else "*No trades today*"
 
@@ -208,7 +320,7 @@ class DiscordNotifier:
                 "color": color,
                 "description": desc,
                 "fields": [
-                    {"name": "Net P&L", "value": f"**{day_sign}{total_r:.2f}R**", "inline": True},
+                    {"name": "Net P&L", "value": pnl_display, "inline": True},
                     {"name": "Record", "value": f"{wins}W — {losses}L ({win_rate})", "inline": True},
                     {"name": "Scans", "value": str(total_scans), "inline": True},
                 ],

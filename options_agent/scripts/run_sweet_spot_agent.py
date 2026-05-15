@@ -53,6 +53,7 @@ from src.utils.quality_scorer import compute_quality_score
 from src.utils.choppiness import compute_choppiness
 from src.utils.gainz import gainz_signal
 from src.utils.trade_notifier import TradeNotifier
+from src.utils.alpaca_fills import enrich_trades_with_fills
 
 
 def _build_indicators_replay_parity(
@@ -652,6 +653,8 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         except Exception as e:
             logger.warning("Restart-recovery scan failed: %s — proceeding with empty state", e)
 
+    last_status_update = None
+
     while True:
         now = get_et_now()
 
@@ -1058,6 +1061,34 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                         except Exception as e:
                             logger.error("  ⚠️ Order failed: %s", e)
 
+        # ── 30-min status update (SPY agent only to avoid duplicates) ──
+        if symbol == "SPY":
+            send_status = last_status_update is None or (now - last_status_update) >= timedelta(minutes=30)
+            if send_status:
+                try:
+                    all_trades_status = []
+                    for jf in JOURNAL_DIR.glob(f"{today.isoformat()}_*.json"):
+                        if "verdicts" in jf.name:
+                            continue
+                        all_trades_status.extend(json.loads(jf.read_text()))
+                    all_trades_status.sort(key=lambda t: t.get("timestamp", ""))
+                    enrich_trades_with_fills(all_trades_status)
+
+                    open_now = [t for t in all_trades_status if not t.get("closed")]
+                    status_verdicts = verdicts_file.read_text().strip().split("\n") if verdicts_file.exists() else []
+                    status_total = sum(1 for line in status_verdicts if line)
+                    status_triggers = sum(1 for line in status_verdicts if line and '"trigger"' in line)
+                    status_rejects = status_total - status_triggers
+
+                    notifier.notify_status_update(
+                        all_trades_status, open_now, status_total,
+                        status_triggers, status_rejects,
+                    )
+                    last_status_update = now
+                    logger.info("  📊 Status update sent")
+                except Exception as e:
+                    logger.error("  Status update failed: %s", e)
+
         _write_heartbeat(f"run_day_{symbol}_scanning")
         time.sleep(300)  # 5 min interval
 
@@ -1089,6 +1120,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                     continue
                 all_trades.extend(json.loads(jf.read_text()))
             all_trades.sort(key=lambda t: t.get("timestamp", ""))
+            enrich_trades_with_fills(all_trades)
 
             verdicts_file_eod = JOURNAL_DIR / f"{today.isoformat()}_verdicts.jsonl"
             total_scans = 0

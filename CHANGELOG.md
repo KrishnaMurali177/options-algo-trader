@@ -1,5 +1,11 @@
 # Changelog
 
+- [2026-05-14] Created: options_agent/src/utils/discord_notifier.py — Discord webhook notifications for trade entry/exit with rich embeds
+- [2026-05-14] Created: options_agent/src/utils/trade_notifier.py — Unified dispatcher for Gmail + Discord notifications
+- [2026-05-14] Created: options_agent/tests/test_discord_notifier.py — 15 tests for Discord notifier and TradeNotifier dispatcher
+- [2026-05-14] Modified: options_agent/scripts/run_sweet_spot_agent.py — Switched to TradeNotifier (Gmail + Discord)
+- [2026-05-14] Modified: options_agent/config/settings.py — Added discord_webhook_url setting
+- [2026-05-14] Modified: options_agent/.env — Added DISCORD_WEBHOOK_URL placeholder
 - [2026-05-14] Modified: options_agent/src/utils/email_notifier.py — Added retry on BrokenPipeError for stale Gmail connections
 - [2026-05-14] Modified: options_agent/tests/test_email_notifier.py — Added retry tests (19 total)
 - [2026-05-14] Created: options_agent/tests/test_email_notifier.py — 16 tests for email notifier optional behavior, content, and monitor digest

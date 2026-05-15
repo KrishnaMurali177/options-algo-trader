@@ -60,6 +60,7 @@ class Settings(BaseSettings):
 
     # ── Email Alerts (Gmail API + OAuth2) ──
     gmail_recipient: str = Field(default="", description="Email to receive trade alerts")
+    discord_webhook_url: str = Field(default="", description="Discord webhook URL for trade alerts")
 
     # ── MCP Server ──
     mcp_server_command: str = Field(

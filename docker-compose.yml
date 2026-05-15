@@ -27,6 +27,7 @@ services:
       - ./options_agent/logs:/app/logs
       - ./options_agent/sweet_spot_journal:/app/sweet_spot_journal
       - ./options_agent/data_cache:/app/data_cache
+      - ./options_agent/config:/app/config
       - ./options_agent/scripts:/app/scripts:ro
       - ./options_agent/src:/app/src:ro
     restart: unless-stopped
@@ -46,6 +47,7 @@ services:
       - ./options_agent/logs:/app/logs
       - ./options_agent/sweet_spot_journal:/app/sweet_spot_journal
       - ./options_agent/data_cache:/app/data_cache
+      - ./options_agent/config:/app/config
       - ./options_agent/scripts:/app/scripts:ro
       - ./options_agent/src:/app/src:ro
     restart: unless-stopped

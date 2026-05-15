@@ -1,5 +1,16 @@
 # Changelog
 
+- [2026-05-14] Created: options_agent/tests/test_email_notifier.py — 16 tests for email notifier optional behavior, content, and monitor digest
+- [2026-05-14] Modified: options_agent/src/utils/email_notifier.py — Made Gmail API imports lazy so app works without google packages installed
+- [2026-05-14] Modified: options_agent/.env — Clarified email alerts are optional
+- [2026-05-14] Modified: options_agent/requirements.txt — Marked Gmail API deps as optional
+- [2026-05-14] Created: options_agent/scripts/monitor_agent.py — 30-min agent health + verdict digest email monitor
+- [2026-05-13] Modified: options_agent/src/utils/email_notifier.py — Refactored from SMTP to Gmail API with OAuth2
+- [2026-05-13] Modified: options_agent/scripts/run_sweet_spot_agent.py — Integrated email alerts on trade open, close, and gainz exit
+- [2026-05-13] Modified: options_agent/config/settings.py — Added Gmail API email alert config
+- [2026-05-13] Modified: options_agent/.env — Added Gmail OAuth2 setup instructions and GMAIL_RECIPIENT
+- [2026-05-13] Modified: requirements.txt — Added google-api-python-client, google-auth-httplib2, google-auth-oauthlib
+- [2026-05-13] Modified: .gitignore — Added gmail_credentials.json and gmail_token.json
 - [2026-05-05] Created: Dockerfile — Docker image for the options agent (Python 3.11, all dependencies)
 - [2026-05-05] Created: docker-compose.yml — Compose config with dashboard and live agent services
 - [2026-05-05] Created: run.sh — Convenience script for all Docker operations (dashboard, agent, backtest, replay, scan, test, shell)

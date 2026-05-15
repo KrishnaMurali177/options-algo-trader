@@ -52,6 +52,7 @@ from src.models.market_data import MarketIndicators
 from src.utils.quality_scorer import compute_quality_score
 from src.utils.choppiness import compute_choppiness
 from src.utils.gainz import gainz_signal
+from src.utils.email_notifier import TradeEmailNotifier
 
 
 def _build_indicators_replay_parity(
@@ -568,6 +569,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         except Exception as e:
             logger.error("Paper trader init failed: %s — running journal-only", e)
 
+    email_notifier = TradeEmailNotifier(
+        recipient=os.getenv("GMAIL_RECIPIENT", ""),
+    )
+
     logger.info("═══ Sweet Spot Agent: %s — %s ═══", symbol, today)
     logger.info("Settings: qty=%d, max_chop=%d, max_trades=%d, max_stops=%d, scan_start=%dmin, regime_guard=%s, pb_ema=%s, paper=%s, mode=%s",
                 qty, max_chop, max_trades_per_day, max_stops_per_day, scan_start_min,
@@ -713,6 +718,15 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             trig["closed"] = True
                             break
                     journal_file.write_text(json.dumps(triggers, indent=2, default=str))
+                    for trig in triggers:
+                        if (trig.get("occ_symbol") == sym or trig.get("symbol") == sym) and trig.get("closed"):
+                            try:
+                                g_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
+                                g_price = float(g_bars["Close"].iloc[-1]) if len(g_bars) > 0 else trig.get("entry", 0)
+                            except Exception:
+                                g_price = trig.get("entry", 0)
+                            email_notifier.notify_trade_exit(trig, "gainz", g_price)
+                            break
                     open_directions.pop(sym, None)
                     open_options.pop(sym, None)
 
@@ -843,6 +857,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                     trig["closed"] = True
                                     break
                             journal_file.write_text(json.dumps(triggers, indent=2, default=str))
+                            for trig in triggers:
+                                if trig.get("occ_symbol") == occ_sym and trig.get("closed"):
+                                    email_notifier.notify_trade_exit(trig, close_reason, underlying_price)
+                                    break
                             open_options.pop(occ_sym, None)
                             open_directions.pop(occ_sym, None)
                             if close_reason == "stop":
@@ -1035,6 +1053,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
 
                             journal_file.write_text(json.dumps(triggers, indent=2, default=str))
                             logger.info("  📝 Order placed: %s", trigger.get("order_id", "?")[:12])
+                            email_notifier.notify_trade_entry(trigger)
                         except Exception as e:
                             logger.error("  ⚠️ Order failed: %s", e)
 

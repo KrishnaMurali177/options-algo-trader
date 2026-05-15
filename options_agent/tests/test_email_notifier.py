@@ -3,7 +3,7 @@
 import os, sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from unittest.mock import patch, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -97,6 +97,62 @@ class TestNotifierWithCredentials:
         from src.utils.email_notifier import TradeEmailNotifier
         notifier = TradeEmailNotifier(recipient="")
         notifier._send("subject", "<p>body</p>")
+
+
+class TestRetryOnBrokenPipe:
+    def test_retries_on_broken_pipe(self):
+        from src.utils.email_notifier import TradeEmailNotifier
+        notifier = TradeEmailNotifier(recipient="test@example.com")
+        notifier.enabled = True
+
+        execute_calls = 0
+        def execute_side_effect():
+            nonlocal execute_calls
+            execute_calls += 1
+            if execute_calls == 1:
+                raise BrokenPipeError("Broken pipe")
+
+        mock_service = MagicMock()
+        mock_service.users.return_value.messages.return_value.send.return_value.execute = execute_side_effect
+        notifier._service = mock_service
+
+        fresh_service = MagicMock()
+        original_get = notifier._get_service
+        def patched_get(force_new=False):
+            if force_new:
+                notifier._service = fresh_service
+                return fresh_service
+            return original_get()
+        notifier._get_service = patched_get
+
+        notifier._send("Test Subject", "<p>test</p>")
+        assert execute_calls == 1
+        fresh_service.users.return_value.messages.return_value.send.return_value.execute.assert_called_once()
+
+    def test_fails_after_retry_exhausted(self):
+        from src.utils.email_notifier import TradeEmailNotifier
+        notifier = TradeEmailNotifier(recipient="test@example.com")
+        notifier.enabled = True
+
+        mock_service = MagicMock()
+        mock_service.users.return_value.messages.return_value.send.return_value.execute.side_effect = BrokenPipeError("Broken pipe")
+
+        notifier._service = mock_service
+        notifier._get_service = lambda force_new=False: mock_service
+        notifier._send("Test Subject", "<p>test</p>")
+        assert mock_service.users.return_value.messages.return_value.send.return_value.execute.call_count == 2
+
+    def test_no_retry_on_other_errors(self):
+        from src.utils.email_notifier import TradeEmailNotifier
+        notifier = TradeEmailNotifier(recipient="test@example.com")
+        notifier.enabled = True
+
+        mock_service = MagicMock()
+        mock_service.users.return_value.messages.return_value.send.return_value.execute.side_effect = ValueError("some error")
+
+        notifier._service = mock_service
+        notifier._send("Test Subject", "<p>test</p>")
+        assert mock_service.users.return_value.messages.return_value.send.return_value.execute.call_count == 1
 
 
 class TestEmailContent:

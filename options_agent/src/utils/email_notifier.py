@@ -70,8 +70,8 @@ class TradeEmailNotifier:
         elif not _GMAIL_AVAILABLE:
             logger.info("Email notifier disabled — Gmail API packages not installed")
 
-    def _get_service(self):
-        if self._service is None:
+    def _get_service(self, force_new: bool = False):
+        if self._service is None or force_new:
             try:
                 self._service = _get_gmail_service(self.credentials_file, self.token_file)
             except FileNotFoundError as e:
@@ -90,20 +90,33 @@ class TradeEmailNotifier:
         service = self._get_service()
         if not service:
             return
-        try:
-            msg = MIMEMultipart("alternative")
-            msg["Subject"] = subject
-            msg["From"] = "me"
-            msg["To"] = self.recipient
-            msg.attach(MIMEText(html_body, "html"))
 
-            raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
-            service.users().messages().send(
-                userId="me", body={"raw": raw}
-            ).execute()
-            logger.info("Email sent: %s", subject)
-        except Exception as e:
-            logger.error("Email send failed: %s", e)
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = subject
+        msg["From"] = "me"
+        msg["To"] = self.recipient
+        msg.attach(MIMEText(html_body, "html"))
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode()
+        body = {"raw": raw}
+
+        for attempt in range(2):
+            try:
+                service.users().messages().send(
+                    userId="me", body=body
+                ).execute()
+                logger.info("Email sent: %s", subject)
+                return
+            except (BrokenPipeError, ConnectionError, OSError) as e:
+                if attempt == 0:
+                    logger.warning("Gmail connection stale, reconnecting: %s", e)
+                    service = self._get_service(force_new=True)
+                    if not service:
+                        return
+                else:
+                    logger.error("Email send failed after retry: %s", e)
+            except Exception as e:
+                logger.error("Email send failed: %s", e)
+                return
 
     def notify_trade_entry(self, trigger: dict) -> None:
         now = datetime.now(ET).strftime("%I:%M %p ET")

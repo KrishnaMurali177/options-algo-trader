@@ -1,5 +1,7 @@
 # Changelog
 
+- [2026-05-14] Modified: options_agent/src/utils/email_notifier.py — Added retry on BrokenPipeError for stale Gmail connections
+- [2026-05-14] Modified: options_agent/tests/test_email_notifier.py — Added retry tests (19 total)
 - [2026-05-14] Created: options_agent/tests/test_email_notifier.py — 16 tests for email notifier optional behavior, content, and monitor digest
 - [2026-05-14] Modified: options_agent/src/utils/email_notifier.py — Made Gmail API imports lazy so app works without google packages installed
 - [2026-05-14] Modified: options_agent/.env — Clarified email alerts are optional

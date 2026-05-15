@@ -1,5 +1,10 @@
 # Changelog
 
+- [2026-05-14] Created: options_agent/scripts/send_daily_report.py — Standalone script to send daily trade report
+- [2026-05-14] Modified: options_agent/scripts/run_sweet_spot_agent.py — Auto-send daily report at EOD (SPY agent only)
+- [2026-05-14] Modified: options_agent/src/utils/email_notifier.py — Added notify_daily_report with full trade log and stats
+- [2026-05-14] Modified: options_agent/src/utils/discord_notifier.py — Added notify_daily_report with embed summary
+- [2026-05-14] Modified: options_agent/src/utils/trade_notifier.py — Added notify_daily_report dispatch
 - [2026-05-14] Modified: options_agent/src/utils/email_notifier.py — Support comma-separated multiple recipients in GMAIL_RECIPIENT
 - [2026-05-14] Modified: options_agent/src/utils/discord_notifier.py — Added User-Agent header to fix Cloudflare 403 blocks
 - [2026-05-14] Created: options_agent/src/utils/discord_notifier.py — Discord webhook notifications for trade entry/exit with rich embeds

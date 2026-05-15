@@ -230,3 +230,105 @@ class TradeEmailNotifier:
         </div>
         """
         self._send(subject, html)
+
+    def notify_daily_report(self, date_str: str, trades: list[dict],
+                            total_scans: int) -> None:
+        wins = 0
+        losses = 0
+        total_r = 0.0
+        trade_rows = ""
+
+        for t in trades:
+            direction = t.get("direction", "?")
+            dir_label = "CALL" if "call" in direction else "PUT"
+            symbol = t.get("symbol", "?")
+            entry = t.get("entry", 0)
+            stop = t.get("stop", 0)
+            exit_price = t.get("underlying_exit_price", 0)
+            exit_reason = t.get("exit_reason", "?")
+            occ = t.get("occ_symbol", "")
+            risk = abs(entry - stop)
+
+            if "call" in direction:
+                pnl_pts = exit_price - entry
+            else:
+                pnl_pts = entry - exit_price
+            pnl_r = pnl_pts / risk if risk > 0 else 0
+            total_r += pnl_r
+            win = pnl_pts >= 0
+            if win:
+                wins += 1
+            else:
+                losses += 1
+
+            reason_labels = {
+                "stop": "Stop", "decay_target": "Target (decay)",
+                "target": "Target", "theta_exit": "Theta",
+                "stagnation": "Stagnation", "time_stop": "Time Stop",
+                "gainz": "Gainz", "gainz_exit": "Gainz",
+            }
+            reason_display = reason_labels.get(exit_reason, exit_reason)
+            color = "#2e7d32" if win else "#c62828"
+            sign = "+" if pnl_r >= 0 else ""
+            entry_time = t.get("time", "?")
+
+            trade_rows += f'''<tr>
+                <td style="padding:4px 12px;">{dir_label} {symbol}</td>
+                <td>{entry_time}</td>
+                <td>${entry:.2f}</td>
+                <td>${exit_price:.2f}</td>
+                <td style="color:{color}; font-weight:bold;">{sign}{pnl_r:.2f}R</td>
+                <td>{reason_display}</td>
+                <td style="font-size:11px; color:#888;">{occ}</td>
+            </tr>\n'''
+
+        if not trade_rows:
+            trade_rows = '<tr><td colspan="7" style="padding:8px; color:#888;">No trades today</td></tr>'
+
+        total_trades = wins + losses
+        win_rate = f"{wins / total_trades * 100:.0f}%" if total_trades > 0 else "N/A"
+        day_color = "#2e7d32" if total_r >= 0 else "#c62828"
+        day_sign = "+" if total_r >= 0 else ""
+        day_emoji = "📈" if total_r >= 0 else "📉"
+
+        subject = f"Daily Report {date_str}: {day_sign}{total_r:.2f}R | {wins}W {losses}L | {total_scans} scans"
+
+        html = f"""
+        <div style="font-family: Arial, sans-serif; max-width: 700px;">
+            <h2>{day_emoji} Daily Trade Report — {date_str}</h2>
+
+            <table style="border-collapse: collapse; margin-bottom: 16px;">
+                <tr>
+                    <td style="padding:4px 16px; font-weight:bold;">Net P&L</td>
+                    <td style="color:{day_color}; font-weight:bold; font-size:18px;">{day_sign}{total_r:.2f}R</td>
+                </tr>
+                <tr>
+                    <td style="padding:4px 16px; font-weight:bold;">Record</td>
+                    <td>{wins}W — {losses}L ({win_rate})</td>
+                </tr>
+                <tr>
+                    <td style="padding:4px 16px; font-weight:bold;">Total Scans</td>
+                    <td>{total_scans}</td>
+                </tr>
+                <tr>
+                    <td style="padding:4px 16px; font-weight:bold;">Trades Taken</td>
+                    <td>{total_trades}</td>
+                </tr>
+            </table>
+
+            <h3>Trade Log</h3>
+            <table style="border-collapse: collapse; width: 100%; font-size: 13px;">
+                <tr style="background:#f5f5f5; font-weight:bold;">
+                    <td style="padding:4px 12px;">Symbol</td>
+                    <td>Time</td>
+                    <td>Entry</td>
+                    <td>Exit</td>
+                    <td>P&L</td>
+                    <td>Reason</td>
+                    <td>Contract</td>
+                </tr>
+                {trade_rows}
+            </table>
+        </div>
+        """
+        self._send(subject, html)

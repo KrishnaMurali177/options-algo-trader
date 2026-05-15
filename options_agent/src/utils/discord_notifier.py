@@ -155,3 +155,62 @@ class DiscordNotifier:
                 "footer": {"text": now},
             }]
         })
+
+    def notify_daily_report(self, date_str: str, trades: list[dict],
+                            total_scans: int) -> None:
+        wins = 0
+        losses = 0
+        total_r = 0.0
+        trade_lines = []
+
+        for t in trades:
+            direction = t.get("direction", "?")
+            dir_label = "CALL" if "call" in direction else "PUT"
+            symbol = t.get("symbol", "?")
+            entry = t.get("entry", 0)
+            stop = t.get("stop", 0)
+            exit_price = t.get("underlying_exit_price", 0)
+            exit_reason = t.get("exit_reason", "?")
+            risk = abs(entry - stop)
+
+            if "call" in direction:
+                pnl_pts = exit_price - entry
+            else:
+                pnl_pts = entry - exit_price
+            pnl_r = pnl_pts / risk if risk > 0 else 0
+            total_r += pnl_r
+            win = pnl_pts >= 0
+            if win:
+                wins += 1
+            else:
+                losses += 1
+
+            reason_short = REASON_LABELS.get(exit_reason, exit_reason.upper())
+            sign = "+" if pnl_r >= 0 else ""
+            icon = "✅" if win else "❌"
+            entry_time = t.get("time", "?")
+            trade_lines.append(
+                f"{icon} `{entry_time}` {dir_label} **{symbol}** "
+                f"${entry:.2f} → ${exit_price:.2f} **{sign}{pnl_r:.2f}R** ({reason_short})"
+            )
+
+        total_trades = wins + losses
+        win_rate = f"{wins / total_trades * 100:.0f}%" if total_trades > 0 else "N/A"
+        day_sign = "+" if total_r >= 0 else ""
+        day_emoji = "\U0001f4c8" if total_r >= 0 else "\U0001f4c9"
+        color = 0x2e7d32 if total_r >= 0 else 0xc62828
+
+        desc = "\n".join(trade_lines) if trade_lines else "*No trades today*"
+
+        self._post({
+            "embeds": [{
+                "title": f"{day_emoji} Daily Report — {date_str}",
+                "color": color,
+                "description": desc,
+                "fields": [
+                    {"name": "Net P&L", "value": f"**{day_sign}{total_r:.2f}R**", "inline": True},
+                    {"name": "Record", "value": f"{wins}W — {losses}L ({win_rate})", "inline": True},
+                    {"name": "Scans", "value": str(total_scans), "inline": True},
+                ],
+            }]
+        })

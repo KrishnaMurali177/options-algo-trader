@@ -1080,6 +1080,26 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         except Exception as e:
             logger.error("  EOD summary failed: %s", e)
 
+    # ── EOD Daily Report (SPY agent only to avoid duplicates) ──
+    if symbol == "SPY":
+        try:
+            all_trades = []
+            for jf in JOURNAL_DIR.glob(f"{today.isoformat()}_*.json"):
+                if "verdicts" in jf.name:
+                    continue
+                all_trades.extend(json.loads(jf.read_text()))
+            all_trades.sort(key=lambda t: t.get("timestamp", ""))
+
+            verdicts_file_eod = JOURNAL_DIR / f"{today.isoformat()}_verdicts.jsonl"
+            total_scans = 0
+            if verdicts_file_eod.exists():
+                total_scans = sum(1 for line in verdicts_file_eod.read_text().strip().split("\n") if line)
+
+            notifier.notify_daily_report(today.isoformat(), all_trades, total_scans)
+            logger.info("  📧 Daily report sent: %d trades, %d scans", len(all_trades), total_scans)
+        except Exception as e:
+            logger.error("  Daily report failed: %s", e)
+
 
 HEARTBEAT_FILE = Path("/tmp/agent_heartbeat")
 

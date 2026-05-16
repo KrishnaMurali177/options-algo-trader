@@ -1,5 +1,7 @@
 # Changelog
 
+- [2026-05-16] Created: options_agent/scripts/send_weekly_report.py — Recurring weekly Discord performance report script
+- [2026-05-16] Created: options_agent/logs/weekly_performance_2026-05-12_to_2026-05-16.md — Weekly performance report with P&L from Alpaca fills
 - [2026-05-15] Created: options_agent/src/utils/alpaca_fills.py — Fetch actual buy/sell fill prices from Alpaca for trade journal entries
 - [2026-05-15] Modified: options_agent/scripts/send_daily_report.py — Enrich trades with Alpaca fill prices before sending report
 - [2026-05-15] Modified: options_agent/scripts/run_sweet_spot_agent.py — Enrich EOD trades with Alpaca fill prices

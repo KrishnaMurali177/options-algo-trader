@@ -1,5 +1,10 @@
 # Changelog
 
+- [2026-05-17] Modified: options_agent/scripts/verify_live_vs_replay.py — Layer 3: fix prior_bars to 5-day window, prefer bar snapshots from journal
+- [2026-05-16] Modified: options_agent/scripts/run_sweet_spot_agent.py — Layer 2: snapshot extended_bars to parquet at trigger time for perfect reproducibility
+- [2026-05-16] Modified: options_agent/scripts/run_sweet_spot_agent.py — Layer 1: store indicator snapshot (SMA, EMA, RSI, VIX, bar counts) in trigger journal entries
+- [2026-05-16] Created: options_agent/docs/replay-parity-plan.md — Implementation plan for fixing live/replay reproducibility gap
+- [2026-05-16] Modified: options_agent/scripts/verify_live_vs_replay.py — Fixed bar loading (reverse sort), status dict handling, added min_chop/momentum_flip parity, fixed analyzers to use bars_5m
 - [2026-05-16] Created: options_agent/scripts/send_weekly_report.py — Recurring weekly Discord performance report script
 - [2026-05-16] Created: options_agent/logs/weekly_performance_2026-05-12_to_2026-05-16.md — Weekly performance report with P&L from Alpaca fills
 - [2026-05-15] Created: options_agent/src/utils/alpaca_fills.py — Fetch actual buy/sell fill prices from Alpaca for trade journal entries

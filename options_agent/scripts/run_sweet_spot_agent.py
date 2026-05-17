@@ -509,6 +509,13 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
                     "reason": f"non-positive risk ${risk:.2f} (entry ${entry:.2f} on wrong side of stop ${stop:.2f})",
                     **diag_common}
 
+        # Capture indicator snapshot for reproducibility verification
+        _ema_f = _ema_s = None
+        if pb_ema and len(bars) >= pb_ema_slow:
+            _close = bars["Close"].astype(float)
+            _ema_f = round(float(_close.ewm(span=pb_ema_fast, adjust=False).mean().iloc[-1]), 4)
+            _ema_s = round(float(_close.ewm(span=pb_ema_slow, adjust=False).mean().iloc[-1]), 4)
+
         return {
             "status": "trigger",
             "timestamp": now.isoformat(),
@@ -528,6 +535,21 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
             "range_high": round(range_high, 2),
             "range_low": round(range_low, 2),
             "is_flip": _is_flip,
+            "indicators": {
+                "sma_20": round(indicators.sma_20, 4),
+                "sma_50": round(indicators.sma_50, 4),
+                "ema_pb_fast": _ema_f,
+                "ema_pb_slow": _ema_s,
+                "rsi_14": round(indicators.rsi_14, 2),
+                "atr_14": round(indicators.atr_14, 4),
+                "vix": indicators.vix,
+                "zlema_trend": indicators.zlema_trend,
+                "or_direction": or_direction,
+                "recent_dir": recent_dir,
+                "num_bars_today": len(day_bars),
+                "num_bars_extended": len(extended_bars),
+            },
+            "_bars": extended_bars,
         }
 
     except Exception as e:
@@ -968,6 +990,16 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                     trades_today += 1
                     if trigger.get("is_flip", False):
                         flip_trades_today += 1
+
+                    # Save bar snapshot for reproducibility (Layer 2)
+                    bars_df = trigger.pop("_bars", None)
+                    if bars_df is not None:
+                        bars_dir = JOURNAL_DIR / "bars"
+                        bars_dir.mkdir(exist_ok=True)
+                        bars_file = bars_dir / f"{today.isoformat()}_{symbol}_{trigger['time']}_bars.parquet"
+                        bars_df.to_parquet(bars_file)
+                        trigger["bars_file"] = str(bars_file.name)
+
                     triggers.append(trigger)
                     journal_file.write_text(json.dumps(triggers, indent=2, default=str))
 

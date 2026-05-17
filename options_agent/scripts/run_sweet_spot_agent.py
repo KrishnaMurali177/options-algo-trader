@@ -549,6 +549,7 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
                 "num_bars_today": len(day_bars),
                 "num_bars_extended": len(extended_bars),
             },
+            "_bars": extended_bars,
         }
 
     except Exception as e:
@@ -989,6 +990,16 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                     trades_today += 1
                     if trigger.get("is_flip", False):
                         flip_trades_today += 1
+
+                    # Save bar snapshot for reproducibility (Layer 2)
+                    bars_df = trigger.pop("_bars", None)
+                    if bars_df is not None:
+                        bars_dir = JOURNAL_DIR / "bars"
+                        bars_dir.mkdir(exist_ok=True)
+                        bars_file = bars_dir / f"{today.isoformat()}_{symbol}_{trigger['time']}_bars.parquet"
+                        bars_df.to_parquet(bars_file)
+                        trigger["bars_file"] = str(bars_file.name)
+
                     triggers.append(trigger)
                     journal_file.write_text(json.dumps(triggers, indent=2, default=str))
 

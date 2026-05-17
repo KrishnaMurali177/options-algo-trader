@@ -284,7 +284,8 @@ def is_past_or(min_after_open: int = 60) -> bool:
     return minutes_since_open >= min_after_open
 
 
-def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
+def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
+                     regime_guard: bool = True,
                      pb_ema: bool = True, pb_ema_fast: int = 13, pb_ema_slow: int = 55) -> dict:
     """Evaluate sweet spot conditions. Always returns a verdict dict.
 
@@ -411,6 +412,9 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
         if chop.chop_score > max_chop:
             return {"status": "reject", "stage": "chop",
                     "reason": f"chop {chop.chop_score} > max {max_chop}", **diag_common}
+        if chop.chop_score < min_chop:
+            return {"status": "reject", "stage": "chop",
+                    "reason": f"chop {chop.chop_score} < min {min_chop}", **diag_common}
 
         # ── PB EMA inside-band gate (golden: ON, 13/55) ──
         # Reject when price is *between* the fast/slow EMAs — PB EMA's
@@ -532,6 +536,7 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
 
 
 def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
+            min_chop: int = 2,
             max_trades_per_day: int = 3, max_stops_per_day: int = 1,
             max_consecutive_losses: int = 2,
             scan_start_min: int = 60,
@@ -576,8 +581,8 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
     )
 
     logger.info("═══ Sweet Spot Agent: %s — %s ═══", symbol, today)
-    logger.info("Settings: qty=%d, max_chop=%d, max_trades=%d, max_stops=%d, scan_start=%dmin, regime_guard=%s, pb_ema=%s, paper=%s, mode=%s",
-                qty, max_chop, max_trades_per_day, max_stops_per_day, scan_start_min,
+    logger.info("Settings: qty=%d, chop=%d-%d, max_trades=%d, max_stops=%d, scan_start=%dmin, regime_guard=%s, pb_ema=%s, paper=%s, mode=%s",
+                qty, min_chop, max_chop, max_trades_per_day, max_stops_per_day, scan_start_min,
                 "ON" if regime_guard else "OFF",
                 f"{pb_ema_fast}/{pb_ema_slow}" if pb_ema else "OFF",
                 bool(trader),
@@ -920,7 +925,8 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             break
 
         scan_count += 1
-        verdict = check_sweet_spot(symbol, max_chop=max_chop, regime_guard=regime_guard,
+        verdict = check_sweet_spot(symbol, max_chop=max_chop, min_chop=min_chop,
+                                   regime_guard=regime_guard,
                                    pb_ema=pb_ema, pb_ema_fast=pb_ema_fast, pb_ema_slow=pb_ema_slow)
 
         # Persist every verdict (rejects + triggers) to a daily JSONL for offline analysis.
@@ -1217,6 +1223,8 @@ def main():
     parser.add_argument("--symbol", "-s", default="SPY", help="Symbol to monitor (default: SPY)")
     parser.add_argument("--qty", type=int, default=1, help="Shares per trade (default: 1)")
     parser.add_argument("--max-chop", type=int, default=5, help="Max choppiness (default: 5)")
+    parser.add_argument("--min-chop", type=int, default=2,
+                        help="Min choppiness floor (golden: 2). C=0-1 trades are ~50%% WR over 2yr.")
     parser.add_argument("--max-trades-per-day", type=int, default=3, help="Max trades per day (default: 3)")
     parser.add_argument("--max-stops-per-day", type=int, default=1, help="Halt after N stop-outs (default: 1)")
     parser.add_argument("--max-consecutive-losses", type=int, default=2,
@@ -1282,6 +1290,7 @@ def main():
                     _safe_sleep(max(sleep_sec, 60), f"daemon_{args.symbol}_pre_market")
                 elif now.hour < 16:
                     run_day(args.symbol, args.qty, args.max_chop, paper_trade,
+                            min_chop=args.min_chop,
                             max_trades_per_day=args.max_trades_per_day,
                             max_stops_per_day=args.max_stops_per_day,
                             max_consecutive_losses=args.max_consecutive_losses,
@@ -1322,6 +1331,7 @@ def main():
     else:
         # Single day run
         run_day(args.symbol, args.qty, args.max_chop, paper_trade,
+                min_chop=args.min_chop,
                 max_trades_per_day=args.max_trades_per_day,
                 max_stops_per_day=args.max_stops_per_day,
                 max_consecutive_losses=args.max_consecutive_losses,

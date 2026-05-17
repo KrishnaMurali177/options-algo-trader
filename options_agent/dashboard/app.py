@@ -1088,6 +1088,16 @@ max_chop_score = st.sidebar.slider(
 st.sidebar.caption(
     f"{'🌊 Strict — highest conviction only' if max_chop_score <= 5 else '⚠️ Moderate — balanced' if max_chop_score <= 7 else '📊 Relaxed — more opportunities' if max_chop_score <= 9 else '🔓 Disabled'}"
 )
+min_chop_score = st.sidebar.slider(
+    "Min Chop Score",
+    min_value=0, max_value=5, value=2,
+    help=(
+        "Floor filter — rejects 'false trending' signals where chop is too low "
+        "(C=0-1 trades are ~50%% WR / net $0 over 2yr). "
+        "**Golden default: 2** — validated 730d SPY: PF +5.5%%, Sharpe +12%%, MDD −8.6%%. "
+        "Set to 0 to disable."
+    ),
+)
 
 st.sidebar.markdown("### Strategy Selection")
 strategy_mode = st.sidebar.radio(
@@ -1369,7 +1379,7 @@ _notify_symbol = ind_dict.get("symbol", "") or sym
 # Golden-default gates (all must pass)
 _g_quality = 3 <= _notify_quality <= 7
 _g_cascade = _cascade.explosion_score >= 2
-_g_chop = _chop_result is None or _chop_result.chop_score <= max_chop_score
+_g_chop = _chop_result is None or (_chop_result.chop_score <= max_chop_score and _chop_result.chop_score >= min_chop_score)
 _g_vix = ind_dict.get("vix", 0) <= 30
 
 # VIX day-over-day spike sit-out (>20% ⇒ skip), cached per session refresh.
@@ -1465,7 +1475,10 @@ if not _g_quality:
 if not _g_cascade:
     _failing_gates.append(f"Explosion {_cascade.explosion_score}/10 < 2")
 if not _g_chop and _chop_result is not None:
-    _failing_gates.append(f"Chop {_chop_result.chop_score}/10 > {max_chop_score}")
+    if _chop_result.chop_score > max_chop_score:
+        _failing_gates.append(f"Chop {_chop_result.chop_score}/10 > {max_chop_score}")
+    elif _chop_result.chop_score < min_chop_score:
+        _failing_gates.append(f"Chop {_chop_result.chop_score}/10 < {min_chop_score} (too quiet)")
 if not _g_vix:
     _failing_gates.append(f"VIX {ind_dict.get('vix', 0):.1f} > 30")
 if not _g_vix_spike and _vix_spike_pct is not None:
@@ -1653,7 +1666,7 @@ with st.expander("🔥 Cascade Signal Details", expanded=_cascade.explosion_scor
 _best_q = max(call_quality, put_quality)
 _sweet_spot_quality = 4 <= _best_q <= 7
 _sweet_spot_cascade = _cascade.explosion_score >= 4
-_chop_ok = _chop_result is None or _chop_result.chop_score <= max_chop_score
+_chop_ok = _chop_result is None or (_chop_result.chop_score <= max_chop_score and _chop_result.chop_score >= min_chop_score)
 _sweet_spot_active = _sweet_spot_quality and _sweet_spot_cascade and _chop_ok
 _sweet_spot_prime = _sweet_spot_quality and _cascade.explosion_score >= 7 and _chop_ok
 _chop_blocked = _sweet_spot_quality and _sweet_spot_cascade and not _chop_ok

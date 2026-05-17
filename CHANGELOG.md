@@ -1,5 +1,6 @@
 # Changelog
 
+- [2026-05-16] Modified: options_agent/scripts/verify_live_vs_replay.py — Fixed bar loading (reverse sort), status dict handling, added min_chop/momentum_flip parity, fixed analyzers to use bars_5m
 - [2026-05-16] Created: options_agent/scripts/send_weekly_report.py — Recurring weekly Discord performance report script
 - [2026-05-16] Created: options_agent/logs/weekly_performance_2026-05-12_to_2026-05-16.md — Weekly performance report with P&L from Alpaca fills
 - [2026-05-15] Created: options_agent/src/utils/alpaca_fills.py — Fetch actual buy/sell fill prices from Alpaca for trade journal entries

@@ -44,6 +44,7 @@ def load_bars(symbol: str) -> pd.DataFrame:
     candidates = [preferred] if preferred.exists() else sorted(
         _CACHE_DIR.glob(f"{symbol}_5min_*d.parquet"),
         key=lambda p: int(p.stem.rsplit("_", 1)[-1].rstrip("d")),
+        reverse=True,
     )
     if not candidates:
         raise FileNotFoundError(
@@ -97,6 +98,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--times-fallback", default="10:30,10:45,11:30",
                    help="HH:MM list to use when no journal entries exist (default: 10:30,10:45,11:30)")
     p.add_argument("--max-chop", type=int, default=5)
+    p.add_argument("--min-chop", type=int, default=2,
+                   help="Min choppiness floor (golden: 2)")
     p.add_argument("--regime-guard", action="store_true", default=False,
                    help="Enable regime guard (golden default: OFF)")
     p.add_argument("--no-pb-ema", action="store_true",
@@ -186,14 +189,18 @@ def main() -> None:
                 continue
             _SliceState.slice_at = snapped_t
             trig = agent.check_sweet_spot(
-                args.symbol, max_chop=args.max_chop, regime_guard=args.regime_guard,
+                args.symbol, max_chop=args.max_chop, min_chop=args.min_chop,
+                regime_guard=args.regime_guard,
                 pb_ema=pb_ema_on, pb_ema_fast=13, pb_ema_slow=55,
             )
             print(f"\n[{label} → snapped to {snapped_t.strftime('%H:%M')}]")
-            if trig is None:
-                # Walk the same gates manually to print which one failed.
+            if trig is None or trig.get("status") == "reject":
+                reason = trig.get("reason", "unknown") if trig else "returned None"
+                stage = trig.get("stage", "?") if trig else "?"
+                print(f"  ❌ rejected at {stage}: {reason}")
                 _why_rejected(snapped_t, bars_full, day_vix, args.symbol,
-                              max_chop=args.max_chop, pb_ema=pb_ema_on)
+                              max_chop=args.max_chop, min_chop=args.min_chop,
+                              pb_ema=pb_ema_on)
             else:
                 print(f"  ✅ TRIGGER: {trig['direction']} Q={trig['quality']} "
                       f"E={trig['explosion']} C={trig['chop']} Mom={trig['or_momentum']:+d} "
@@ -207,7 +214,8 @@ def main() -> None:
     prior_bars = bars_full[pd.Series(bars_full.index.date).isin(set(prior_days)).values] if prior_days else None
     triggers = replay_day(
         today_bars, target_date,
-        max_chop=args.max_chop, min_cascade=2, min_quality=3, max_quality=7,
+        max_chop=args.max_chop, min_chop=args.min_chop,
+        min_cascade=2, min_quality=3, max_quality=7,
         breakout_pct=0.25, cooldown_bars=3,
         scan_end="13:59", scan_start="10:30",
         target_mult_low=1.0, target_mult_mid=1.5, target_mult_high=1.5,
@@ -220,6 +228,7 @@ def main() -> None:
         decay_aware_targets=True, decay_target_floor=0.4, decay_halflife_bars=8,
         active_range=True, active_range_bars=6, active_range_blend=0.25,
         pb_ema=pb_ema_on, pb_ema_fast=13, pb_ema_slow=55,
+        momentum_flip=True, momentum_flip_threshold=40.0,
         vix=day_vix, prior_bars=prior_bars,
     )
     if not triggers:
@@ -232,7 +241,7 @@ def main() -> None:
 
 
 def _why_rejected(snapped_t, bars_full, day_vix, symbol: str = "SPY",
-                  max_chop: int = 5, pb_ema: bool = True,
+                  max_chop: int = 5, min_chop: int = 2, pb_ema: bool = True,
                   pb_ema_fast: int = 13, pb_ema_slow: int = 55):
     """Replicate check_sweet_spot's gates step-by-step and print which one rejects."""
     from src.opening_range import OpeningRangeAnalyzer
@@ -245,7 +254,8 @@ def _why_rejected(snapped_t, bars_full, day_vix, symbol: str = "SPY",
     ind = _build_indicators_from_bars(sliced, symbol=symbol)
     ind.vix = day_vix
 
-    or_r = OpeningRangeAnalyzer().analyze(ind)
+    sliced_today = sliced[sliced.index.date == snapped_t.date()]
+    or_r = OpeningRangeAnalyzer().analyze(ind, bars_5m=sliced_today)
     if or_r is None:
         print("  ❌ rejected: OpeningRangeAnalyzer returned None")
         return
@@ -257,7 +267,7 @@ def _why_rejected(snapped_t, bars_full, day_vix, symbol: str = "SPY",
         print(f"  ❌ rejected at direction: or_momentum={or_mom:+d} below ±25 threshold")
         return
 
-    rc = RecentMomentumAnalyzer().analyze(ind)
+    rc = RecentMomentumAnalyzer().analyze(ind, bars_5m=sliced_today)
     rec_dir, rec_mom = (rc.direction, rc.momentum_score) if rc else ("neutral", 0)
 
     h, l, c, v = (sliced["High"].astype(float), sliced["Low"].astype(float),
@@ -292,6 +302,9 @@ def _why_rejected(snapped_t, bars_full, day_vix, symbol: str = "SPY",
         return
     if chop.chop_score > max_chop:
         print(f"  ❌ rejected at chop: {chop.chop_score} > {max_chop}")
+        return
+    if chop.chop_score < min_chop:
+        print(f"  ❌ rejected at min chop: {chop.chop_score} < {min_chop}")
         return
 
     # PB EMA

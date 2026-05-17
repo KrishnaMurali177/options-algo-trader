@@ -20,7 +20,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -38,8 +38,28 @@ _CACHE_DIR = _REPO_ROOT / "data_cache"
 _JOURNAL_DIR = _REPO_ROOT / "sweet_spot_journal"
 
 
-def load_bars(symbol: str) -> pd.DataFrame:
-    """Load the symbol's 7d 5-min parquet (preferred) or fall back to any *_5min_*.parquet."""
+def load_bars(symbol: str, target_date: date | None = None) -> pd.DataFrame:
+    """Load bars for verification.
+
+    Priority:
+    1. Bar snapshot from journal (exact bars the agent used at trade time)
+    2. Cached *_5min_*d.parquet files (largest first)
+    """
+    # Try bar snapshots from journal if target_date is provided
+    if target_date:
+        bars_dir = _JOURNAL_DIR / "bars"
+        if bars_dir.exists():
+            snapshots = sorted(bars_dir.glob(f"{target_date.isoformat()}_{symbol}_*_bars.parquet"))
+            if snapshots:
+                src = snapshots[0]
+                df = pd.read_parquet(src)
+                if df.index.tz is None:
+                    df.index = df.index.tz_localize("UTC")
+                df.index = df.index.tz_convert("America/New_York")
+                print(f"Loaded bars from snapshot: {src.name}")
+                return df
+
+    # Fallback to cached parquet
     preferred = _CACHE_DIR / f"{symbol}_5min_7d.parquet"
     candidates = [preferred] if preferred.exists() else sorted(
         _CACHE_DIR.glob(f"{symbol}_5min_*d.parquet"),
@@ -127,7 +147,10 @@ def main() -> None:
     else:
         target_date = datetime.now(et).date()
 
-    bars_full = load_bars(args.symbol)
+    bars_full = load_bars(args.symbol, target_date=target_date)
+    # Limit to 5 calendar days back (matching live agent's days_back=5)
+    window_start = target_date - timedelta(days=5)
+    bars_full = bars_full[bars_full.index.date >= window_start]
     today_bars = bars_full[bars_full.index.date == target_date]
     print(f"{len(bars_full)} total bars; {len(today_bars)} for {target_date}.")
     if today_bars.empty:
@@ -210,8 +233,9 @@ def main() -> None:
     print("\n" + "═" * 80)
     print(f"  REPLAY PATH (replay_day on {target_date} bars)")
     print("═" * 80)
-    prior_days = sorted({d for d in bars_full.index.date if d < target_date})
-    prior_bars = bars_full[pd.Series(bars_full.index.date).isin(set(prior_days)).values] if prior_days else None
+    # Prior bars: only dates within the 5-calendar-day window before target
+    prior_bars = bars_full[bars_full.index.date < target_date]
+    prior_bars = prior_bars if len(prior_bars) > 0 else None
     triggers = replay_day(
         today_bars, target_date,
         max_chop=args.max_chop, min_chop=args.min_chop,

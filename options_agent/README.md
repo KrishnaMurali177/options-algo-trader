@@ -426,6 +426,7 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 | **Quality range** | **3–7** | Loosened from 4–7 — Q3 signals that pass cascade+chop filters are profitable |
 | **Cascade (explosion) ≥** | 2 | Lowered from 4 — E2-E3 trades profitable when quality+chop+regime filters pass. Validated: Sharpe 1.34→2.06, PF 1.30→1.53, DD 49.5%→23.5% |
 | **Max choppiness** | **5** | Strict chop filter — rejects noisy days |
+| **Min choppiness** | **2** | Floor filter — rejects "false trending" (C=0-1 trades are ~50% WR / net $0 over 2yr). Validated 730d SPY: PF 1.65→1.74, Sharpe 2.78→3.12, Sortino 3.27→3.90, MDD −8.6%, Calmar 14.50→16.55. |
 | **Max trades per day** | **3** | Caps exposure; 4+ trades/day historically loses money |
 | **Max stops per day** | **1** | Daily loss limit — halts after 1 stop-out to prevent catastrophic days |
 | **Max consecutive losses** | **2** | Streak breaker — stops trading after 2 consecutive losses in a day. Validated: Sharpe 1.23→1.34, PF 1.27→1.30 |

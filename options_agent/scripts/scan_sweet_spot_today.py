@@ -26,6 +26,8 @@ parser.add_argument("--symbol", "-s", default="SPY")
 parser.add_argument("--date", "-d", default=None, help="Date to scan (YYYY-MM-DD). Default: today")
 parser.add_argument("--max-chop", type=int, default=5,
                     help="Max chop score to allow triggers (default: 5, 0-10 scale)")
+parser.add_argument("--min-chop", type=int, default=2,
+                    help="Min chop score floor (golden: 2). C=0-1 are false trending.")
 parser.add_argument("--no-regime-guard", action="store_true",
                     help="Disable regime guard (legacy flag, already OFF by default)")
 parser.add_argument("--regime-guard", action="store_true",
@@ -270,7 +272,7 @@ for i in range(12, len(today_bars)):
     chop_sc = chop.chop_score
 
     # ── Sweet Spot criteria (live agent: 3 <= Q <= 7, E >= 2, chop <= max) ──
-    is_sweet = 3 <= quality <= 7 and expl >= 2 and chop_sc <= args.max_chop
+    is_sweet = 3 <= quality <= 7 and expl >= 2 and chop_sc <= args.max_chop and chop_sc >= args.min_chop
 
     # ── Entry confirmation: price in upper/lower 25% of OR range ──
     if is_sweet and or_result:

@@ -46,7 +46,7 @@ CAFFEINATE_PID_FILE="/tmp/options-agent-caffeinate.pid"
 
 _start_caffeinate() {
     _stop_caffeinate 2>/dev/null
-    caffeinate -s &
+    caffeinate -i &
     echo $! > "$CAFFEINATE_PID_FILE"
     echo "Sleep prevention enabled (caffeinate PID: $!)"
 }

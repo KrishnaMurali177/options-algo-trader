@@ -52,6 +52,8 @@ from src.models.market_data import MarketIndicators
 from src.utils.quality_scorer import compute_quality_score
 from src.utils.choppiness import compute_choppiness
 from src.utils.gainz import gainz_signal
+from src.utils.trade_notifier import TradeNotifier
+from src.utils.alpaca_fills import enrich_trades_with_fills
 
 
 def _build_indicators_replay_parity(
@@ -296,7 +298,8 @@ def is_past_or(min_after_open: int = 60) -> bool:
     return minutes_since_open >= min_after_open
 
 
-def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
+def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
+                     regime_guard: bool = True,
                      pb_ema: bool = True, pb_ema_fast: int = 13, pb_ema_slow: int = 55) -> dict:
     """Evaluate sweet spot conditions. Always returns a verdict dict.
 
@@ -423,6 +426,9 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
         if chop.chop_score > max_chop:
             return {"status": "reject", "stage": "chop",
                     "reason": f"chop {chop.chop_score} > max {max_chop}", **diag_common}
+        if chop.chop_score < min_chop:
+            return {"status": "reject", "stage": "chop",
+                    "reason": f"chop {chop.chop_score} < min {min_chop}", **diag_common}
 
         # ── PB EMA inside-band gate (golden: ON, 13/55) ──
         # Reject when price is *between* the fast/slow EMAs — PB EMA's
@@ -517,6 +523,13 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
                     "reason": f"non-positive risk ${risk:.2f} (entry ${entry:.2f} on wrong side of stop ${stop:.2f})",
                     **diag_common}
 
+        # Capture indicator snapshot for reproducibility verification
+        _ema_f = _ema_s = None
+        if pb_ema and len(bars) >= pb_ema_slow:
+            _close = bars["Close"].astype(float)
+            _ema_f = round(float(_close.ewm(span=pb_ema_fast, adjust=False).mean().iloc[-1]), 4)
+            _ema_s = round(float(_close.ewm(span=pb_ema_slow, adjust=False).mean().iloc[-1]), 4)
+
         return {
             "status": "trigger",
             "timestamp": now.isoformat(),
@@ -536,6 +549,21 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
             "range_high": round(range_high, 2),
             "range_low": round(range_low, 2),
             "is_flip": _is_flip,
+            "indicators": {
+                "sma_20": round(indicators.sma_20, 4),
+                "sma_50": round(indicators.sma_50, 4),
+                "ema_pb_fast": _ema_f,
+                "ema_pb_slow": _ema_s,
+                "rsi_14": round(indicators.rsi_14, 2),
+                "atr_14": round(indicators.atr_14, 4),
+                "vix": indicators.vix,
+                "zlema_trend": indicators.zlema_trend,
+                "or_direction": or_direction,
+                "recent_dir": recent_dir,
+                "num_bars_today": len(day_bars),
+                "num_bars_extended": len(extended_bars),
+            },
+            "_bars": extended_bars,
         }
 
     except Exception as e:
@@ -544,6 +572,7 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, regime_guard: bool = True,
 
 
 def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
+            min_chop: int = 2,
             max_trades_per_day: int = 3, max_stops_per_day: int = 1,
             max_consecutive_losses: int = 2,
             scan_start_min: int = 60,
@@ -582,9 +611,14 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         except Exception as e:
             logger.error("Paper trader init failed: %s — running journal-only", e)
 
+    notifier = TradeNotifier(
+        gmail_recipient=os.getenv("GMAIL_RECIPIENT", ""),
+        discord_webhook_url=os.getenv("DISCORD_WEBHOOK_URL", ""),
+    )
+
     logger.info("═══ Sweet Spot Agent: %s — %s ═══", symbol, today)
-    logger.info("Settings: qty=%d, max_chop=%d, max_trades=%d, max_stops=%d, scan_start=%dmin, regime_guard=%s, pb_ema=%s, paper=%s, mode=%s",
-                qty, max_chop, max_trades_per_day, max_stops_per_day, scan_start_min,
+    logger.info("Settings: qty=%d, chop=%d-%d, max_trades=%d, max_stops=%d, scan_start=%dmin, regime_guard=%s, pb_ema=%s, paper=%s, mode=%s",
+                qty, min_chop, max_chop, max_trades_per_day, max_stops_per_day, scan_start_min,
                 "ON" if regime_guard else "OFF",
                 f"{pb_ema_fast}/{pb_ema_slow}" if pb_ema else "OFF",
                 bool(trader),
@@ -660,6 +694,8 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         except Exception as e:
             logger.warning("Restart-recovery scan failed: %s — proceeding with empty state", e)
 
+    last_status_update = None
+
     while True:
         now = get_et_now()
 
@@ -727,6 +763,15 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             trig["closed"] = True
                             break
                     journal_file.write_text(json.dumps(triggers, indent=2, default=str))
+                    for trig in triggers:
+                        if (trig.get("occ_symbol") == sym or trig.get("symbol") == sym) and trig.get("closed"):
+                            try:
+                                g_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
+                                g_price = float(g_bars["Close"].iloc[-1]) if len(g_bars) > 0 else trig.get("entry", 0)
+                            except Exception:
+                                g_price = trig.get("entry", 0)
+                            notifier.notify_trade_exit(trig, "gainz", g_price)
+                            break
                     open_directions.pop(sym, None)
                     open_options.pop(sym, None)
 
@@ -857,6 +902,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                     trig["closed"] = True
                                     break
                             journal_file.write_text(json.dumps(triggers, indent=2, default=str))
+                            for trig in triggers:
+                                if trig.get("occ_symbol") == occ_sym and trig.get("closed"):
+                                    notifier.notify_trade_exit(trig, close_reason, underlying_price)
+                                    break
                             open_options.pop(occ_sym, None)
                             open_directions.pop(occ_sym, None)
                             if close_reason == "stop":
@@ -912,7 +961,8 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             break
 
         scan_count += 1
-        verdict = check_sweet_spot(symbol, max_chop=max_chop, regime_guard=regime_guard,
+        verdict = check_sweet_spot(symbol, max_chop=max_chop, min_chop=min_chop,
+                                   regime_guard=regime_guard,
                                    pb_ema=pb_ema, pb_ema_fast=pb_ema_fast, pb_ema_slow=pb_ema_slow)
 
         # Persist every verdict (rejects + triggers) to a daily JSONL for offline analysis.
@@ -954,6 +1004,16 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                     trades_today += 1
                     if trigger.get("is_flip", False):
                         flip_trades_today += 1
+
+                    # Save bar snapshot for reproducibility (Layer 2)
+                    bars_df = trigger.pop("_bars", None)
+                    if bars_df is not None:
+                        bars_dir = JOURNAL_DIR / "bars"
+                        bars_dir.mkdir(exist_ok=True)
+                        bars_file = bars_dir / f"{today.isoformat()}_{symbol}_{trigger['time']}_bars.parquet"
+                        bars_df.to_parquet(bars_file)
+                        trigger["bars_file"] = str(bars_file.name)
+
                     triggers.append(trigger)
                     journal_file.write_text(json.dumps(triggers, indent=2, default=str))
 
@@ -1049,8 +1109,37 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
 
                             journal_file.write_text(json.dumps(triggers, indent=2, default=str))
                             logger.info("  📝 Order placed: %s", trigger.get("order_id", "?")[:12])
+                            notifier.notify_trade_entry(trigger)
                         except Exception as e:
                             logger.error("  ⚠️ Order failed: %s", e)
+
+        # ── 30-min status update (SPY agent only to avoid duplicates) ──
+        if symbol == "SPY":
+            send_status = last_status_update is None or (now - last_status_update) >= timedelta(minutes=30)
+            if send_status:
+                try:
+                    all_trades_status = []
+                    for jf in JOURNAL_DIR.glob(f"{today.isoformat()}_*.json"):
+                        if "verdicts" in jf.name:
+                            continue
+                        all_trades_status.extend(json.loads(jf.read_text()))
+                    all_trades_status.sort(key=lambda t: t.get("timestamp", ""))
+                    enrich_trades_with_fills(all_trades_status)
+
+                    open_now = [t for t in all_trades_status if not t.get("closed")]
+                    status_verdicts = verdicts_file.read_text().strip().split("\n") if verdicts_file.exists() else []
+                    status_total = sum(1 for line in status_verdicts if line)
+                    status_triggers = sum(1 for line in status_verdicts if line and '"trigger"' in line)
+                    status_rejects = status_total - status_triggers
+
+                    notifier.notify_status_update(
+                        all_trades_status, open_now, status_total,
+                        status_triggers, status_rejects,
+                    )
+                    last_status_update = now
+                    logger.info("  📊 Status update sent")
+                except Exception as e:
+                    logger.error("  Status update failed: %s", e)
 
         _write_heartbeat(f"run_day_{symbol}_scanning")
         time.sleep(300)  # 5 min interval
@@ -1073,6 +1162,27 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                 p["symbol"], p["qty"], p["entry_price"], p["unrealized_pnl"])
         except Exception as e:
             logger.error("  EOD summary failed: %s", e)
+
+    # ── EOD Daily Report (SPY agent only to avoid duplicates) ──
+    if symbol == "SPY":
+        try:
+            all_trades = []
+            for jf in JOURNAL_DIR.glob(f"{today.isoformat()}_*.json"):
+                if "verdicts" in jf.name:
+                    continue
+                all_trades.extend(json.loads(jf.read_text()))
+            all_trades.sort(key=lambda t: t.get("timestamp", ""))
+            enrich_trades_with_fills(all_trades)
+
+            verdicts_file_eod = JOURNAL_DIR / f"{today.isoformat()}_verdicts.jsonl"
+            total_scans = 0
+            if verdicts_file_eod.exists():
+                total_scans = sum(1 for line in verdicts_file_eod.read_text().strip().split("\n") if line)
+
+            notifier.notify_daily_report(today.isoformat(), all_trades, total_scans)
+            logger.info("  📧 Daily report sent: %d trades, %d scans", len(all_trades), total_scans)
+        except Exception as e:
+            logger.error("  Daily report failed: %s", e)
 
 
 HEARTBEAT_FILE = Path("/tmp/agent_heartbeat")
@@ -1159,6 +1269,8 @@ def main():
     parser.add_argument("--symbol", "-s", default="SPY", help="Symbol to monitor (default: SPY)")
     parser.add_argument("--qty", type=int, default=1, help="Shares per trade (default: 1)")
     parser.add_argument("--max-chop", type=int, default=5, help="Max choppiness (default: 5)")
+    parser.add_argument("--min-chop", type=int, default=2,
+                        help="Min choppiness floor (golden: 2). C=0-1 trades are ~50%% WR over 2yr.")
     parser.add_argument("--max-trades-per-day", type=int, default=3, help="Max trades per day (default: 3)")
     parser.add_argument("--max-stops-per-day", type=int, default=1, help="Halt after N stop-outs (default: 1)")
     parser.add_argument("--max-consecutive-losses", type=int, default=2,
@@ -1224,6 +1336,7 @@ def main():
                     _safe_sleep(max(sleep_sec, 60), f"daemon_{args.symbol}_pre_market")
                 elif now.hour < 16:
                     run_day(args.symbol, args.qty, args.max_chop, paper_trade,
+                            min_chop=args.min_chop,
                             max_trades_per_day=args.max_trades_per_day,
                             max_stops_per_day=args.max_stops_per_day,
                             max_consecutive_losses=args.max_consecutive_losses,
@@ -1264,6 +1377,7 @@ def main():
     else:
         # Single day run
         run_day(args.symbol, args.qty, args.max_chop, paper_trade,
+                min_chop=args.min_chop,
                 max_trades_per_day=args.max_trades_per_day,
                 max_stops_per_day=args.max_stops_per_day,
                 max_consecutive_losses=args.max_consecutive_losses,

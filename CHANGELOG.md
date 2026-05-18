@@ -1,5 +1,47 @@
 # Changelog
 
+- [2026-05-17] Modified: options_agent/scripts/verify_live_vs_replay.py — Layer 3: fix prior_bars to 5-day window, prefer bar snapshots from journal
+- [2026-05-16] Modified: options_agent/scripts/run_sweet_spot_agent.py — Layer 2: snapshot extended_bars to parquet at trigger time for perfect reproducibility
+- [2026-05-16] Modified: options_agent/scripts/run_sweet_spot_agent.py — Layer 1: store indicator snapshot (SMA, EMA, RSI, VIX, bar counts) in trigger journal entries
+- [2026-05-16] Created: options_agent/docs/replay-parity-plan.md — Implementation plan for fixing live/replay reproducibility gap
+- [2026-05-16] Modified: options_agent/scripts/verify_live_vs_replay.py — Fixed bar loading (reverse sort), status dict handling, added min_chop/momentum_flip parity, fixed analyzers to use bars_5m
+- [2026-05-16] Created: options_agent/scripts/send_weekly_report.py — Recurring weekly Discord performance report script
+- [2026-05-16] Created: options_agent/logs/weekly_performance_2026-05-12_to_2026-05-16.md — Weekly performance report with P&L from Alpaca fills
+- [2026-05-15] Created: options_agent/src/utils/alpaca_fills.py — Fetch actual buy/sell fill prices from Alpaca for trade journal entries
+- [2026-05-15] Modified: options_agent/scripts/send_daily_report.py — Enrich trades with Alpaca fill prices before sending report
+- [2026-05-15] Modified: options_agent/scripts/run_sweet_spot_agent.py — Enrich EOD trades with Alpaca fill prices
+- [2026-05-15] Modified: options_agent/src/utils/email_notifier.py — Daily report shows actual option P&L ($) from Alpaca fills instead of underlying R-multiples
+- [2026-05-15] Modified: options_agent/src/utils/discord_notifier.py — Daily report shows actual option P&L ($) from Alpaca fills instead of underlying R-multiples
+- [2026-05-15] Modified: options_agent/src/utils/email_notifier.py — Added notify_status_update for 30-min periodic reports
+- [2026-05-15] Modified: options_agent/src/utils/discord_notifier.py — Added notify_status_update for 30-min periodic reports
+- [2026-05-15] Modified: options_agent/src/utils/trade_notifier.py — Added notify_status_update dispatch
+- [2026-05-15] Modified: options_agent/scripts/run_sweet_spot_agent.py — Send 30-min status updates via email and Discord (SPY agent, from market open)
+- [2026-05-14] Created: options_agent/scripts/send_daily_report.py — Standalone script to send daily trade report
+- [2026-05-14] Modified: options_agent/scripts/run_sweet_spot_agent.py — Auto-send daily report at EOD (SPY agent only)
+- [2026-05-14] Modified: options_agent/src/utils/email_notifier.py — Added notify_daily_report with full trade log and stats
+- [2026-05-14] Modified: options_agent/src/utils/discord_notifier.py — Added notify_daily_report with embed summary
+- [2026-05-14] Modified: options_agent/src/utils/trade_notifier.py — Added notify_daily_report dispatch
+- [2026-05-14] Modified: options_agent/src/utils/email_notifier.py — Support comma-separated multiple recipients in GMAIL_RECIPIENT
+- [2026-05-14] Modified: options_agent/src/utils/discord_notifier.py — Added User-Agent header to fix Cloudflare 403 blocks
+- [2026-05-14] Created: options_agent/src/utils/discord_notifier.py — Discord webhook notifications for trade entry/exit with rich embeds
+- [2026-05-14] Created: options_agent/src/utils/trade_notifier.py — Unified dispatcher for Gmail + Discord notifications
+- [2026-05-14] Created: options_agent/tests/test_discord_notifier.py — 15 tests for Discord notifier and TradeNotifier dispatcher
+- [2026-05-14] Modified: options_agent/scripts/run_sweet_spot_agent.py — Switched to TradeNotifier (Gmail + Discord)
+- [2026-05-14] Modified: options_agent/config/settings.py — Added discord_webhook_url setting
+- [2026-05-14] Modified: options_agent/.env — Added DISCORD_WEBHOOK_URL placeholder
+- [2026-05-14] Modified: options_agent/src/utils/email_notifier.py — Added retry on BrokenPipeError for stale Gmail connections
+- [2026-05-14] Modified: options_agent/tests/test_email_notifier.py — Added retry tests (19 total)
+- [2026-05-14] Created: options_agent/tests/test_email_notifier.py — 16 tests for email notifier optional behavior, content, and monitor digest
+- [2026-05-14] Modified: options_agent/src/utils/email_notifier.py — Made Gmail API imports lazy so app works without google packages installed
+- [2026-05-14] Modified: options_agent/.env — Clarified email alerts are optional
+- [2026-05-14] Modified: options_agent/requirements.txt — Marked Gmail API deps as optional
+- [2026-05-14] Created: options_agent/scripts/monitor_agent.py — 30-min agent health + verdict digest email monitor
+- [2026-05-13] Modified: options_agent/src/utils/email_notifier.py — Refactored from SMTP to Gmail API with OAuth2
+- [2026-05-13] Modified: options_agent/scripts/run_sweet_spot_agent.py — Integrated email alerts on trade open, close, and gainz exit
+- [2026-05-13] Modified: options_agent/config/settings.py — Added Gmail API email alert config
+- [2026-05-13] Modified: options_agent/.env — Added Gmail OAuth2 setup instructions and GMAIL_RECIPIENT
+- [2026-05-13] Modified: requirements.txt — Added google-api-python-client, google-auth-httplib2, google-auth-oauthlib
+- [2026-05-13] Modified: .gitignore — Added gmail_credentials.json and gmail_token.json
 - [2026-05-05] Created: Dockerfile — Docker image for the options agent (Python 3.11, all dependencies)
 - [2026-05-05] Created: docker-compose.yml — Compose config with dashboard and live agent services
 - [2026-05-05] Created: run.sh — Convenience script for all Docker operations (dashboard, agent, backtest, replay, scan, test, shell)
@@ -30,3 +72,4 @@
 - [2026-05-13] Modified: HOWTO.md — Updated log file naming to reflect dated format
 - [2026-05-13] Modified: options_agent/scripts/run_sweet_spot_agent.py — Added heartbeat writes to all sleep points in run_day() to fix false unhealthy status
 - [2026-05-13] Modified: run.sh — Added caffeinate to prevent macOS sleep while agents are running; auto-starts on agents/all/restart, stops on stop-agents/down
+- [2026-05-13] Modified: run.sh — Changed caffeinate from -s to -i (prevents idle sleep on AC or battery)

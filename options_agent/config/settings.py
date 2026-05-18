@@ -58,6 +58,10 @@ class Settings(BaseSettings):
     # ── Scheduling ──
     market_scan_times: str = Field(default="09:35,12:00,15:30", description="ET scan times")
 
+    # ── Email Alerts (Gmail API + OAuth2) ──
+    gmail_recipient: str = Field(default="", description="Email to receive trade alerts")
+    discord_webhook_url: str = Field(default="", description="Discord webhook URL for trade alerts")
+
     # ── MCP Server ──
     mcp_server_command: str = Field(
         default="python -m mcp_server.robinhood_mcp_server",

@@ -73,7 +73,7 @@ class IntradayBacktester:
 
     def __init__(self, atr_buffer: float = 0.0, use_optimized_exits: bool = True,
                  entry_offset_pct: float = 0.10, sweet_spot_only: bool = False,
-                 max_chop_score: int = 5, min_cascade: int = 4,
+                 max_chop_score: int = 5, min_chop_score: int = 2, min_cascade: int = 4,
                  sweet_spot_quality_range: tuple[int, int] = (4, 7)):
         self.atr_buffer = atr_buffer
         self.use_optimized_exits = use_optimized_exits
@@ -86,6 +86,7 @@ class IntradayBacktester:
         # Sweet spot filter: matches dashboard entry criteria exactly
         self.sweet_spot_only = sweet_spot_only
         self.max_chop_score = max_chop_score
+        self.min_chop_score = min_chop_score
         self.min_cascade = min_cascade
         self.sweet_spot_quality_range = sweet_spot_quality_range
         self._cascade_detector = MomentumCascadeDetector()
@@ -527,6 +528,10 @@ class IntradayBacktester:
             chop_result = compute_choppiness(day_df[day_df.index <= opening_bars.index[-1]])
             if chop_result.chop_score > self.max_chop_score:
                 return self._skip_trade(trade_date, symbol, "sweet_spot_chop_miss",
+                                        range_high=range_high, range_low=range_low,
+                                        momentum=momentum, signals=signals)
+            if chop_result.chop_score < self.min_chop_score:
+                return self._skip_trade(trade_date, symbol, "sweet_spot_min_chop_miss",
                                         range_high=range_high, range_low=range_low,
                                         momentum=momentum, signals=signals)
 

@@ -20,7 +20,7 @@ import argparse
 import json
 import os
 import sys
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from unittest.mock import patch
 from zoneinfo import ZoneInfo
@@ -38,12 +38,33 @@ _CACHE_DIR = _REPO_ROOT / "data_cache"
 _JOURNAL_DIR = _REPO_ROOT / "sweet_spot_journal"
 
 
-def load_bars(symbol: str) -> pd.DataFrame:
-    """Load the symbol's 7d 5-min parquet (preferred) or fall back to any *_5min_*.parquet."""
+def load_bars(symbol: str, target_date: date | None = None) -> pd.DataFrame:
+    """Load bars for verification.
+
+    Priority:
+    1. Bar snapshot from journal (exact bars the agent used at trade time)
+    2. Cached *_5min_*d.parquet files (largest first)
+    """
+    # Try bar snapshots from journal if target_date is provided
+    if target_date:
+        bars_dir = _JOURNAL_DIR / "bars"
+        if bars_dir.exists():
+            snapshots = sorted(bars_dir.glob(f"{target_date.isoformat()}_{symbol}_*_bars.parquet"))
+            if snapshots:
+                src = snapshots[0]
+                df = pd.read_parquet(src)
+                if df.index.tz is None:
+                    df.index = df.index.tz_localize("UTC")
+                df.index = df.index.tz_convert("America/New_York")
+                print(f"Loaded bars from snapshot: {src.name}")
+                return df
+
+    # Fallback to cached parquet
     preferred = _CACHE_DIR / f"{symbol}_5min_7d.parquet"
     candidates = [preferred] if preferred.exists() else sorted(
         _CACHE_DIR.glob(f"{symbol}_5min_*d.parquet"),
         key=lambda p: int(p.stem.rsplit("_", 1)[-1].rstrip("d")),
+        reverse=True,
     )
     if not candidates:
         raise FileNotFoundError(
@@ -97,6 +118,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--times-fallback", default="10:30,10:45,11:30",
                    help="HH:MM list to use when no journal entries exist (default: 10:30,10:45,11:30)")
     p.add_argument("--max-chop", type=int, default=5)
+    p.add_argument("--min-chop", type=int, default=2,
+                   help="Min choppiness floor (golden: 2)")
     p.add_argument("--regime-guard", action="store_true", default=False,
                    help="Enable regime guard (golden default: OFF)")
     p.add_argument("--no-pb-ema", action="store_true",
@@ -124,7 +147,10 @@ def main() -> None:
     else:
         target_date = datetime.now(et).date()
 
-    bars_full = load_bars(args.symbol)
+    bars_full = load_bars(args.symbol, target_date=target_date)
+    # Limit to 5 calendar days back (matching live agent's days_back=5)
+    window_start = target_date - timedelta(days=5)
+    bars_full = bars_full[bars_full.index.date >= window_start]
     today_bars = bars_full[bars_full.index.date == target_date]
     print(f"{len(bars_full)} total bars; {len(today_bars)} for {target_date}.")
     if today_bars.empty:
@@ -186,14 +212,18 @@ def main() -> None:
                 continue
             _SliceState.slice_at = snapped_t
             trig = agent.check_sweet_spot(
-                args.symbol, max_chop=args.max_chop, regime_guard=args.regime_guard,
+                args.symbol, max_chop=args.max_chop, min_chop=args.min_chop,
+                regime_guard=args.regime_guard,
                 pb_ema=pb_ema_on, pb_ema_fast=13, pb_ema_slow=55,
             )
             print(f"\n[{label} → snapped to {snapped_t.strftime('%H:%M')}]")
-            if trig is None:
-                # Walk the same gates manually to print which one failed.
+            if trig is None or trig.get("status") == "reject":
+                reason = trig.get("reason", "unknown") if trig else "returned None"
+                stage = trig.get("stage", "?") if trig else "?"
+                print(f"  ❌ rejected at {stage}: {reason}")
                 _why_rejected(snapped_t, bars_full, day_vix, args.symbol,
-                              max_chop=args.max_chop, pb_ema=pb_ema_on)
+                              max_chop=args.max_chop, min_chop=args.min_chop,
+                              pb_ema=pb_ema_on)
             else:
                 print(f"  ✅ TRIGGER: {trig['direction']} Q={trig['quality']} "
                       f"E={trig['explosion']} C={trig['chop']} Mom={trig['or_momentum']:+d} "
@@ -203,11 +233,13 @@ def main() -> None:
     print("\n" + "═" * 80)
     print(f"  REPLAY PATH (replay_day on {target_date} bars)")
     print("═" * 80)
-    prior_days = sorted({d for d in bars_full.index.date if d < target_date})
-    prior_bars = bars_full[pd.Series(bars_full.index.date).isin(set(prior_days)).values] if prior_days else None
+    # Prior bars: only dates within the 5-calendar-day window before target
+    prior_bars = bars_full[bars_full.index.date < target_date]
+    prior_bars = prior_bars if len(prior_bars) > 0 else None
     triggers = replay_day(
         today_bars, target_date,
-        max_chop=args.max_chop, min_cascade=2, min_quality=3, max_quality=7,
+        max_chop=args.max_chop, min_chop=args.min_chop,
+        min_cascade=2, min_quality=3, max_quality=7,
         breakout_pct=0.25, cooldown_bars=3,
         scan_end="13:59", scan_start="10:30",
         target_mult_low=1.0, target_mult_mid=1.5, target_mult_high=1.5,
@@ -220,6 +252,7 @@ def main() -> None:
         decay_aware_targets=True, decay_target_floor=0.4, decay_halflife_bars=8,
         active_range=True, active_range_bars=6, active_range_blend=0.25,
         pb_ema=pb_ema_on, pb_ema_fast=13, pb_ema_slow=55,
+        momentum_flip=True, momentum_flip_threshold=40.0,
         vix=day_vix, prior_bars=prior_bars,
     )
     if not triggers:
@@ -232,7 +265,7 @@ def main() -> None:
 
 
 def _why_rejected(snapped_t, bars_full, day_vix, symbol: str = "SPY",
-                  max_chop: int = 5, pb_ema: bool = True,
+                  max_chop: int = 5, min_chop: int = 2, pb_ema: bool = True,
                   pb_ema_fast: int = 13, pb_ema_slow: int = 55):
     """Replicate check_sweet_spot's gates step-by-step and print which one rejects."""
     from src.opening_range import OpeningRangeAnalyzer
@@ -245,7 +278,8 @@ def _why_rejected(snapped_t, bars_full, day_vix, symbol: str = "SPY",
     ind = _build_indicators_from_bars(sliced, symbol=symbol)
     ind.vix = day_vix
 
-    or_r = OpeningRangeAnalyzer().analyze(ind)
+    sliced_today = sliced[sliced.index.date == snapped_t.date()]
+    or_r = OpeningRangeAnalyzer().analyze(ind, bars_5m=sliced_today)
     if or_r is None:
         print("  ❌ rejected: OpeningRangeAnalyzer returned None")
         return
@@ -257,7 +291,7 @@ def _why_rejected(snapped_t, bars_full, day_vix, symbol: str = "SPY",
         print(f"  ❌ rejected at direction: or_momentum={or_mom:+d} below ±25 threshold")
         return
 
-    rc = RecentMomentumAnalyzer().analyze(ind)
+    rc = RecentMomentumAnalyzer().analyze(ind, bars_5m=sliced_today)
     rec_dir, rec_mom = (rc.direction, rc.momentum_score) if rc else ("neutral", 0)
 
     h, l, c, v = (sliced["High"].astype(float), sliced["Low"].astype(float),
@@ -292,6 +326,9 @@ def _why_rejected(snapped_t, bars_full, day_vix, symbol: str = "SPY",
         return
     if chop.chop_score > max_chop:
         print(f"  ❌ rejected at chop: {chop.chop_score} > {max_chop}")
+        return
+    if chop.chop_score < min_chop:
+        print(f"  ❌ rejected at min chop: {chop.chop_score} < {min_chop}")
         return
 
     # PB EMA

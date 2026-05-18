@@ -60,7 +60,7 @@ def is_market_open() -> bool:
     return market_open <= now <= market_close
 
 
-def check_sweet_spot(symbol: str = "SPY", max_chop: int = 5) -> dict | None:
+def check_sweet_spot(symbol: str = "SPY", max_chop: int = 5, min_chop: int = 2) -> dict | None:
     """Check if current conditions trigger a sweet spot.
     
     Returns trigger data dict if sweet spot is active, None otherwise.
@@ -118,7 +118,7 @@ def check_sweet_spot(symbol: str = "SPY", max_chop: int = 5) -> dict | None:
         # Sweet spot check
         sweet_spot_quality = 4 <= quality <= 8
         sweet_spot_cascade = cascade.explosion_score >= 4
-        chop_ok = chop.chop_score <= max_chop
+        chop_ok = chop.chop_score <= max_chop and chop.chop_score >= min_chop
         
         if sweet_spot_quality and sweet_spot_cascade and chop_ok:
             now = get_current_et_time()
@@ -306,7 +306,7 @@ def show_history():
             print(f"  {d:<12} {t['time']:<6} {dir_l:<5} {t['quality']:>2} {t['explosion']:>2} {t['chop']:>2} {t['outcome']:<10} ${t['pnl']:>+7.2f}")
 
 
-def run_tracker(symbol: str = "SPY", interval_min: int = 5, max_chop: int = 5,
+def run_tracker(symbol: str = "SPY", interval_min: int = 5, max_chop: int = 5, min_chop: int = 2,
                 paper_trade: bool = False, qty: int = 1):
     """Run the live tracker during market hours."""
     today = date.today()
@@ -334,7 +334,7 @@ def run_tracker(symbol: str = "SPY", interval_min: int = 5, max_chop: int = 5,
     
     print(f"\n  🔍 Sweet Spot Tracker — {symbol} — {today}")
     print(f"  Checking every {interval_min} minutes during market hours")
-    print(f"  Filter: Quality 4-7, Cascade ≥ 4, Chop ≤ {max_chop}")
+    print(f"  Filter: Quality 4-7, Cascade ≥ 4, Chop {min_chop}–{max_chop}")
     print(f"  Paper Trading: {'ON' if trader else 'OFF'}")
     print(f"  Journal: {journal_file}")
     print(f"  Press Ctrl+C to stop\n")
@@ -351,7 +351,7 @@ def run_tracker(symbol: str = "SPY", interval_min: int = 5, max_chop: int = 5,
             time.sleep(60)
             continue
         
-        trigger = check_sweet_spot(symbol, max_chop=max_chop)
+        trigger = check_sweet_spot(symbol, max_chop=max_chop, min_chop=min_chop)
         now = get_current_et_time()
         
         if trigger:
@@ -402,6 +402,7 @@ def main():
     parser.add_argument("--history", action="store_true", help="Show all historical results")
     parser.add_argument("--interval", type=int, default=5, help="Check interval in minutes (default: 5)")
     parser.add_argument("--max-chop", type=int, default=5, help="Max chop score (default: 5)")
+    parser.add_argument("--min-chop", type=int, default=2, help="Min chop score floor (golden: 2)")
     parser.add_argument("--paper-trade", action="store_true",
                         help="Execute trades on Alpaca paper account when sweet spots trigger")
     parser.add_argument("--qty", type=int, default=1, help="Shares per paper trade (default: 1)")
@@ -414,7 +415,7 @@ def main():
         print(f"\n  Reviewing {review_date}...")
         review_day(review_date, args.symbol)
     else:
-        run_tracker(args.symbol, args.interval, args.max_chop, args.paper_trade, args.qty)
+        run_tracker(args.symbol, args.interval, args.max_chop, args.min_chop, args.paper_trade, args.qty)
 
 
 if __name__ == "__main__":

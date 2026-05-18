@@ -30,6 +30,7 @@ import json
 import logging
 import os
 import sys
+import tempfile
 import time
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -189,25 +190,18 @@ def _build_indicators_replay_parity(
 
 
 def _fetch_current_vix() -> float:
-    """Fetch the most recent *settled* daily VIX close.
+    """Fetch the daily VIX close for today (ET), matching replay's vix_map lookup.
 
-    Replay parity: the backtest reads closed daily VIX. yfinance's 1d row for
-    the current session is a partial candle whose Close updates intraday — when
-    VIX is hovering near a scorer threshold (e.g. 18), that flicker can shift
-    quality by ±1 vs. replay and reject setups the backtest would have taken.
-
-    Strategy: drop the latest row if its date == today (ET) — fall back to the
-    prior session's settled close. Returns 20.0 (neutral) on failure.
+    Replay (replay_sweet_spot.py:1251-1256) keys yfinance daily VIX by each
+    trading day's date and uses iloc[-1] equivalent via vix_map[today]. During
+    live trading, today's daily VIX row is a partial candle that updates
+    intraday — but replay sees that same evolving value if scored at the same
+    moment, so we mirror it. Returns 20.0 (neutral) on failure.
     """
     try:
         vix_df = yf.download("^VIX", period="5d", interval="1d", progress=False)
         if isinstance(vix_df.columns, pd.MultiIndex):
             vix_df.columns = vix_df.columns.get_level_values(0)
-        today_et = get_et_now().date()
-        last_ts = vix_df.index[-1]
-        last_date = last_ts.date() if hasattr(last_ts, "date") else last_ts
-        if last_date == today_et and len(vix_df) >= 2:
-            return float(vix_df["Close"].iloc[-2])
         return float(vix_df["Close"].iloc[-1])
     except Exception as e:
         logger.warning("VIX fetch failed (%s) — defaulting to 20.0", e)
@@ -1185,7 +1179,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             logger.error("  Daily report failed: %s", e)
 
 
-HEARTBEAT_FILE = Path("/tmp/agent_heartbeat")
+HEARTBEAT_FILE = Path(tempfile.gettempdir()) / "agent_heartbeat"
 
 def _write_heartbeat(state: str) -> None:
     HEARTBEAT_FILE.write_text(json.dumps({

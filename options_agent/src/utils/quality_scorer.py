@@ -119,9 +119,14 @@ def compute_quality_score(
         cautions.append(f"⚠️ Volume normal ({vol_ratio:.1f}× avg) — no surge")
 
     # #5 VIX elevated (57.9% WR)
-    if vix > 18:
+    # Threshold raised from >18 to >=18.5 to create a 0.5-point deadband around
+    # the original boundary — yfinance's daily VIX Close updates intraday and
+    # flickered Q ±1 across the strict 18.0 boundary (SPY 2026-05-13 incident).
+    # 18.5 sits comfortably above intraday noise without materially shifting the
+    # population of trades that earn the bonus.
+    if vix >= 18.5:
         score += 1
-        confirmations.append(f"✅ VIX elevated ({vix:.1f} > 18) — wider ranges, better R:R (+1)")
+        confirmations.append(f"✅ VIX elevated ({vix:.1f} ≥ 18.5) — wider ranges, better R:R (+1)")
 
     # #6 VWAP confirmation (SMA20 as proxy — golden-calibrated, do not change)
     # Score uses SMA20 for backward compatibility. Real VWAP divergence is

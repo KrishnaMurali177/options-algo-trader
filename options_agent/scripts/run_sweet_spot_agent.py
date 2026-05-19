@@ -981,8 +981,8 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             if at_regular_cap and not trigger.get("is_flip", False):
                 logger.info("✗ %s skip [trade_cap] regular cap reached, non-flip trigger ignored", symbol)
             else:
-                # Deduplicate (15 min cooldown, 30 min after stagnation exit)
-                cooldown_sec = 1800 if last_was_stagnation else 900
+                # Deduplicate (10 min cooldown, 30 min after stagnation exit)
+                cooldown_sec = 1800 if last_was_stagnation else 600
                 # Block new entries when a same-direction option is already open
                 # (avoids duplicate buys on the same OCC after restart-recovery).
                 already_open_same_dir = any(

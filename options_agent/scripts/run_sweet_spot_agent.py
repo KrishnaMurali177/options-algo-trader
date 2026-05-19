@@ -278,6 +278,30 @@ def get_et_now() -> datetime:
     return datetime.now(ZoneInfo("America/New_York"))
 
 
+# Buffer (seconds) added after each 5-min bar close before scanning.
+# Alpaca's bar endpoint typically finalizes a 5-min bar within a few seconds of
+# its close timestamp; 5s is conservative.
+_BAR_CLOSE_BUFFER_SEC = 5
+
+
+def seconds_until_next_bar_close(now_et: datetime | None = None, bar_sec: int = 300) -> float:
+    """Seconds from now until the next 5-min bar close (+ buffer).
+
+    Replay parity: replay_day scans bar-by-bar, with each scan using the slice
+    of bars whose timestamps are ≤ the bar's open time. To match exactly, the
+    live agent should also wake at each 5-min boundary AFTER the bar has closed
+    and been published by Alpaca, then scan with the just-closed bar included.
+
+    Without this alignment, the live agent's wall-clock scan (e.g. at HH:MM:08)
+    reads the in-progress bar as the latest available, drops it via
+    `_drop_partial_trailing_bar`, and ends up one bar behind replay.
+    """
+    now_et = now_et or get_et_now()
+    seconds_into_day = now_et.hour * 3600 + now_et.minute * 60 + now_et.second + now_et.microsecond / 1e6
+    next_boundary = (int(seconds_into_day // bar_sec) + 1) * bar_sec
+    return next_boundary - seconds_into_day + _BAR_CLOSE_BUFFER_SEC
+
+
 def is_market_hours() -> bool:
     now = get_et_now()
     if now.weekday() >= 5:
@@ -570,6 +594,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             max_trades_per_day: int = 4, max_stops_per_day: int = 1,
             max_consecutive_losses: int = 2,
             scan_start_min: int = 60,
+            scan_end: str = "13:59",
             gainz_exit: bool = True,
             gainz_body_ratio: float = 0.7,
             gainz_rsi_overbought: float = 70.0,
@@ -914,14 +939,25 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             except Exception as e:
                 logger.warning("Options monitoring failed: %s", e)
 
-        # Stop opening NEW trades after 2:00 PM (still monitor existing for exits)
-        if now.hour >= 14:
+        # ── Entry cutoff: replay parity with --scan-end ──
+        # Replay scans bars whose open timestamp ≤ scan_end. The last scannable
+        # 5-min bar opens at scan_end (rounded down). Its close = open + 5min,
+        # and the live agent can only see it as closed at that wall-clock + buffer.
+        # So the live entry cutoff is `scan_end + 5min + buffer`.
+        try:
+            _se_h, _se_m = (int(x) for x in scan_end.split(":"))
+        except ValueError:
+            _se_h, _se_m = 13, 59
+        _cutoff_min = _se_h * 60 + _se_m + 5  # last bar's close
+        _now_min = now.hour * 60 + now.minute + now.second / 60
+        if _now_min >= _cutoff_min:
             # After 15:30, if no open positions, we're done for the day
             if now.hour == 15 and now.minute >= 30 and not open_directions:
                 logger.info("Loop exit: time stop reached (15:30 ET) and no open positions.")
                 break
             if not open_directions:
-                logger.info("Loop exit: past 14:00 entry cutoff (%02d:%02d ET) and no open positions.", now.hour, now.minute)
+                logger.info("Loop exit: past %s entry cutoff (%02d:%02d ET) and no open positions.",
+                            scan_end, now.hour, now.minute)
                 break
             _write_heartbeat(f"run_day_{symbol}_monitoring_positions")
             time.sleep(300)
@@ -1136,7 +1172,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                     logger.error("  Status update failed: %s", e)
 
         _write_heartbeat(f"run_day_{symbol}_scanning")
-        time.sleep(300)  # 5 min interval
+        # Sleep until the next 5-min bar close (+ a few seconds for Alpaca to
+        # publish the closed bar). Matches replay_day, which scans bar-by-bar
+        # at each closed-bar boundary instead of on a drifting wall-clock cadence.
+        time.sleep(max(1.0, seconds_until_next_bar_close()))
 
     # ── EOD Reconciliation: backfill outcomes for every trigger ──
     if trader and triggers:
@@ -1270,6 +1309,9 @@ def main():
     parser.add_argument("--max-consecutive-losses", type=int, default=2,
                         help="Stop trading after N consecutive losses (default: 2)")
     parser.add_argument("--scan-start-min", type=int, default=60, help="Minutes after open to start scanning (default: 60 = 10:30)")
+    parser.add_argument("--scan-end", type=str, default="13:59",
+                        help="ET HH:MM cutoff (matches replay --scan-end, golden: 13:59). "
+                             "Last scannable bar opens at scan_end; agent exits after that bar's close + buffer.")
     parser.add_argument("--daemon", action="store_true", help="Run continuously (restarts daily)")
     parser.add_argument("--no-paper", action="store_true", help="Journal only, no paper orders")
     parser.add_argument("--no-gainz-exit", action="store_true",
@@ -1335,6 +1377,7 @@ def main():
                             max_stops_per_day=args.max_stops_per_day,
                             max_consecutive_losses=args.max_consecutive_losses,
                             scan_start_min=args.scan_start_min,
+                            scan_end=args.scan_end,
                             gainz_exit=not args.no_gainz_exit,
                             gainz_body_ratio=args.gainz_body_ratio,
                             gainz_rsi_overbought=args.gainz_rsi_overbought,
@@ -1376,6 +1419,7 @@ def main():
                 max_stops_per_day=args.max_stops_per_day,
                 max_consecutive_losses=args.max_consecutive_losses,
                 scan_start_min=args.scan_start_min,
+                scan_end=args.scan_end,
                 gainz_exit=not args.no_gainz_exit,
                 gainz_body_ratio=args.gainz_body_ratio,
                 gainz_rsi_overbought=args.gainz_rsi_overbought,

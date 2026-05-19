@@ -78,7 +78,13 @@ def load_bars(symbol: str, target_date: date | None = None) -> pd.DataFrame:
         if df.index.tz is None:
             df.index = df.index.tz_localize("UTC")
         df_local = df.index.tz_convert("America/New_York")
-        return any(d == target_date for d in df_local.date)
+        # Need bars from target_date past ~14:00 ET — otherwise the cache was
+        # written mid-day and the full scan window (10:30-13:59) isn't covered.
+        target_bars = df_local[df_local.date == target_date]
+        if len(target_bars) == 0:
+            return False
+        last_bar_min = target_bars.hour.max() * 60 + target_bars.minute.max()
+        return last_bar_min >= 14 * 60  # 14:00 ET
 
     src = next((c for c in candidates if _covers(c)), candidates[-1])
     df = pd.read_parquet(src)
@@ -133,6 +139,14 @@ def parse_args() -> argparse.Namespace:
                    help="Enable regime guard (golden default: OFF)")
     p.add_argument("--no-pb-ema", action="store_true",
                    help="Disable PB EMA gate (golden default: ON 13/55)")
+    p.add_argument("--all-bars", action="store_true",
+                   help="Compare LIVE and REPLAY per-bar verdicts across every 5-min "
+                        "bar in [scan-start, scan-end], not just --times. Surfaces drift "
+                        "that the trigger-only mode would miss.")
+    p.add_argument("--scan-start", type=str, default="10:30",
+                   help="--all-bars start (HH:MM ET, golden 10:30)")
+    p.add_argument("--scan-end-time", type=str, default="13:59",
+                   help="--all-bars end (HH:MM ET, golden 13:59)")
     return p.parse_args()
 
 
@@ -166,7 +180,21 @@ def main() -> None:
         print(f"No bars for {target_date} in cache — re-run the live agent or replay for that date.")
         return
 
-    if args.times is not None:
+    if args.all_bars:
+        # All-bars timeline: every 5-min bar between scan_start and scan_end.
+        # Lets us see per-bar drift (today's discovery: live vs replay differ
+        # on dozens of intermediate bars, not just the trigger times).
+        bar_tz = today_bars.index.tz
+        ss_h, ss_m = (int(x) for x in args.scan_start.split(":"))
+        se_h, se_m = (int(x) for x in args.scan_end_time.split(":"))
+        ss = datetime(target_date.year, target_date.month, target_date.day, ss_h, ss_m, tzinfo=bar_tz)
+        se = datetime(target_date.year, target_date.month, target_date.day, se_h, se_m, tzinfo=bar_tz)
+        time_strs = ",".join(
+            ts.strftime("%H:%M") for ts in today_bars.index
+            if ss <= ts.to_pydatetime() <= se
+        )
+        print(f"Times source: all-bars [{args.scan_start} → {args.scan_end_time}] → {time_strs.count(',') + 1} bars")
+    elif args.times is not None:
         time_strs = args.times
     else:
         jt = journal_times(args.symbol, target_date)
@@ -228,6 +256,8 @@ def main() -> None:
         return _SliceState.slice_at if _SliceState.slice_at is not None else datetime.now(et)
 
     pb_ema_on = not args.no_pb_ema
+    # Per-bar verdict capture for --all-bars mode (used by the diff section below).
+    live_verdicts: dict[str, dict] = {}
     with patch.object(agent, "alpaca_fetch_bars", fake_fetch), \
          patch.object(agent, "_fetch_current_vix", fake_vix), \
          patch.object(agent, "get_et_now", fake_get_et_now):
@@ -236,7 +266,11 @@ def main() -> None:
             if snapped_t is None:
                 print(f"\n[{label}] no bars available before this time — skipped")
                 continue
-            _SliceState.slice_at = snapped_t
+            # Simulate the live agent's POST-FIX wake time: bar T + bar_sec + buffer.
+            # At that wake, fake_fetch sees age = bar_sec + buffer ≥ bar_sec, so the
+            # bar with open=T is KEPT (not dropped as partial). This is exactly what
+            # the live agent now does after the bar-close alignment fix.
+            _SliceState.slice_at = snapped_t + timedelta(seconds=305)
             trig = agent.check_sweet_spot(
                 args.symbol, max_chop=args.max_chop, min_chop=args.min_chop,
                 regime_guard=args.regime_guard,
@@ -255,6 +289,18 @@ def main() -> None:
                       f"E={trig['explosion']} C={trig['chop']} Mom={trig['or_momentum']:+d} "
                       f"entry=${trig['entry']:.2f} stop=${trig['stop']:.2f} "
                       f"target=${trig['target']:.2f}")
+            if args.all_bars and trig is not None:
+                # Normalize: triggers have no `stage` field; use "trigger" so the
+                # drift-diff sees the same value the replay-side helper emits.
+                _stage = trig.get("stage") if trig.get("status") == "reject" else "trigger"
+                live_verdicts[label] = {
+                    "status": trig.get("status"),
+                    "stage": _stage,
+                    "q": trig.get("quality"),
+                    "e": trig.get("explosion"),
+                    "c": trig.get("chop"),
+                    "or_mom": trig.get("or_momentum"),
+                }
 
     print("\n" + "═" * 80)
     print(f"  REPLAY PATH (replay_day on {target_date} bars)")
@@ -292,6 +338,151 @@ def main() -> None:
             print(f"  {t['time']}  {t['direction']:9s} Q={t['quality']} E={t['explosion']} "
                   f"C={t['chop']} Mom={t['momentum']:+d}  entry=${t['entry']:.2f} "
                   f"stop=${t['stop']:.2f} target=${t['target']:.2f}  → {t['outcome']}")
+
+    # ── ALL-BARS DRIFT TABLE ───────────────────────────────────────────────
+    if args.all_bars:
+        print("\n" + "═" * 80)
+        print("  PER-BAR DRIFT (LIVE vs REPLAY at each 5-min bar)")
+        print("═" * 80)
+        # Build replay-side per-bar verdicts using the SAME slice the live path used.
+        # If they agree on Q/E/chop/or_mom at every bar, parity is confirmed.
+        replay_verdicts: dict[str, dict] = {}
+        for original_t, snapped_t in snapped:
+            if snapped_t is None:
+                continue
+            label = original_t.strftime("%H:%M")
+            replay_verdicts[label] = _replay_verdict_for_bar(
+                snapped_t, bars_full, day_vix, args.symbol,
+                max_chop=args.max_chop, min_chop=args.min_chop,
+                pb_ema=pb_ema_on,
+            )
+        print(f"{'Time':<7}{'LIVE Q/E/C om/stage':<35}{'REPLAY Q/E/C om/stage':<35}{'drift':<20}")
+        drifts = 0
+        for label in sorted(set(live_verdicts) | set(replay_verdicts)):
+            lv = live_verdicts.get(label)
+            rv = replay_verdicts.get(label)
+            def _fmt(d):
+                if not d:
+                    return "—"
+                q, e, c = d.get("q"), d.get("e"), d.get("c")
+                om = d.get("or_mom")
+                stage = d.get("stage") or d.get("status") or "?"
+                qs = q if q is not None else "?"
+                es = e if e is not None else "?"
+                cs = c if c is not None else "?"
+                oms = f"{om:+}" if om is not None else "?"
+                return f"{qs}/{es}/{cs} {oms} [{stage}]"
+            drift = ""
+            if lv and rv:
+                diff_keys = []
+                for k in ("q", "e", "c", "or_mom", "stage"):
+                    if lv.get(k) != rv.get(k):
+                        diff_keys.append(k)
+                if diff_keys:
+                    drift = "Δ" + ",".join(diff_keys)
+                    drifts += 1
+            print(f"{label:<7}{_fmt(lv):<35}{_fmt(rv):<35}{drift:<20}")
+        total = len([t for t in (set(live_verdicts) | set(replay_verdicts))
+                     if t in live_verdicts and t in replay_verdicts])
+        print(f"\n  Drifted bars: {drifts}/{total}")
+        if drifts == 0:
+            print("  ✅ Bit-exact parity at every bar.")
+        else:
+            print(f"  ⚠ {drifts} bar(s) diverge — investigate indicator builders or input slices.")
+
+
+def _replay_verdict_for_bar(snapped_t, bars_full, day_vix, symbol: str = "SPY",
+                            max_chop: int = 5, min_chop: int = 2, pb_ema: bool = True,
+                            pb_ema_fast: int = 13, pb_ema_slow: int = 55) -> dict:
+    """Run the replay-equivalent gate chain on bars sliced ≤ snapped_t.
+
+    Returns the same shape as the live verdict dict: status, stage, q, e, c, or_mom.
+    Uses `_build_indicators_from_bars` (the replay's standalone builder) so any
+    drift vs `check_sweet_spot` localizes to the indicator builders.
+    """
+    from src.opening_range import OpeningRangeAnalyzer
+    from src.recent_momentum import RecentMomentumAnalyzer
+    from src.momentum_cascade import MomentumCascadeDetector
+    from src.utils.choppiness import compute_choppiness
+    from src.utils.quality_scorer import compute_quality_score
+
+    sliced = bars_full[bars_full.index <= snapped_t]
+    if len(sliced) == 0:
+        return {"status": "reject", "stage": "data", "q": None, "e": None, "c": None, "or_mom": None}
+    # Use the SAME builder the live agent uses (which matches the replay's inline
+    # per-bar computation). Building with `_build_indicators_from_bars` would
+    # introduce drift on RSI/MACD/ATR/BB/ZLEMA — those use today-only intraday
+    # bars in the live + replay scan loops, but use multi-day in the standalone
+    # builder. Standalone is for one-shot reports, not parity testing.
+    sliced_today = sliced[sliced.index.date == snapped_t.date()]
+    if len(sliced_today) == 0:
+        return {"status": "reject", "stage": "data", "q": None, "e": None, "c": None, "or_mom": None}
+    ind = agent._build_indicators_replay_parity(sliced, sliced_today, symbol, day_vix)
+    or_r = OpeningRangeAnalyzer().analyze(ind, bars_5m=sliced_today)
+    if or_r is None:
+        return {"status": "reject", "stage": "or", "q": None, "e": None, "c": None, "or_mom": None}
+    or_mom = or_r.momentum_score
+    direction = "buy_call" if or_mom >= 25 else "buy_put" if or_mom <= -25 else None
+    if direction is None:
+        return {"status": "reject", "stage": "direction", "q": None, "e": None, "c": None, "or_mom": or_mom}
+    rc = RecentMomentumAnalyzer().analyze(ind, bars_5m=sliced_today)
+    rec_dir, rec_mom = (rc.direction, rc.momentum_score) if rc else ("neutral", 0)
+    h, l, c, v = (sliced["High"].astype(float), sliced["Low"].astype(float),
+                  sliced["Close"].astype(float), sliced["Volume"].astype(float))
+    typical = (h + l + c) / 3
+    cumv = float(v.cumsum().iloc[-1])
+    vwap_val = float((typical * v).cumsum().iloc[-1] / cumv) if cumv > 0 else None
+    bd = or_r.breakout_direction
+    or_dir = bd.value if hasattr(bd, "value") else bd
+    qr = compute_quality_score(
+        direction=direction, current_price=ind.current_price,
+        sma_20=ind.sma_20, sma_50=ind.sma_50, vix=ind.vix,
+        volume=1.0, volume_sma_20=1.0,
+        or_direction=or_dir, or_momentum=or_mom,
+        or_confirmed=abs(or_mom) >= 40,
+        recent_dir=rec_dir, recent_momentum=rec_mom,
+        zlema_trend=ind.zlema_trend, vwap=vwap_val,
+    )
+    cascade = MomentumCascadeDetector().analyze(
+        ind, quality_score=qr.score, or_momentum=or_mom, recent_momentum=rec_mom,
+        bars_5m=sliced_today,
+    )
+    chop = compute_choppiness(sliced_today, vix=ind.vix, atr=ind.atr_14)
+    # Determine the first failing gate (matches check_sweet_spot ordering at run_sweet_spot_agent.py:414-475).
+    stage = "trigger"
+    if not (3 <= qr.score <= 7):
+        stage = "quality"
+    elif cascade.explosion_score < 2:
+        stage = "cascade"
+    elif chop.chop_score > max_chop:
+        stage = "chop"
+    elif chop.chop_score < min_chop:
+        stage = "chop"
+    else:
+        # PB EMA inside-band reject
+        if pb_ema and len(sliced_today) >= pb_ema_slow:
+            close = sliced_today["Close"].astype(float)
+            ema_f = float(close.ewm(span=pb_ema_fast, adjust=False).mean().iloc[-1])
+            ema_s = float(close.ewm(span=pb_ema_slow, adjust=False).mean().iloc[-1])
+            bhi, blo = max(ema_f, ema_s), min(ema_f, ema_s)
+            if blo < ind.current_price < bhi:
+                stage = "pb_ema"
+        if stage == "trigger":
+            # Entry-zone (25%) reject — agent skips this for flip trades, but
+            # without recent-momentum logic here we apply it always; a flip would
+            # show as a false-mismatch which is acceptable for the diagnostic.
+            rw = or_r.range_high - or_r.range_low
+            bt = rw * 0.25
+            if direction == "buy_call" and ind.current_price < (or_r.range_high - bt):
+                stage = "entry_zone"
+            elif direction == "buy_put" and ind.current_price > (or_r.range_low + bt):
+                stage = "entry_zone"
+    return {
+        "status": "trigger" if stage == "trigger" else "reject",
+        "stage": stage,
+        "q": qr.score, "e": cascade.explosion_score, "c": chop.chop_score,
+        "or_mom": or_mom,
+    }
 
 
 def _why_rejected(snapped_t, bars_full, day_vix, symbol: str = "SPY",

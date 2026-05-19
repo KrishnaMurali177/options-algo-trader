@@ -103,7 +103,7 @@ rma = RecentMomentumAnalyzer()
 cascade_det = MomentumCascadeDetector()
 
 sweet_spots = []
-last_trigger_idx = -999  # for 15-min cooldown (3 bars = 15 min)
+last_trigger_idx = -999  # for 5-min cooldown (1 bar, golden 2026-05-18)
 
 # Determine the bar index corresponding to scan_start_min after open
 # Market open is at 9:30 ET, each bar is 5 min, so scan_start_min / 5 bars after first bar
@@ -295,8 +295,8 @@ for i in range(12, len(today_bars)):
         marker = ""
 
     if is_sweet:
-        # 15-min cooldown (3 bars)
-        if i - last_trigger_idx < 3:
+        # 5-min cooldown (1 bar — golden as of 2026-05-18)
+        if i - last_trigger_idx < 1:
             marker = '⏳ (cooldown)'
         else:
             marker = '🎯'

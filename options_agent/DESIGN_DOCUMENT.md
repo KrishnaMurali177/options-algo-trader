@@ -873,7 +873,7 @@ class RiskAssessment(BaseModel):
 │  └───────────────────────────────────────────────────────┘   │
 │                                                              │
 │  ┌─ CHECK COOLDOWN ─────────────────────────────────────┐   │
-│  │  • Last trigger < 15 min ago? → skip                  │   │
+│  │  • Last trigger < 5 min ago? → skip                   │   │
 │  └───────────────────────────────────────────────────────┘   │
 │                                                              │
 │  ┌─ EVALUATE SWEET SPOT ────────────────────────────────┐   │
@@ -959,7 +959,7 @@ ENTRY CRITERIA (ALL must pass):
  6  Choppiness              C ≤ 5                  compute_choppiness()
  7  Entry confirmation      Price in upper/lower    OR range high/low ± 25%
                             25% of OR range
- 8  Cooldown                ≥ 15 min since last     Timestamp delta
+ 8  Cooldown                ≥ 5 min since last      Timestamp delta
  9  Daily trade cap         < 3 trades today        Counter
 10  Daily loss cap          < 1 stop-out today      Counter
 ```
@@ -1046,7 +1046,7 @@ Priority  Exit Type        Condition                          Action
 | Max choppiness | 5 | C > 5 = whipsaw environment |
 | Max trades/day | 3 | 4+ trades/day historically net negative |
 | Max stops/day | 1 | Prevents catastrophic multi-stop days |
-| Cooldown | 15 min (3 bars) | Avoids duplicate entries on same signal |
+| Cooldown | 5 min (1 bar) | Avoids duplicate entries on same signal |
 | Stop level | Range midpoint | Balanced: not too tight, not too loose |
 | Target multiplier | 1.0R / 1.25R / 1.5R | Scaled by explosion strength |
 | Cascade sizing | 3/3/3 flat | Middle tier (E6-7) underperforms; flat avoids bias |

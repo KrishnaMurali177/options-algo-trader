@@ -59,19 +59,28 @@ def load_bars(symbol: str, target_date: date | None = None) -> pd.DataFrame:
                 print(f"Loaded bars from snapshot: {src.name}")
                 return df
 
-    # Fallback to cached parquet
-    preferred = _CACHE_DIR / f"{symbol}_5min_7d.parquet"
-    candidates = [preferred] if preferred.exists() else sorted(
+    # Fallback to cached parquet. Prefer the 7d cache when it covers the target
+    # date (fast, most-recent), otherwise fall through to larger caches.
+    candidates = sorted(
         _CACHE_DIR.glob(f"{symbol}_5min_*d.parquet"),
         key=lambda p: int(p.stem.rsplit("_", 1)[-1].rstrip("d")),
-        reverse=True,
     )
     if not candidates:
         raise FileNotFoundError(
             f"No cached 5-min bars for {symbol} in {_CACHE_DIR}. "
             f"Run the live agent or replay once to populate the cache."
         )
-    src = preferred if preferred.exists() else candidates[0]
+
+    def _covers(src: Path) -> bool:
+        if target_date is None:
+            return True
+        df = pd.read_parquet(src)
+        if df.index.tz is None:
+            df.index = df.index.tz_localize("UTC")
+        df_local = df.index.tz_convert("America/New_York")
+        return any(d == target_date for d in df_local.date)
+
+    src = next((c for c in candidates if _covers(c)), candidates[-1])
     df = pd.read_parquet(src)
     if df.index.tz is None:
         df.index = df.index.tz_localize("UTC")
@@ -192,8 +201,25 @@ def main() -> None:
     print("═" * 80)
 
     def fake_fetch(symbol, days_back=1, interval="5min"):
+        # Mirror src/utils/alpaca_data.py:_drop_partial_trailing_bar — the live
+        # agent never sees the in-progress bar. A "5min" bar with open ts=13:55
+        # is in-progress for any wall-clock t in [13:55, 14:00). Without this,
+        # the verify-side "live" path reads one bar AHEAD of the real live agent
+        # and Q-scores diverge by ~1 (see SPY 2026-05-15 13:55 incident).
         cutoff = _SliceState.slice_at
-        return bars_full[bars_full.index <= cutoff] if cutoff is not None else bars_full
+        if cutoff is None:
+            return bars_full
+        sliced = bars_full[bars_full.index <= cutoff]
+        if len(sliced) == 0:
+            return sliced
+        bar_sec = {"5min": 300, "15min": 900, "1hour": 3600}.get(interval, 300)
+        last_ts = sliced.index[-1]
+        if last_ts.tz is None:
+            last_ts = last_ts.tz_localize("UTC")
+        age = (cutoff - last_ts.to_pydatetime()).total_seconds()
+        if age < bar_sec:
+            sliced = sliced.iloc[:-1]
+        return sliced
 
     def fake_vix() -> float:
         return day_vix
@@ -236,23 +262,27 @@ def main() -> None:
     # Prior bars: only dates within the 5-calendar-day window before target
     prior_bars = bars_full[bars_full.index.date < target_date]
     prior_bars = prior_bars if len(prior_bars) > 0 else None
+    # Kwargs MUST mirror the golden defaults in replay_sweet_spot.py main().
+    # When a default flips (e.g. cooldown_bars 2→1, golden 2026-05-18), update both.
     triggers = replay_day(
         today_bars, target_date,
         max_chop=args.max_chop, min_chop=args.min_chop,
         min_cascade=2, min_quality=3, max_quality=7,
-        breakout_pct=0.25, cooldown_bars=3,
+        breakout_pct=0.25, cooldown_bars=1,
         scan_end="13:59", scan_start="10:30",
         target_mult_low=1.0, target_mult_mid=1.5, target_mult_high=1.5,
         regime_guard=args.regime_guard, or_threshold=25, symbol=args.symbol,
-        max_trades_per_day=3, max_stops_per_day=1, max_consecutive_losses=2,
+        max_trades_per_day=4, max_stops_per_day=1, max_consecutive_losses=2,
         confirmation_bar=False, stagnation_bars=12, stagnation_threshold=0.3,
         gainz_exit=True, gainz_min_profit_r=0.3,
         cascade_sizing=True, cascade_size_low=3, cascade_size_mid=3, cascade_size_high=3,
-        simulate_options=True, real_options=False,
+        simulate_options=True, real_options=True,
         decay_aware_targets=True, decay_target_floor=0.4, decay_halflife_bars=8,
         active_range=True, active_range_bars=6, active_range_blend=0.25,
         pb_ema=pb_ema_on, pb_ema_fast=13, pb_ema_slow=55,
-        momentum_flip=True, momentum_flip_threshold=40.0,
+        tiered_stagnation=True, tiered_stag_early_bar=8,
+        tiered_stag_pnl_lo=-0.1, tiered_stag_pnl_hi=0.2, stag_cooldown_bars=6,
+        momentum_flip=True, momentum_flip_threshold=40.0, max_flip_trades=1,
         vix=day_vix, prior_bars=prior_bars,
     )
     if not triggers:

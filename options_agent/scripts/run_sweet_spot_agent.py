@@ -567,7 +567,7 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
 
 def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             min_chop: int = 2,
-            max_trades_per_day: int = 3, max_stops_per_day: int = 1,
+            max_trades_per_day: int = 4, max_stops_per_day: int = 1,
             max_consecutive_losses: int = 2,
             scan_start_min: int = 60,
             gainz_exit: bool = True,
@@ -590,7 +590,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             verbose_rejects: bool = False):
     """Run the agent for one trading day."""
     today = date.today()
-    # Per-symbol journal so concurrent SPY/QQQ agents don't clobber each other's writes.
+    # Per-symbol journal so concurrent SPY/QQQ/VOO agents don't clobber each other's writes.
     journal_file = JOURNAL_DIR / f"{today.isoformat()}_{symbol}.json"
     verdicts_file = JOURNAL_DIR / f"{today.isoformat()}_verdicts.jsonl"
     triggers = json.loads(journal_file.read_text()) if journal_file.exists() else []
@@ -981,8 +981,8 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             if at_regular_cap and not trigger.get("is_flip", False):
                 logger.info("✗ %s skip [trade_cap] regular cap reached, non-flip trigger ignored", symbol)
             else:
-                # Deduplicate (10 min cooldown, 30 min after stagnation exit)
-                cooldown_sec = 1800 if last_was_stagnation else 600
+                # Deduplicate (5 min cooldown, 30 min after stagnation exit)
+                cooldown_sec = 1800 if last_was_stagnation else 300
                 # Block new entries when a same-direction option is already open
                 # (avoids duplicate buys on the same OCC after restart-recovery).
                 already_open_same_dir = any(
@@ -1265,7 +1265,7 @@ def main():
     parser.add_argument("--max-chop", type=int, default=5, help="Max choppiness (default: 5)")
     parser.add_argument("--min-chop", type=int, default=2,
                         help="Min choppiness floor (golden: 2). C=0-1 trades are ~50%% WR over 2yr.")
-    parser.add_argument("--max-trades-per-day", type=int, default=3, help="Max trades per day (default: 3)")
+    parser.add_argument("--max-trades-per-day", type=int, default=4, help="Max trades per day (default: 4)")
     parser.add_argument("--max-stops-per-day", type=int, default=1, help="Halt after N stop-outs (default: 1)")
     parser.add_argument("--max-consecutive-losses", type=int, default=2,
                         help="Stop trading after N consecutive losses (default: 2)")

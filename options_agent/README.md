@@ -427,7 +427,7 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 | **Cascade (explosion) ≥** | 2 | Lowered from 4 — E2-E3 trades profitable when quality+chop+regime filters pass. Validated: Sharpe 1.34→2.06, PF 1.30→1.53, DD 49.5%→23.5% |
 | **Max choppiness** | **5** | Strict chop filter — rejects noisy days |
 | **Min choppiness** | **2** | Floor filter — rejects "false trending" (C=0-1 trades are ~50% WR / net $0 over 2yr). Validated 730d SPY: PF 1.65→1.74, Sharpe 2.78→3.12, Sortino 3.27→3.90, MDD −8.6%, Calmar 14.50→16.55. |
-| **Max trades per day** | **3** | Caps exposure; 4+ trades/day historically loses money |
+| **Max trades per day** | **4** | Caps exposure. Raised 3→4 on 2026-05-18 — validated 2yr SPY/QQQ/VOO real-options (clean sweep on PF/Sharpe/Calmar/MDD/WR/P&L): SPY PF 2.28→2.37, Sharpe 3.97→4.22, MDD 3.9%→3.3%; QQQ PF 1.72→1.81, Sharpe 2.83→2.97, MDD 8.5%→7.1%; VOO PF 2.68→2.99, Sharpe 5.01→5.49, MDD 3.7%→3.0%. Additional 4th-slot trades stack within high-Q cohort days without violating the 60-min OR noise filter, so MDD narrows rather than widens. |
 | **Max stops per day** | **1** | Daily loss limit — halts after 1 stop-out to prevent catastrophic days |
 | **Max consecutive losses** | **2** | Streak breaker — stops trading after 2 consecutive losses in a day. Validated: Sharpe 1.23→1.34, PF 1.27→1.30 |
 | **Scan start** | **10:30 AM ET** | 60 min after open — matches replay validation window; OR closes at 10:30 |
@@ -435,7 +435,7 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 | **Entry confirmation** | Price in upper/lower 25% of OR range | Prevents entering from mid-range |
 | **Cascade-scaled targets** | E≥8→1.5R, E≥6→1.5R, else 1.0R | Mid-tier target raised from 1.25R to 1.5R (validated: PF 1.16→1.23) |
 | **Cascade contract sizing** | **ON** — 3ct flat across E2-5 / E6-7 / E8+ | Flat 3/3/3 — equal sizing across all tiers |
-| **Cooldown** | 2 bars (10 min) | Between consecutive triggers; 6 bars (30 min) after stagnation exits. Reduced from 3 bars — validated 730d SPY: PF 1.83→2.12, Sharpe 3.16→3.67, P&L +$196→+$253, DD 7.0%→5.2%, UW 64→41 days. Captures continuation trades on trending days that 15-min cooldown was blocking. |
+| **Cooldown** | **1 bar (5 min)** | Between consecutive triggers; 6 bars (30 min) after stagnation exits. Reduced from 2 bars (10 min) — validated 2026-05-18 on 730d real-options SPY/QQQ/VOO (clean sweep): SPY PF 2.10→2.28, Sharpe 3.63→3.97, MDD 5.3%→3.9%; QQQ PF 1.54→1.72, Sharpe 2.28→2.83, MDD 10.0%→8.5%; VOO PF 2.32→2.68, Sharpe 4.84→5.01, MDD 5.3%→3.7%. Walk-forward (last-365d) holds; cluster-risk audit passed (added trades spread across 145/119/160 unique days, worst-day tails unchanged). Captures same-direction continuation setups that the 10-min wait was missing. |
 | **Stop** | 60% of range (mid + 10% width) | Tighter than bare midpoint — validated: Sharpe 0.76→1.07, DD 89.7%→63.7% |
 | **Regime guard** | **OFF** | Disabled — counter-trend trades are profitable when chop+quality+cascade filters pass. Validated 2yr: Sharpe 1.38→1.74, PF 1.30→1.37, P&L +$95→+$122. Use `--regime-guard` to re-enable. |
 | **Active range blend** | **ON** (blend=0.25, 6 bars/30min) | Stop/target uses 75% OR + 25% recent 30-min range. Prevents stale entries on late-day triggers. Validated SPY+QQQ: WR +3pp, DD −14%, UW 83→52 days. |
@@ -456,12 +456,12 @@ Trades that don't move in the expected direction within a set window are cut ear
 |-----------|-------|-------|
 | **Tiered stagnation** | **ON** | Early exit at bar 8 (40 min) for flat trades between −0.1R and +0.2R. Validated 730d SPY: PF 1.51→1.60, Sharpe 2.31→2.63, MDD $16.68→$11.10 (−33%), Calmar 8.56→13.66 (+60%). |
 | **Tiered stag early bar** | **8** (40 min) | If trade P&L is between −0.1R and +0.2R at bar 8, exit immediately — trade is going nowhere and theta is bleeding |
-| **Post-stagnation cooldown** | **6 bars** (30 min) | Extended cooldown after stagnation exits (vs 3 bars/15 min normal). Prevents re-entering the same choppy range. |
+| **Post-stagnation cooldown** | **6 bars** (30 min) | Extended cooldown after stagnation exits (vs 1 bar/5 min normal). Prevents re-entering the same choppy range. |
 | **Stagnation bars** | **12** (60 min) | Standard stagnation: if trade hasn't moved ≥ threshold after 12 bars, exit at market. Increased from 10 bars — validated 730d SPY+QQQ+VOO: SPY MDD 21.6%→11.7%, Calmar 4.63→8.56; QQQ Sharpe 1.04→1.34, MDD 37.2%→20.1% |
 | **Minimum move to hold** | **0.3R** | Trade must be at least 0.3× risk in profit; otherwise cut. Lowered from 0.5R — keeps trades with some momentum alive for decaying target. |
 | **MFE skip** | **0.5R** | If trade's Maximum Favorable Excursion (best P&L reached) exceeded 0.5R, skip stagnation exit — let decay_target or stop resolve it. Trades that showed real momentum but temporarily pulled back deserve more time to reach target. |
 
-The stagnation exit uses a **two-tier system**. At bar 8 (40 min), if the trade's P&L is between −0.1R and +0.2R and MFE < 0.5R, the trade exits immediately — it's going nowhere and theta is bleeding. At bar 12 (60 min), the standard stagnation check fires: if `current_pnl < risk * 0.3` **and** `MFE < 0.5R`, exit. If MFE ≥ 0.5R at either tier, the trade had real traction and is exempt — it will exit via decay_target or stop. After any stagnation exit, a 6-bar (30 min) cooldown is imposed instead of the standard 3-bar (15 min) cooldown, preventing re-entry into the same choppy range. Combined with the **streak breaker** (2 consecutive losses → stop for day), this keeps losing days contained.
+The stagnation exit uses a **two-tier system**. At bar 8 (40 min), if the trade's P&L is between −0.1R and +0.2R and MFE < 0.5R, the trade exits immediately — it's going nowhere and theta is bleeding. At bar 12 (60 min), the standard stagnation check fires: if `current_pnl < risk * 0.3` **and** `MFE < 0.5R`, exit. If MFE ≥ 0.5R at either tier, the trade had real traction and is exempt — it will exit via decay_target or stop. After any stagnation exit, a 6-bar (30 min) cooldown is imposed instead of the standard 1-bar (5 min) cooldown, preventing re-entry into the same choppy range. Combined with the **streak breaker** (2 consecutive losses → stop for day), this keeps losing days contained.
 
 **MFE skip validation (2-year, 730 days, real Alpaca 0DTE options):**
 
@@ -524,24 +524,17 @@ This filter uses daily closing VIX data. During the Aug 2024–Mar 2025 drawdown
 
 **2-Year Replay Results (730 days, May 2024–May 2026, Golden Defaults, Real Alpaca 0DTE Options):**
 
-| Metric | SPY | QQQ |
-|--------|-----|-----|
-| Triggers | 633 (1.3/day) | 565 (1.1/day) |
-| Win Rate | **62.1%** | **53.8%** |
-| Profit Factor | **2.12** | **1.55** |
-| Total P&L (cascade-sized) | **+$253.25** | **+$183.70** |
-| Avg P&L/Trade | +$0.4001 | +$0.3251 |
-| Avg Winner | +$1.2081 | +$1.7085 |
-| Avg Loser | −$0.9816 | −$1.2862 |
-| R:R Ratio | 1.29 | 1.33 |
-| Sharpe Ratio | **3.67** | **2.30** |
-| Sortino Ratio | **5.88** | **3.27** |
-| Max Drawdown | **$13.44 (5.2%)** | **$18.69 (10.0%)** |
-| Calmar Ratio | **18.84** | **9.83** |
-| Longest Underwater | 41 days | 67 days |
-| Pricing Source | 590 real / 9 synth | 560 real / 5 synth |
+| Metric | SPY | QQQ | VOO |
+|--------|-----|-----|-----|
+| Triggers | 764 | 671 | 851 |
+| Win Rate | **65.1%** | **58.1%** | **65.8%** |
+| Profit Factor | **2.37** | **1.81** | **2.99** |
+| Total P&L (cascade-sized) | **+$358.17** | **+$296.05** | **+$373.59** |
+| Sharpe Ratio | **4.22** | **2.97** | **5.49** |
+| Max Drawdown | **$11.88 (3.3%)** | **$21.24 (7.1%)** | **$11.13 (3.0%)** |
+| Calmar Ratio | **30.15** | **13.94** | **33.58** |
 
-> Golden defaults: cooldown 2 bars (10 min), tiered stagnation ON (bar 8 early exit + 6-bar stag cooldown), stagnation 12 bars / 0.3R, decay halflife 8 bars, PB EMA 13/55, cascade 3/3/3, max-chop 5, max-stops 1, regime guard OFF, **momentum flip ON (threshold 40)**, **flip trade allowance ON (1/day)**, **ATR-normalized acceleration ON (consensus scoring)**.
+> Golden defaults: **max-trades-per-day 4** (raised from 3 on 2026-05-18), cooldown 1 bar (5 min), tiered stagnation ON (bar 8 early exit + 6-bar stag cooldown), stagnation 12 bars / 0.3R, decay halflife 8 bars, PB EMA 13/55, cascade 3/3/3, max-chop 5, max-stops 1, regime guard OFF, **momentum flip ON (threshold 40)**, **flip trade allowance ON (1/day)**, **ATR-normalized acceleration ON (consensus scoring)**.
 >
 > **Momentum Flip** (added May 2026): When recent 30-min momentum strongly disagrees with OR direction (|recent_mom| ≥ 40), the trade direction flips to follow recent momentum instead of the stale Opening Range signal. This prevents counter-trend entries on reversal days.
 >
@@ -601,7 +594,7 @@ Runs autonomously during market hours, scanning every 5 minutes and placing 0DTE
 
 # Custom parameters via docker-compose run
 docker-compose --profile live run --rm agent-spy python scripts/run_sweet_spot_agent.py \
-  --daemon --contracts 2 --max-chop 5 --max-trades-per-day 3
+  --daemon --contracts 2 --max-chop 5 --max-trades-per-day 4
 
 # Journal-only mode (no paper orders, just logs triggers)
 docker-compose --profile live run --rm agent-spy python scripts/run_sweet_spot_agent.py \

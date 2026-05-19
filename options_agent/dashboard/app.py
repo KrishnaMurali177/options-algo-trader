@@ -1363,14 +1363,36 @@ _cascade = _cascade_detector.analyze(
 )
 
 # ── Live-agent gate evaluation (always runs — drives notifier + diagnostic) ──
-# Mirrors check_sweet_spot() in scripts/run_sweet_spot_agent.py + the
-# day-level VIX sit-out in run_day():
+# Mirrors check_sweet_spot() in scripts/run_sweet_spot_agent.py:
+#   direction from OR-momentum sign (|or_momentum| ≥ 25, else no-trade)
+#   momentum-flip when |recent_momentum| ≥ 40 (skips 25% zone check)
 #   quality 3-7 · explosion ≥ 2 · chop ≤ slider · VIX ≤ 30 · VIX DOD spike ≤ 20%
-#   · regime guard · |OR momentum| ≥ 25 (matching dir)
-#   · price in upper/lower 25% of OR · PB EMA inside-band reject (13/55)
-#   · stop-midpoint risk > 0
-# Time window NOT enforced — alerts fire across the full market day.
-_notify_direction_key = "buy_put" if put_quality > call_quality else "buy_call"
+#   regime guard OFF (golden default — run_day passes regime_guard=False)
+#   price in upper/lower 25% of OR (skipped on flip) · PB EMA inside-band reject (13/55)
+#   stop-midpoint risk > 0
+# Time window / cooldown / daily caps NOT enforced — alerts fire across the full market day.
+
+# Direction: replay/agent uses OR-momentum sign, not max(quality). When |or_momentum|<25
+# the agent would skip entirely; we still pick a tentative side for the diagnostic but
+# _g_or will fail, so _golden_pass is False and no notification fires.
+if _or_momentum >= 25:
+    _notify_direction_key = "buy_call"
+elif _or_momentum <= -25:
+    _notify_direction_key = "buy_put"
+else:
+    _notify_direction_key = "buy_call" if _or_momentum >= 0 else "buy_put"
+
+# Momentum flip: recent_momentum ≥ ±40 flips direction. Flips skip the 25%-zone gate
+# (reversals enter from the opposite zone by definition).
+_FLIP_THRESHOLD = 40.0
+_is_flip = False
+if _notify_direction_key == "buy_put" and _recent_momentum >= _FLIP_THRESHOLD:
+    _notify_direction_key = "buy_call"
+    _is_flip = True
+elif _notify_direction_key == "buy_call" and _recent_momentum <= -_FLIP_THRESHOLD:
+    _notify_direction_key = "buy_put"
+    _is_flip = True
+
 _notify_quality = put_quality if _notify_direction_key == "buy_put" else call_quality
 _notify_direction = "Buy Put" if _notify_direction_key == "buy_put" else "Buy Call"
 _notify_price = ind_dict.get("current_price", 0)
@@ -1404,32 +1426,29 @@ try:
 except Exception:
     _g_vix_spike = True  # fail-open, matches agent which logs and proceeds
 
-# OR direction must match trade direction with momentum ≥ 25
-if _notify_direction_key == "buy_call":
-    _g_or = _or_momentum >= 25
-else:
-    _g_or = _or_momentum <= -25
+# OR direction must satisfy |or_momentum| ≥ 25. Agent checks this *before* the
+# momentum flip, so a flipped direction still passes as long as |or_momentum| ≥ 25.
+_g_or = abs(_or_momentum) >= 25
 
-# 25% confirmation: price in upper/lower 25% of OR range (or beyond)
+# 25% confirmation: price in upper/lower 25% of OR range (or beyond).
+# Skipped on flip trades — reversal enters from the opposite zone by definition.
 _range_high = _or_result.range_high if _or_result else _notify_price
 _range_low = _or_result.range_low if _or_result else _notify_price
 _range_width = _range_high - _range_low
 _breakout_threshold = _range_width * 0.25
-if _notify_direction_key == "buy_call":
+if _is_flip:
+    _g_confirm = True
+elif _notify_direction_key == "buy_call":
     _g_confirm = _notify_price >= (_range_high - _breakout_threshold)
 else:
     _g_confirm = _notify_price <= (_range_low + _breakout_threshold)
 
-# Regime guard (matches agent: SMA20 vs SMA50 + RSI extreme override)
+# Regime guard: golden default is OFF (run_day passes regime_guard=False).
+# Compute the would-block state for the diagnostic panel, but don't gate notifications on it.
 _g_rsi = ind_dict.get("rsi_14", 50)
 _bullish_regime = ind_dict.get("sma_20", 0) > ind_dict.get("sma_50", 0)
 _bearish_regime = ind_dict.get("sma_20", 0) < ind_dict.get("sma_50", 0)
-if _notify_direction_key == "buy_put" and _bullish_regime and _g_rsi <= 70:
-    _g_regime = False
-elif _notify_direction_key == "buy_call" and _bearish_regime and _g_rsi >= 30:
-    _g_regime = False
-else:
-    _g_regime = True
+_g_regime = True
 
 # PB EMA inside-band reject (golden: ON, fast=13, slow=55).
 # Symmetric chop-zone gate — rejects when price is *between* the two EMAs.
@@ -1484,14 +1503,10 @@ if not _g_vix:
 if not _g_vix_spike and _vix_spike_pct is not None:
     _failing_gates.append(f"VIX spike {_vix_spike_pct:+.1f}% > 20% DOD")
 if not _g_or:
-    _need = "≥ +25" if _notify_direction_key == "buy_call" else "≤ −25"
-    _failing_gates.append(f"OR momentum {_or_momentum:+d} (need {_need} for {_notify_direction})")
+    _failing_gates.append(f"OR momentum {_or_momentum:+d} inside ±25 band (agent would skip — no direction)")
 if not _g_confirm:
     _zone = "upper 25%" if _notify_direction_key == "buy_call" else "lower 25%"
     _failing_gates.append(f"Price ${_notify_price:.2f} not in {_zone} of OR ({_range_low:.2f}–{_range_high:.2f})")
-if not _g_regime:
-    _reg = "bullish" if _bullish_regime else "bearish" if _bearish_regime else "neutral"
-    _failing_gates.append(f"Regime guard: {_notify_direction} blocked in {_reg} regime (RSI {_g_rsi:.1f})")
 if not _g_pb_ema:
     _failing_gates.append(f"PB EMA inside-band: price ${_notify_price:.2f} between EMA-13 (${_pb_fast:.2f}) and EMA-55 (${_pb_slow:.2f}) — chop zone")
 if not _g_risk:
@@ -1502,8 +1517,9 @@ if _auto_refresh_active:
     _prev_alert = st.session_state.get("_last_alert_key", "")
     _alert_key = f"{_notify_symbol}_{_notify_quality}_{_cascade.explosion_score}_{datetime.now(timezone.utc).strftime('%H%M')}"
     if _alert_key != _prev_alert and _golden_pass:
+        _flip_tag = " (FLIP)" if _is_flip else ""
         send_browser_notification(
-            title=f"🎯 {_notify_symbol} SWEET SPOT — {_notify_direction}",
+            title=f"🎯 {_notify_symbol} SWEET SPOT — {_notify_direction}{_flip_tag}",
             body=(
                 f"Quality {_notify_quality}/13 + Explosion {_cascade.explosion_score}/10 | "
                 f"${_notify_price:.2f} | Golden defaults — entry zone confirmed"
@@ -1667,9 +1683,60 @@ _best_q = max(call_quality, put_quality)
 _sweet_spot_quality = 4 <= _best_q <= 7
 _sweet_spot_cascade = _cascade.explosion_score >= 4
 _chop_ok = _chop_result is None or (_chop_result.chop_score <= max_chop_score and _chop_result.chop_score >= min_chop_score)
-_sweet_spot_active = _sweet_spot_quality and _sweet_spot_cascade and _chop_ok
-_sweet_spot_prime = _sweet_spot_quality and _cascade.explosion_score >= 7 and _chop_ok
-_chop_blocked = _sweet_spot_quality and _sweet_spot_cascade and not _chop_ok
+# Visual panel shows SWEET SPOT only when the replay's golden defaults also pass.
+# When visual conditions (Q 4–7, cascade ≥ 4) hold but a replay gate fails, fall
+# through to a labeled BLOCKED state naming the primary reason.
+_sweet_spot_active = _sweet_spot_quality and _sweet_spot_cascade and _chop_ok and _golden_pass
+_sweet_spot_prime = _sweet_spot_quality and _cascade.explosion_score >= 7 and _chop_ok and _golden_pass
+_visual_would_trigger = _sweet_spot_quality and _sweet_spot_cascade
+_blocked = _visual_would_trigger and not (_sweet_spot_active or _sweet_spot_prime)
+
+# Pick the primary block reason in priority order. Chop first because it's the
+# visible-panel reason the user is used to; then the gates most likely to fire.
+def _primary_block_reason() -> tuple[str, str]:
+    """Return (short_label, long_desc) for the dominant failing gate."""
+    if _chop_result is not None and _chop_result.chop_score > max_chop_score:
+        return ("CHOPPY",
+                f"choppiness is {_chop_result.chop_score}/10 (max: {max_chop_score}) — "
+                f"market is range-bound, wait for choppiness to decrease")
+    if _chop_result is not None and _chop_result.chop_score < min_chop_score:
+        return ("TOO QUIET",
+                f"choppiness is {_chop_result.chop_score}/10 (min: {min_chop_score}) — "
+                f"not enough range to work with")
+    if not _g_or:
+        return ("NO OR DIRECTION",
+                f"OR momentum {_or_momentum:+d} inside ±25 band — replay would skip (no directional bias)")
+    if not _g_pb_ema:
+        try:
+            return ("PB EMA CHOP",
+                    f"price ${_notify_price:.2f} between EMA-13 (${_pb_fast:.2f}) and "
+                    f"EMA-55 (${_pb_slow:.2f}) — chop zone, golden rejects")
+        except NameError:
+            return ("PB EMA CHOP", "price between EMA-13 and EMA-55 — chop zone")
+    if not _g_confirm:
+        _zone = "upper 25%" if _notify_direction_key == "buy_call" else "lower 25%"
+        return ("ENTRY ZONE",
+                f"price ${_notify_price:.2f} not in {_zone} of OR "
+                f"(${_range_low:.2f}–${_range_high:.2f}) — wait for breakout")
+    if not _g_risk:
+        try:
+            return ("RISK ≤ 0",
+                    f"price ${_notify_price:.2f} on wrong side of stop ${_stop:.2f}")
+        except NameError:
+            return ("RISK ≤ 0", "price on wrong side of stop midpoint")
+    if not _g_vix:
+        return ("VIX SIT-OUT",
+                f"VIX {ind_dict.get('vix', 0):.1f} > 30 — golden defaults sit out high-VIX days")
+    if not _g_vix_spike and _vix_spike_pct is not None:
+        return ("VIX SPIKE",
+                f"VIX spiked {_vix_spike_pct:+.1f}% day-over-day (>20%) — sit out")
+    if not _g_quality:
+        return ("QUALITY BAND",
+                f"quality {_notify_quality}/13 outside replay band 3–7")
+    if not _g_cascade:
+        return ("CASCADE",
+                f"explosion {_cascade.explosion_score}/10 < 2")
+    return ("BLOCKED", "live agent gate failed — see diagnostic below")
 
 if _sweet_spot_prime:
     _ss_color = "#6BBF7A"
@@ -1693,16 +1760,16 @@ elif _sweet_spot_active:
         f"Quality {_best_q}/13 (optimal) + Explosion {_cascade.explosion_score}/10{_chop_badge} — "
         f"Good entry zone. Monitor for cascade acceleration."
     )
-elif _chop_blocked:
+elif _blocked:
+    _block_short, _block_long = _primary_block_reason()
     _ss_color = "#D4A74A"
     _ss_border = "1px dashed"
     _ss_bg = "#2C2C2E"
     _ss_icon = "⊘"
-    _ss_label = "SWEET SPOT BLOCKED — CHOPPY"
+    _ss_label = f"SWEET SPOT BLOCKED — {_block_short}"
     _ss_desc = (
         f"Quality {_best_q}/13 + Explosion {_cascade.explosion_score}/10 would trigger, "
-        f"but <b>choppiness is {_chop_result.chop_score}/10</b> (max: {max_chop_score}). "
-        f"Market is range-bound — wait for choppiness to decrease."
+        f"but {_block_long}."
     )
 elif _sweet_spot_quality:
     _ss_color = "#7AB4D9"
@@ -1718,7 +1785,8 @@ else:
     _ss_color = None
 
 if _ss_color:
-    _ss_direction = "Buy Put" if put_quality > call_quality else "Buy Call"
+    # Align panel direction with the notifier (OR-momentum + flip), not max(quality).
+    _ss_direction = _notify_direction
     st.markdown(
 f"""<div style="background: #2C2C2E; border: 1px solid #3A3A3C; border-radius: 12px; padding: 24px; box-shadow: 0 2px 12px rgba(0,0,0,0.25); border: {_ss_border} {_ss_color};">
 <div style="display: flex; justify-content: space-between; align-items: center;">
@@ -1735,16 +1803,16 @@ Backtest: Q 4–7 with cascade ≥ 4, chop ≤ 5 → 1-yr SPY: 63.6% WR, PF 1.81
         unsafe_allow_html=True,
     )
 
-    # ── Live-agent gate divergence: panel says SWEET SPOT but notifier wouldn't fire ──
-    # The panel uses a looser visual heuristic (Q 4–7, cascade ≥ 4); the notifier
-    # mirrors the live agent's golden defaults exactly. If they disagree, list why.
-    if (_sweet_spot_active or _sweet_spot_prime) and not _golden_pass and _failing_gates:
+    # ── Full failing-gate list (shown whenever the panel is in a BLOCKED state) ──
+    # The visual panel surfaces the *primary* reason; this list shows everything
+    # the live agent / replay would reject on, in case multiple gates fail.
+    if _blocked and len(_failing_gates) > 1:
         _gate_items = "".join(f"<li style='margin: 2px 0;'>{g}</li>" for g in _failing_gates)
         st.markdown(
 f"""<div style="background: #2C2C2E; border: 1px dashed #D4A74A; border-radius: 12px; padding: 16px 20px; margin-top: 8px;">
-<div style="font-size: 12px; font-weight: 700; color: #D4A74A; letter-spacing: 0.04em;">⚠ LIVE AGENT WOULD NOT TRIGGER</div>
+<div style="font-size: 12px; font-weight: 700; color: #D4A74A; letter-spacing: 0.04em;">⚠ ALL FAILING GATES</div>
 <div style="font-size: 12px; color: #A1A1A6; margin-top: 6px; line-height: 1.5;">
-Panel shows SWEET SPOT, but the live agent / replay enforce additional gates. Failing:
+The replay / live agent would also reject on:
 </div>
 <ul style="font-size: 12px; color: #E5E5E7; margin: 8px 0 0 0; padding-left: 20px;">{_gate_items}</ul>
 </div>""",
@@ -1795,33 +1863,57 @@ Panel shows SWEET SPOT, but the live agent / replay enforce additional gates. Fa
         else:
             _tmult = 1.0
         _is_call = _ss_direction == "Buy Call"
-        _mid = (_rh_blend + _rl_blend) / 2
-        if _is_call:
-            _entry_px = _rh_blend + _rw_blend * 0.10
-            _stop_px = _mid + 0.10 * _rw_blend  # Tighter: 60% of range
-            _risk = _entry_px - _stop_px
-            _target_px = _entry_px + _risk * _tmult
-            _to_entry = _entry_px - current_price
+
+        # Entry = current price (matches replay + live agent: entry = indicators.current_price).
+        _entry_px = current_price
+
+        if _is_flip:
+            # Flip-trade geometry: pure recent 30-min range with 0.02 × ATR cushion.
+            # Mirrors replay_sweet_spot.py:680-702 and run_sweet_spot_agent.py:492-503.
+            _atr_val = ind_dict.get("atr_14", 0.0) or 1.0
+            if _replay_bars is not None and len(_replay_bars) >= 6:
+                _flip_recent = _replay_bars.iloc[-6:]
+                _flip_high = float(_flip_recent["High"].max())
+                _flip_low = float(_flip_recent["Low"].min())
+            else:
+                _flip_high, _flip_low = _rh, _rl
+            if _is_call:
+                _stop_px = _flip_low - 0.02 * _atr_val
+                _risk = _entry_px - _stop_px
+                _target_px = _entry_px + _risk * _tmult if _risk > 0 else _entry_px
+            else:
+                _stop_px = _flip_high + 0.02 * _atr_val
+                _risk = _stop_px - _entry_px
+                _target_px = _entry_px - _risk * _tmult if _risk > 0 else _entry_px
+            _stop_basis = "flip range ± 0.02×ATR"
         else:
-            _entry_px = _rl_blend - _rw_blend * 0.10
-            _stop_px = _mid - 0.10 * _rw_blend  # Tighter: 60% of range
-            _risk = _stop_px - _entry_px
-            _target_px = _entry_px - _risk * _tmult
-            _to_entry = current_price - _entry_px
-        _reward = _risk * _tmult
-        _to_entry_pct = (_to_entry / current_price) * 100
-        _entry_status = "✅ Triggered" if _to_entry <= 0 else f"{_to_entry:+.2f} ({_to_entry_pct:+.2f}%) away"
+            # Standard geometry: stop = mid ± 0.10 × blended range width.
+            _mid = (_rh_blend + _rl_blend) / 2
+            if _is_call:
+                _stop_px = _mid + 0.10 * _rw_blend
+                _risk = _entry_px - _stop_px
+                _target_px = _entry_px + _risk * _tmult if _risk > 0 else _entry_px
+            else:
+                _stop_px = _mid - 0.10 * _rw_blend
+                _risk = _stop_px - _entry_px
+                _target_px = _entry_px - _risk * _tmult if _risk > 0 else _entry_px
+            _stop_basis = "mid ± 10% × blended range"
+
+        _reward = _risk * _tmult if _risk > 0 else 0.0
+        # Entry status: at replay parity, entry = current price ⇒ always "live".
+        _entry_status = "✅ At market" if _risk > 0 else "⚠ risk ≤ 0"
 
         ec1, ec2, ec3, ec4 = st.columns(4)
         ec1.metric("Entry", f"${_entry_px:.2f}", _entry_status, delta_color="off")
-        ec2.metric("Stop (60% range)", f"${_stop_px:.2f}", f"-${_risk:.2f} risk", delta_color="inverse")
+        ec2.metric("Stop", f"${_stop_px:.2f}", f"-${_risk:.2f} risk", delta_color="inverse")
         ec3.metric(f"Target ({_tmult:.2f}R)", f"${_target_px:.2f}", f"+${_reward:.2f} reward", delta_color="normal")
         ec4.metric("R:R", f"1 : {_tmult:.2f}", f"Cascade {_cascade.explosion_score}/10")
 
+        _flip_note = " · flip trade" if _is_flip else ""
         st.caption(
-            f"Plan from blended range (75% OR ${_rl:.2f}–${_rh:.2f} + 25% recent 30m). "
-            f"Entry = range edge ± 10% buffer · Stop = mid + 10% (tighter 60%) · Target multiplier scales with cascade "
-            f"(≥6→1.5R, else 1.0R). "
+            f"Plan matches replay: entry = current price · stop = {_stop_basis} · "
+            f"target multiplier {_tmult:.2f}R (≥6 cascade→1.5R, else 1.0R){_flip_note}. "
+            f"Blended range: 75% OR ${_rl:.2f}–${_rh:.2f} + 25% recent 30m. "
             f"Live agent monitors GainzAlgoV2 reversal (RSI 70/30, body 0.7) for early exit."
         )
     else:

@@ -179,32 +179,66 @@ class MomentumCascadeDetector:
         signals = []
         score = 0
 
-        # ── 1. Price Acceleration (RoC of RoC) ──
-        # Compare rate-of-change over 3 consecutive 10-min windows
-        if len(close) >= 9:
-            roc_1 = (float(close.iloc[-3]) - float(close.iloc[-6])) / float(close.iloc[-6]) * 100
-            roc_2 = (float(close.iloc[-1]) - float(close.iloc[-3])) / float(close.iloc[-3]) * 100
-            acceleration = roc_2 - roc_1
-            same_direction = (roc_1 < 0 and roc_2 < 0) or (roc_1 > 0 and roc_2 > 0)
+        # ── 1. Price Acceleration (ATR-normalized, asset-agnostic) ──
+        atr_ref = indicators.atr_14 if indicators.atr_14 > 0 else 1.0
+        accel_detected = False
 
-            if same_direction and abs(acceleration) > 0.05:
-                # Momentum is INCREASING in the same direction
-                score += 2
-                accel_detected = True
-                signals.append({"name": "Price accelerating", "score": 2,
-                                "desc": f"RoC went from {roc_1:+.2f}% to {roc_2:+.2f}% — momentum INCREASING"})
-            elif same_direction and abs(roc_2) > 0.15:
-                score += 1
-                accel_detected = True
-                signals.append({"name": "Strong directional move", "score": 1,
-                                "desc": f"RoC {roc_2:+.2f}% — strong but not accelerating"})
-            else:
-                accel_detected = False
-                signals.append({"name": "No acceleration", "score": 0,
-                                "desc": f"RoC {roc_1:+.2f}% → {roc_2:+.2f}% — no clear acceleration"})
+        # Primary: 4-bar weighted velocity (needs 5+ bars)
+        vel_accel = False
+        vel_strong = False
+        vel_desc = ""
+        if len(close) >= 5:
+            velocities = close.diff().iloc[-4:]
+            vel_values = [float(v) for v in velocities]
+            norm_vels = [v / atr_ref for v in vel_values]
+            weighted_vel_norm = 0.1*norm_vels[0] + 0.2*norm_vels[1] + 0.3*norm_vels[2] + 0.4*norm_vels[3]
+            norm_curr = abs(norm_vels[-1])
+            norm_prev = abs(norm_vels[-2]) if norm_vels[-2] != 0 else 0
+            same_dir_4bar = (vel_values[-1] > 0 and vel_values[-2] > 0) or \
+                            (vel_values[-1] < 0 and vel_values[-2] < 0)
+            vel_increasing = same_dir_4bar and norm_prev > 0 and norm_curr > norm_prev * 1.1
+            vel_accel = vel_increasing and abs(weighted_vel_norm) > 0.10
+            vel_strong = same_dir_4bar and abs(weighted_vel_norm) > 0.06
+            vel_desc = f"Velocity {norm_vels[-2]:+.3f} → {norm_vels[-1]:+.3f} ATR"
+
+        # Fallback: legacy RoC ATR-normalized (needs 9+ bars)
+        legacy_accel = False
+        legacy_strong = False
+        legacy_desc = ""
+        if len(close) >= 9:
+            move_1 = float(close.iloc[-3]) - float(close.iloc[-6])
+            move_2 = float(close.iloc[-1]) - float(close.iloc[-3])
+            roc_atr_1 = move_1 / atr_ref
+            roc_atr_2 = move_2 / atr_ref
+            same_direction = (roc_atr_1 < 0 and roc_atr_2 < 0) or (roc_atr_1 > 0 and roc_atr_2 > 0)
+            legacy_accel = same_direction and abs(roc_atr_2) > abs(roc_atr_1) and abs(roc_atr_2 - roc_atr_1) > 0.03
+            legacy_strong = same_direction and abs(roc_atr_2) > 0.10
+            legacy_desc = f"RoC {roc_atr_1:+.3f} → {roc_atr_2:+.3f} ATR"
+
+        # Score: require consensus for +2, single detector = +1
+        both_accel = vel_accel and legacy_accel
+        any_accel = vel_accel or legacy_accel
+        any_strong = vel_strong or legacy_strong
+
+        if both_accel:
+            score += 2
+            accel_detected = True
+            signals.append({"name": "Price accelerating (consensus)", "score": 2,
+                            "desc": f"{vel_desc} | {legacy_desc} — BOTH confirm acceleration"})
+        elif any_accel or (vel_strong and legacy_strong):
+            score += 1
+            accel_detected = True
+            desc = vel_desc if (vel_accel or vel_strong) else legacy_desc
+            signals.append({"name": "Price accelerating (single)", "score": 1,
+                            "desc": f"{desc} — one detector confirms"})
+        elif any_strong:
+            score += 1
+            accel_detected = True
+            desc = vel_desc if vel_strong else legacy_desc
+            signals.append({"name": "Strong directional move", "score": 1, "desc": desc})
         else:
-            accel_detected = False
-            signals.append({"name": "Insufficient data for acceleration", "score": 0, "desc": "Need 9+ bars"})
+            signals.append({"name": "No acceleration", "score": 0,
+                            "desc": "No ATR-normalized acceleration detected"})
 
         # ── 2. Volume Climax ──
         # Current volume vs average, AND increasing over recent bars
@@ -347,28 +381,71 @@ class MomentumCascadeDetector:
         signals = []
         score = 0
 
-        # ── 1. Price Acceleration (RoC of RoC) ──
+        # ── 1. Price Acceleration (fully ATR-normalized, asset-agnostic) ──
+        # All thresholds expressed as fractions of ATR so SPY/QQQ/any asset
+        # triggers at equivalent volatility-adjusted moves.
         accel_detected = False
-        if len(close) >= 9:
-            roc_1 = (float(close.iloc[-3]) - float(close.iloc[-6])) / float(close.iloc[-6]) * 100
-            roc_2 = (float(close.iloc[-1]) - float(close.iloc[-3])) / float(close.iloc[-3]) * 100
-            same_direction = (roc_1 < 0 and roc_2 < 0) or (roc_1 > 0 and roc_2 > 0)
+        atr_ref = indicators.atr_14 if indicators.atr_14 > 0 else 1.0
 
-            if same_direction and abs(roc_2) > abs(roc_1) and abs(roc_2 - roc_1) > 0.05:
-                score += 2
-                accel_detected = True
-                signals.append({"name": "Price accelerating", "score": 2,
-                                "desc": f"RoC {roc_1:+.2f}% → {roc_2:+.2f}% — momentum INCREASING"})
-            elif same_direction and abs(roc_2) > 0.15:
-                score += 1
-                accel_detected = True
-                signals.append({"name": "Strong directional move", "score": 1,
-                                "desc": f"RoC {roc_2:+.2f}% — strong but not accelerating"})
-            else:
-                signals.append({"name": "No acceleration", "score": 0,
-                                "desc": f"RoC {roc_1:+.2f}% → {roc_2:+.2f}%"})
+        # Primary: 4-bar weighted velocity normalized to ATR (needs 5+ bars)
+        vel_accel = False
+        vel_strong = False
+        vel_desc = ""
+        if len(close) >= 5:
+            velocities = close.diff().iloc[-4:]
+            vel_values = [float(v) for v in velocities]
+            # Normalize each velocity to ATR for cross-asset comparability
+            norm_vels = [v / atr_ref for v in vel_values]
+            weighted_vel_norm = 0.1*norm_vels[0] + 0.2*norm_vels[1] + 0.3*norm_vels[2] + 0.4*norm_vels[3]
+            norm_curr = abs(norm_vels[-1])
+            norm_prev = abs(norm_vels[-2]) if norm_vels[-2] != 0 else 0
+            same_dir_4bar = (vel_values[-1] > 0 and vel_values[-2] > 0) or \
+                            (vel_values[-1] < 0 and vel_values[-2] < 0)
+            vel_increasing = same_dir_4bar and norm_prev > 0 and norm_curr > norm_prev * 1.1
+            vel_accel = vel_increasing and abs(weighted_vel_norm) > 0.10
+            vel_strong = same_dir_4bar and abs(weighted_vel_norm) > 0.06
+            vel_desc = f"Velocity {norm_vels[-2]:+.3f} → {norm_vels[-1]:+.3f} ATR (weighted {weighted_vel_norm:+.3f})"
+
+        # Fallback: legacy RoC also ATR-normalized (needs 9+ bars)
+        legacy_accel = False
+        legacy_strong = False
+        legacy_desc = ""
+        if len(close) >= 9:
+            # Express RoC as ATR fraction instead of percentage
+            move_1 = float(close.iloc[-3]) - float(close.iloc[-6])
+            move_2 = float(close.iloc[-1]) - float(close.iloc[-3])
+            roc_atr_1 = move_1 / atr_ref
+            roc_atr_2 = move_2 / atr_ref
+            same_direction = (roc_atr_1 < 0 and roc_atr_2 < 0) or (roc_atr_1 > 0 and roc_atr_2 > 0)
+            legacy_accel = same_direction and abs(roc_atr_2) > abs(roc_atr_1) and abs(roc_atr_2 - roc_atr_1) > 0.03
+            legacy_strong = same_direction and abs(roc_atr_2) > 0.10
+            legacy_desc = f"RoC {roc_atr_1:+.3f} → {roc_atr_2:+.3f} ATR"
+
+        # Score: require consensus for +2, single detector = +1
+        both_accel = vel_accel and legacy_accel
+        any_accel = vel_accel or legacy_accel
+        any_strong = vel_strong or legacy_strong
+
+        if both_accel:
+            score += 2
+            accel_detected = True
+            signals.append({"name": "Price accelerating (consensus)", "score": 2,
+                            "desc": f"{vel_desc} | {legacy_desc} — BOTH confirm acceleration"})
+        elif any_accel or (vel_strong and legacy_strong):
+            score += 1
+            accel_detected = True
+            desc = vel_desc if (vel_accel or vel_strong) else legacy_desc
+            signals.append({"name": "Price accelerating (single)", "score": 1,
+                            "desc": f"{desc} — one detector confirms"})
+        elif any_strong:
+            score += 1
+            accel_detected = True
+            desc = vel_desc if vel_strong else legacy_desc
+            signals.append({"name": "Strong directional move", "score": 1,
+                            "desc": desc})
         else:
-            signals.append({"name": "Insufficient bars", "score": 0, "desc": "Need 9+"})
+            signals.append({"name": "No acceleration", "score": 0,
+                            "desc": "No ATR-normalized acceleration detected"})
 
         # ── 2. Volume Climax ──
         avg_vol = float(volume.mean())

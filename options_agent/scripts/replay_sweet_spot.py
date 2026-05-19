@@ -156,7 +156,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                min_cascade: int = 4, min_cascade_call: int | None = None,
                vix_stop_slope: float = 0.0, vix_stop_anchor: float = 15.0,
                min_quality: int = 4, max_quality: int = 7,
-               breakout_pct: float = 0.25, cooldown_bars: int = 3,
+               breakout_pct: float = 0.25, cooldown_bars: int = 2,
                scan_end: str = "13:59",
                scan_start: str = "11:30",
                target_mult_low: float = 1.0, target_mult_mid: float = 1.5,
@@ -1066,7 +1066,7 @@ def main():
     parser.add_argument("--vix-stop-anchor", type=float, default=15.0,
                         help="VIX level at which stop buffer slope kicks in (default: 15.0).")
     parser.add_argument("--breakout-pct", type=float, default=0.25, help="Breakout percentage of range")
-    parser.add_argument("--cooldown-bars", type=int, default=3, help="Cooldown period in bars")
+    parser.add_argument("--cooldown-bars", type=int, default=2, help="Cooldown period in bars (golden: 2 = 10 min)")
     parser.add_argument("--scan-end", type=str, default="13:59", help="End time for scanning (HH:MM, golden: 13:59)")
     parser.add_argument("--scan-start", type=str, default="10:30", help="Start time for scanning (HH:MM, golden: 10:30)")
     parser.add_argument("--target-mult-low", type=float, default=1.0, help="Target multiple for low explosion")

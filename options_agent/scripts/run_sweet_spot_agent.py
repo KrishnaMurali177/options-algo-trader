@@ -929,13 +929,15 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             open_directions.pop(occ_sym, None)
                             if close_reason == "stop":
                                 stops_today += 1
+                            # Stagnation flag: only set on stagnation, reset on all other exits
+                            # (matches replay: last_was_stagnation = outcome == "stagnation")
+                            last_was_stagnation = (close_reason == "stagnation")
+                            # Consecutive loss tracking by exit type (matches replay logic):
+                            # stop/stagnation = likely loss, target/gainz = likely win
+                            if close_reason in ("stop", "stagnation", "time_stop"):
                                 consecutive_losses += 1
-                            elif close_reason == "stagnation":
-                                consecutive_losses += 1
-                                last_was_stagnation = True
-                            elif close_reason == "target":
+                            else:
                                 consecutive_losses = 0
-                                last_was_stagnation = False
             except Exception as e:
                 logger.warning("Options monitoring failed: %s", e)
 

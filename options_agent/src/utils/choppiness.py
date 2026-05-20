@@ -45,6 +45,10 @@ class ChoppinessResult:
     max_consecutive: int          # longest streak of same-direction bars
     is_choppy: bool               # overall choppy verdict
     chop_score: int               # 0-10 composite score (higher = choppier)
+    ci_pts: int                   # CI sub-score (0-3)
+    rev_pts: int                  # reversal-rate sub-score (0-3)
+    bar_ratio_pts: int            # bar-range-ratio sub-score (0-2)
+    consec_pts: int               # max-consecutive sub-score (0-2)
     summary: str
 
 
@@ -80,6 +84,7 @@ def compute_choppiness(
             choppiness_index=0.5, direction_reversal_pct=50.0,
             avg_bar_range=0.0, day_range=0.0, bar_range_ratio=0.0,
             max_consecutive=0, is_choppy=False, chop_score=5,
+            ci_pts=0, rev_pts=0, bar_ratio_pts=0, consec_pts=0,
             summary="Insufficient data for choppiness analysis",
         )
 
@@ -150,37 +155,43 @@ def compute_choppiness(
     # Note: vol_factor is computed but NOT applied to thresholds yet.
     # The golden defaults (max_chop=5) were calibrated with fixed thresholds.
     # vol_factor is exposed on ChoppinessResult for callers who want adaptive behavior.
-    chop_score = 0
-
     # CI contribution (0-3)
     if ci >= 0.70:
-        chop_score += 3
+        ci_pts = 3
     elif ci >= 0.60:
-        chop_score += 2
+        ci_pts = 2
     elif ci >= ci_threshold:
-        chop_score += 1
+        ci_pts = 1
+    else:
+        ci_pts = 0
 
     # Reversal rate contribution (0-3)
     if reversal_pct >= 60:
-        chop_score += 3
+        rev_pts = 3
     elif reversal_pct >= 50:
-        chop_score += 2
+        rev_pts = 2
     elif reversal_pct >= reversal_threshold * 0.9:
-        chop_score += 1
+        rev_pts = 1
+    else:
+        rev_pts = 0
 
     # Bar ratio contribution (0-2): low ratio = small bars relative to range = chop
     if bar_ratio < 6:
-        chop_score += 2
+        bar_ratio_pts = 2
     elif bar_ratio < bar_ratio_threshold:
-        chop_score += 1
+        bar_ratio_pts = 1
+    else:
+        bar_ratio_pts = 0
 
     # Max consecutive contribution (0-2): short streaks = chop
     if max_consec <= 2:
-        chop_score += 2
+        consec_pts = 2
     elif max_consec < min_consecutive:
-        chop_score += 1
+        consec_pts = 1
+    else:
+        consec_pts = 0
 
-    chop_score = min(10, chop_score)
+    chop_score = min(10, ci_pts + rev_pts + bar_ratio_pts + consec_pts)
 
     # ── Overall Verdict ──
     is_choppy = chop_score >= 6
@@ -217,6 +228,10 @@ def compute_choppiness(
         max_consecutive=max_consec,
         is_choppy=is_choppy,
         chop_score=chop_score,
+        ci_pts=ci_pts,
+        rev_pts=rev_pts,
+        bar_ratio_pts=bar_ratio_pts,
+        consec_pts=consec_pts,
         summary=summary,
     )
 

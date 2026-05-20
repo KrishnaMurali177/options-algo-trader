@@ -434,7 +434,13 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
         # Sweet spot criteria
         diag_common = {"direction": direction, "or_momentum": or_momentum,
                        "quality": quality, "explosion": cascade.explosion_score,
-                       "chop": chop.chop_score, "price": indicators.current_price}
+                       "chop": chop.chop_score, "price": indicators.current_price,
+                       "chop_breakdown": {
+                           "ci_pts": chop.ci_pts, "rev_pts": chop.rev_pts,
+                           "bar_ratio_pts": chop.bar_ratio_pts, "consec_pts": chop.consec_pts,
+                           "ci": chop.choppiness_index, "reversal_pct": chop.direction_reversal_pct,
+                           "bar_range_ratio": chop.bar_range_ratio, "max_consecutive": chop.max_consecutive,
+                       }}
         if not (3 <= quality <= 7):
             return {"status": "reject", "stage": "quality",
                     "reason": f"quality {quality} outside sweet band [3,7]", **diag_common}

@@ -210,6 +210,9 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                     momentum_flip: bool = False,
                     momentum_flip_threshold: float = 40.0,
                     max_flip_trades: int = 1,
+                    vwap_slope_override_t: float = 0.0,
+                    vwap_slope_override_k: int = 0,
+                    vwap_slope_override_cmax: float = 0.0,
                     debug: bool = False) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
@@ -274,6 +277,8 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
     stops_today = 0  # Track stop-outs for daily loss limit
     consecutive_losses = 0  # Track streak for streak breaker
     daily_pnl_cumulative = 0.0  # Track cumulative daily P&L
+    chop_rejects_today = 0  # Count of chop-gate rejections before next entry (audit)
+    first_chop_reject_ts = None  # Earliest bar that hit chop reject this day
     flip_trades_today = 0  # Track momentum-flip trades (separate allowance)
 
     # Scan every bar (5 min) from scan_start to scan_end
@@ -560,12 +565,52 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         # Low-vol adaptive tightening (VIX<15 → max_chop-1) showed +5.7% per-trade
         # efficiency but −0.2% total P&L over 2yr — insufficient for golden default.
         chop = compute_choppiness(bars_to_now, vix=vix, atr=atr_val)
+        chop_override_fired = False
         if chop.chop_score > max_chop:
-            if debug:
+            # ── VWAP-slope override (audit-driven A/B) ──
+            # Allow entry through chop gate IF directional drift vs session VWAP is
+            # confirmed: (price-vwap)/atr >= T for buy_call (or <= -T for buy_put),
+            # K consecutive bars on the correct side of VWAP, and chop.ci <= Cmax.
+            # All three params >0 means override is active.
+            if (vwap_slope_override_t > 0 and vwap_slope_override_k > 0
+                    and vwap_slope_override_cmax > 0 and atr_val > 0):
+                cumvol_n = float(day_cumvol.iloc[:n].iloc[-1]) if n > 0 else 0.0
+                if cumvol_n > 0:
+                    vwap_val = float(day_cum_tp_vol.iloc[:n].iloc[-1] / cumvol_n)
+                    dist_atr = (price - vwap_val) / atr_val
+                    closes_last_k = bars_to_now["Close"].astype(float).iloc[-vwap_slope_override_k:]
+                    # Recompute per-bar VWAP at each historical point using vectorized cumsum
+                    bars_so_far = bars_to_now.iloc[:n]
+                    tp = (bars_so_far["High"].astype(float) + bars_so_far["Low"].astype(float)
+                          + bars_so_far["Close"].astype(float)) / 3.0
+                    vol = bars_so_far["Volume"].astype(float)
+                    cv = vol.cumsum()
+                    ctv = (tp * vol).cumsum()
+                    per_bar_vwap = (ctv / cv).iloc[-vwap_slope_override_k:]
+                    closes_arr = closes_last_k.values
+                    vwap_arr = per_bar_vwap.values
+                    if direction == "buy_call":
+                        side_ok = bool((closes_arr > vwap_arr).all())
+                        dist_ok = dist_atr >= vwap_slope_override_t
+                    else:
+                        side_ok = bool((closes_arr < vwap_arr).all())
+                        dist_ok = -dist_atr >= vwap_slope_override_t
+                    ci_ok = chop.choppiness_index <= vwap_slope_override_cmax
+                    if side_ok and dist_ok and ci_ok:
+                        chop_override_fired = True
+            if not chop_override_fired:
+                chop_rejects_today += 1
+                if first_chop_reject_ts is None:
+                    first_chop_reject_ts = ts
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d C=%d (max=%d) → CHOP REJECT",
+                                bar_time, direction, quality, explosion, chop.chop_score, max_chop)
+                continue
+            elif debug:
                 bar_time = ts.strftime("%H:%M")
-                logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d C=%d (max=%d) → CHOP REJECT",
-                            bar_time, direction, quality, explosion, chop.chop_score, max_chop)
-            continue
+                logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d C=%d → CHOP OVERRIDE (vwap-slope)",
+                            bar_time, direction, quality, explosion, chop.chop_score)
 
         # ── Min chop floor: reject "false trending" (too quiet to confirm direction) ──
         if chop.chop_score < min_chop:
@@ -998,6 +1043,9 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             "quality": quality,
             "explosion": explosion,
             "chop": chop.chop_score,
+            "chop_rejects_before": chop_rejects_today,
+            "first_chop_reject_time": first_chop_reject_ts.strftime("%H:%M") if first_chop_reject_ts is not None else None,
+            "chop_override_fired": chop_override_fired,
             "momentum": or_momentum,
             "recent_momentum": recent_momentum,
             "entry": round(entry, 2),
@@ -1204,6 +1252,14 @@ def main():
                         help="Recent momentum score threshold to trigger direction flip (default: 40)")
     parser.add_argument("--max-flip-trades", type=int, default=1,
                         help="Max additional flip trades per day beyond max-trades-per-day (default: 1)")
+    parser.add_argument("--vwap-slope-override-t", type=float, default=0.0,
+                        help="VWAP-slope chop override: (price-vwap)/atr threshold (0=disabled)")
+    parser.add_argument("--vwap-slope-override-k", type=int, default=0,
+                        help="VWAP-slope chop override: consecutive bars on correct side of VWAP (0=disabled)")
+    parser.add_argument("--vwap-slope-override-cmax", type=float, default=0.0,
+                        help="VWAP-slope chop override: max raw CI allowed for override (0=disabled, 1.0=unconditional)")
+    parser.add_argument("--export-triggers", default=None,
+                        help="If set, write all triggers as JSON to this path (audit/analysis).")
     args = parser.parse_args()
 
     if args.research_mode:
@@ -1362,6 +1418,9 @@ def main():
                               momentum_flip=args.momentum_flip,
                               momentum_flip_threshold=args.momentum_flip_threshold,
                               max_flip_trades=args.max_flip_trades,
+                              vwap_slope_override_t=args.vwap_slope_override_t,
+                              vwap_slope_override_k=args.vwap_slope_override_k,
+                              vwap_slope_override_cmax=args.vwap_slope_override_cmax,
                               debug=(debug_date is not None and day == debug_date))
         all_triggers.extend(triggers)
 
@@ -1385,7 +1444,10 @@ def main():
 
     if not all_triggers:
         print("\n  No sweet spot triggers found in this period.")
+        _export_triggers_if_requested(args, all_triggers)
         return
+
+    _export_triggers_if_requested(args, all_triggers)
 
     wins = [t for t in all_triggers if t["is_winner"]]
     losses = [t for t in all_triggers if not t["is_winner"]]
@@ -1551,6 +1613,14 @@ def main():
             d = "CALL" if "call" in t["direction"] else "PUT"
             w = "✅" if t["is_winner"] else "❌"
             print(f"  {t['date']:<12} {t['time']:<6} {d:<5} {t['quality']:>2} {t['explosion']:>2} {t['chop']:>2} {t['target_mult']:>4.2f}x ${t['entry']:>7.2f} ${t['exit_price']:>7.2f} ${t['pnl']:>+7.2f} {t['outcome']:<8} {w}")
+
+
+def _export_triggers_if_requested(args, all_triggers):
+    if getattr(args, "export_triggers", None):
+        import json as _json
+        with open(args.export_triggers, "w", encoding="utf-8") as f:
+            _json.dump(all_triggers, f, default=str, indent=2)
+        print(f"\n  Exported {len(all_triggers)} triggers to {args.export_triggers}")
 
 
 if __name__ == "__main__":

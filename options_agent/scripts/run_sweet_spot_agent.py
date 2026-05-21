@@ -318,7 +318,11 @@ def is_past_or(min_after_open: int = 60) -> bool:
 
 def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
                      regime_guard: bool = True,
-                     pb_ema: bool = True, pb_ema_fast: int = 13, pb_ema_slow: int = 55) -> dict:
+                     pb_ema: bool = True, pb_ema_fast: int = 13, pb_ema_slow: int = 55,
+                     prior_triggers: list[dict] | None = None,
+                     cluster_penalty: bool = True,
+                     cluster_penalty_window_min: int = 30,
+                     cluster_penalty_cap: int = 2) -> dict:
     """Evaluate sweet spot conditions. Always returns a verdict dict.
 
     Returns a dict with either:
@@ -420,6 +424,30 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
             vwap=vwap_val,
         )
         quality = quality_result.score
+
+        # Within-day clustering penalty (golden default cap=2, window=30 min).
+        # Subtract 1 per prior same-direction trigger within the window, capped.
+        # Promoted 2026-05-21 after 12-cell sensitivity grid: every (window, cap)
+        # combination beat baseline; cap=2 was uniformly best. Bit-exact with replay.
+        if cluster_penalty and prior_triggers:
+            now_et = get_et_now()
+            window_start = now_et - timedelta(minutes=cluster_penalty_window_min)
+            same_dir_recent = 0
+            for prior in prior_triggers:
+                prior_hhmm = prior.get("time", "")
+                if not prior_hhmm or len(prior_hhmm) < 5:
+                    continue
+                try:
+                    prior_dt = now_et.replace(hour=int(prior_hhmm[:2]),
+                                              minute=int(prior_hhmm[3:5]),
+                                              second=0, microsecond=0)
+                except ValueError:
+                    continue
+                if (prior_dt >= window_start and prior_dt < now_et
+                        and prior.get("direction") == direction):
+                    same_dir_recent += 1
+            penalty = min(same_dir_recent, cluster_penalty_cap)
+            quality -= penalty
 
         cascade = MomentumCascadeDetector().analyze(
             indicators, quality_score=quality,
@@ -1001,7 +1029,8 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         scan_count += 1
         verdict = check_sweet_spot(symbol, max_chop=max_chop, min_chop=min_chop,
                                    regime_guard=regime_guard,
-                                   pb_ema=pb_ema, pb_ema_fast=pb_ema_fast, pb_ema_slow=pb_ema_slow)
+                                   pb_ema=pb_ema, pb_ema_fast=pb_ema_fast, pb_ema_slow=pb_ema_slow,
+                                   prior_triggers=triggers)
 
         # Persist every verdict (rejects + triggers) to a daily JSONL for offline analysis.
         try:

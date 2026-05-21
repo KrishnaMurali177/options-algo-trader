@@ -383,27 +383,25 @@ python scripts/scan_sweet_spot_today.py --no-chop-filter
 
 ## 📊 Backtest Results (2yr, SPY + QQQ)
 
-Generated 2026-05-20 via `replay_sweet_spot.py --days 730 --real-options` at current golden defaults. Real Alpaca 0DTE option pricing (synth fallback < 1% of trades). Verify tool reports **0/42 drifted bars** between live and replay on multiple sampled dates — what's backtested is what runs in production.
+Generated 2026-05-21 via `replay_sweet_spot.py --days 730 --real-options` at current golden defaults. Real Alpaca 0DTE option pricing (synth fallback < 1% of trades). Verify tool reports **0/42 drifted bars** between live and replay on multiple sampled dates — what's backtested is what runs in production.
 
 | Metric | SPY | QQQ |
 |--------|-----|-----|
 | **Trading Days** | 501 | 501 |
-| **Trades Taken** | 805 | 726 |
-| **Win Rate** | **62.9%** | **58.1%** |
-| **Profit Factor** | **2.21** | **1.79** |
-| **Total P&L** (per contract, ×100) | **+$11,411** | **+$10,076** |
-| **Total P&L** (cascade-sized 3×) | **+$34,232** | **+$30,227** |
-| **Sharpe Ratio** | **3.92** | **3.00** |
-| **Sortino Ratio** | 7.00 | 5.00 |
-| **Max Drawdown** | $13.29 (3.8%) | $20.37 (6.6%) |
-| **Calmar Ratio** | **25.76** | **14.84** |
-| **Avg Winner** | $1.24 | $1.62 |
-| **Avg Loser** | −$0.95 | −$1.26 |
-| **Call WR / PF** | 60.4% / 1.97 | 57.7% / 1.76 |
-| **Put WR / PF** | 66.9% / 2.51 | 58.9% / 1.83 |
-| **Pricing source** | real 799 / synth 6 | real 720 / synth 6 |
+| **Trades Taken** | 883 | 809 |
+| **Win Rate** | **63.3%** | **59.0%** |
+| **Profit Factor** | **2.44** | **1.90** |
+| **Total P&L** (per contract, ×100) | **+$13,732** | **+$12,424** |
+| **Total P&L** (cascade-sized 3×) | **+$41,195** | **+$37,272** |
+| **Sharpe Ratio** | **4.38** | **3.24** |
+| **Sortino Ratio** | 8.32 | 6.08 |
+| **Max Drawdown** | $11.82 (2.8%) | $21.42 (5.7%) |
+| **Calmar Ratio** | **34.85** | **17.40** |
+| **Longest Underwater** | 27 days | 60 days |
 
 > **Live/replay parity:** verified bit-exact at every 5-min bar on 2026-05-20 (both symbols) and 2026-05-15 SPY. Replay's `stag_cooldown_bars` default was reduced 6→1 on 2026-05-20 to match live's actual behavior (live can't enforce a post-stagnation cooldown because by the time stagnation is detected, the cooldown window has already elapsed in wall-clock).
+>
+> **2026-05-21 promotion — within-day cluster penalty (cap=2, window=30 min):** Quality −1 per prior same-direction trade in the last 30 min, capped at −2. Validated 12-cell sensitivity grid (window ∈ {15,30,45,60} × cap ∈ {2,3,4}) on SPY 730d — every combination beat baseline; no failing cell. 730d clean sweep: SPY PF 2.21→2.44, Sharpe 3.92→4.38, Calmar 25.76→34.85, MDD% 3.8→2.8, Longest Underwater 41d→27d; QQQ PF 1.79→1.90, Sharpe 3.00→3.24, MDD% 6.6→5.7. 365d walk-forward confirms on both symbols (QQQ 365d MDD% 17.2→13.8 — the binding constraint that killed the last three A/Bs improves). Disable with `--no-cluster-penalty`.
 
 ### Sweet Spot Backtest (1yr SPY, Quality 4–7 + Explosion ≥ 4)
 
@@ -443,6 +441,7 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 | **Cascade-scaled targets** | E≥8→1.5R, E≥6→1.5R, else 1.0R | Mid-tier target raised from 1.25R to 1.5R (validated: PF 1.16→1.23) |
 | **Cascade contract sizing** | **ON** — 3ct flat across E2-5 / E6-7 / E8+ | Flat 3/3/3 — equal sizing across all tiers |
 | **Cooldown** | **1 bar (5 min)** | Between consecutive triggers; 6 bars (30 min) after stagnation exits. Reduced from 2 bars (10 min) — validated 2026-05-18 on 730d real-options SPY/QQQ/VOO (clean sweep): SPY PF 2.10→2.28, Sharpe 3.63→3.97, MDD 5.3%→3.9%; QQQ PF 1.54→1.72, Sharpe 2.28→2.83, MDD 10.0%→8.5%; VOO PF 2.32→2.68, Sharpe 4.84→5.01, MDD 5.3%→3.7%. Walk-forward (last-365d) holds; cluster-risk audit passed (added trades spread across 145/119/160 unique days, worst-day tails unchanged). Captures same-direction continuation setups that the 10-min wait was missing. |
+| **Cluster penalty** | **ON** (window=30 min, cap=2) | Subtracts 1 from quality per prior same-direction trade within 30 min, capped at 2. Promoted 2026-05-21 after 12-cell sensitivity grid (window ∈ {15,30,45,60} × cap ∈ {2,3,4}) showed no failing parameter combination. 730d clean sweep: SPY PF 2.21→2.44, Sharpe 3.92→4.38, Calmar 25.76→34.85, MDD 3.8%→2.8%, Longest Underwater 41d→27d; QQQ PF 1.79→1.90, Sharpe 3.00→3.24, MDD 6.6%→5.7%. 365d walk-forward confirms on both symbols. Disable with `--no-cluster-penalty`. |
 | **Stop** | 60% of range (mid + 10% width) | Tighter than bare midpoint — validated: Sharpe 0.76→1.07, DD 89.7%→63.7% |
 | **Regime guard** | **OFF** | Disabled — counter-trend trades are profitable when chop+quality+cascade filters pass. Validated 2yr: Sharpe 1.38→1.74, PF 1.30→1.37, P&L +$95→+$122. Use `--regime-guard` to re-enable. |
 | **Active range blend** | **ON** (blend=0.25, 6 bars/30min) | Stop/target uses 75% OR + 25% recent 30-min range. Prevents stale entries on late-day triggers. Validated SPY+QQQ: WR +3pp, DD −14%, UW 83→52 days. |

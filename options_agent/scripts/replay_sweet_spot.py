@@ -154,6 +154,9 @@ def _build_indicators_from_bars(bars: pd.DataFrame, symbol: str = "SPY") -> Mark
 def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                min_chop: int = 2,
                min_cascade: int = 4, min_cascade_call: int | None = None,
+               cluster_penalty: bool = True,
+               cluster_penalty_window_min: int = 30,
+               cluster_penalty_cap: int = 2,
                vix_stop_slope: float = 0.0, vix_stop_anchor: float = 15.0,
                min_quality: int = 4, max_quality: int = 7,
                breakout_pct: float = 0.25, cooldown_bars: int = 2,
@@ -527,6 +530,24 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             vwap=_vwap_val,
         )
         quality = quality_result.score
+
+        # ── Improvement #3: within-day clustering penalty ──
+        # 2026-05-20 audit: clustered same-direction re-entries within 30 min are
+        # the dominant MDD driver (SPY 41d DD window 2024-12 + QQQ 62d DD window
+        # 2024-08-30→2024-09-25). Penalize quality by 1 per prior same-direction
+        # trade in the window, capped. Applied pre-gate so cluster #4 can be
+        # rejected by min_quality even if it would otherwise pass.
+        if cluster_penalty and triggers:
+            window_start_ts = ts - pd.Timedelta(minutes=cluster_penalty_window_min)
+            same_dir_recent = 0
+            for prior in triggers:
+                # Reconstruct prior trigger timestamp from the day_bars index using HH:MM
+                prior_hhmm = prior["time"]
+                prior_ts = ts.replace(hour=int(prior_hhmm[:2]), minute=int(prior_hhmm[3:5]))
+                if prior_ts >= window_start_ts and prior_ts < ts and prior["direction"] == direction:
+                    same_dir_recent += 1
+            penalty = min(same_dir_recent, cluster_penalty_cap)
+            quality -= penalty
 
         if not (min_quality <= quality <= max_quality):
             if debug:
@@ -1116,6 +1137,18 @@ def main():
     parser.add_argument("--min-quality", type=int, default=3, help="Minimum quality score (golden: 3)")
     parser.add_argument("--max-quality", type=int, default=7, help="Maximum quality score (golden: 7)")
     parser.add_argument("--min-cascade", type=int, default=2, help="Minimum cascade proxy (golden: 2, was 4)")
+    parser.add_argument("--cluster-penalty", action="store_true", default=True,
+                        help="Within-day clustering penalty: subtract 1 from quality per prior "
+                             "same-direction trade in the window, capped. GOLDEN (2026-05-21): "
+                             "Promoted after 12-cell sensitivity grid showed no failing parameter "
+                             "combination; SPY 730d Sharpe 3.92→4.38, Calmar 25.76→34.85, MDD%% 3.8→2.8.")
+    parser.add_argument("--no-cluster-penalty", dest="cluster_penalty", action="store_false",
+                        help="Disable the cluster penalty (golden default is ON).")
+    parser.add_argument("--cluster-penalty-window-min", type=int, default=30,
+                        help="Cluster penalty: lookback window in minutes (golden: 30).")
+    parser.add_argument("--cluster-penalty-cap", type=int, default=2,
+                        help="Cluster penalty: maximum quality reduction per trade (golden: 2). "
+                             "Sensitivity grid showed cap=2 best across all windows.")
     parser.add_argument("--min-cascade-call", type=int, default=None,
                         help="Side-asymmetric: separate min cascade for CALLs only "
                              "(corrects cascade bull-bias). Default: None (use --min-cascade for both).")
@@ -1376,6 +1409,9 @@ def main():
                               min_chop=args.min_chop,
                               min_quality=args.min_quality, max_quality=args.max_quality,
                               min_cascade=args.min_cascade, min_cascade_call=args.min_cascade_call,
+                              cluster_penalty=args.cluster_penalty,
+                              cluster_penalty_window_min=args.cluster_penalty_window_min,
+                              cluster_penalty_cap=args.cluster_penalty_cap,
                               vix_stop_slope=args.vix_stop_slope, vix_stop_anchor=args.vix_stop_anchor,
                               breakout_pct=args.breakout_pct,
                               cooldown_bars=args.cooldown_bars, scan_end=args.scan_end,

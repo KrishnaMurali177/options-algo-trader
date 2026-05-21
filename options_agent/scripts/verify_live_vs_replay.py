@@ -327,7 +327,7 @@ def main() -> None:
         active_range=True, active_range_bars=6, active_range_blend=0.25,
         pb_ema=pb_ema_on, pb_ema_fast=13, pb_ema_slow=55,
         tiered_stagnation=True, tiered_stag_early_bar=8,
-        tiered_stag_pnl_lo=-0.1, tiered_stag_pnl_hi=0.2, stag_cooldown_bars=6,
+        tiered_stag_pnl_lo=-0.1, tiered_stag_pnl_hi=0.2, stag_cooldown_bars=1,
         momentum_flip=True, momentum_flip_threshold=40.0, max_flip_trades=1,
         vix=day_vix, prior_bars=prior_bars,
     )
@@ -427,6 +427,16 @@ def _replay_verdict_for_bar(snapped_t, bars_full, day_vix, symbol: str = "SPY",
         return {"status": "reject", "stage": "direction", "q": None, "e": None, "c": None, "or_mom": or_mom}
     rc = RecentMomentumAnalyzer().analyze(ind, bars_5m=sliced_today)
     rec_dir, rec_mom = (rc.direction, rc.momentum_score) if rc else ("neutral", 0)
+    # Momentum flip — mirror check_sweet_spot and replay_day (both apply flip
+    # BEFORE scoring quality, so the new direction's score is what counts).
+    # Threshold mirrors golden default `momentum_flip_threshold=40`.
+    _is_flip = False
+    if direction == "buy_call" and rec_mom <= -40:
+        direction = "buy_put"
+        _is_flip = True
+    elif direction == "buy_put" and rec_mom >= 40:
+        direction = "buy_call"
+        _is_flip = True
     h, l, c, v = (sliced["High"].astype(float), sliced["Low"].astype(float),
                   sliced["Close"].astype(float), sliced["Volume"].astype(float))
     typical = (h + l + c) / 3
@@ -467,10 +477,10 @@ def _replay_verdict_for_bar(snapped_t, bars_full, day_vix, symbol: str = "SPY",
             bhi, blo = max(ema_f, ema_s), min(ema_f, ema_s)
             if blo < ind.current_price < bhi:
                 stage = "pb_ema"
-        if stage == "trigger":
-            # Entry-zone (25%) reject — agent skips this for flip trades, but
-            # without recent-momentum logic here we apply it always; a flip would
-            # show as a false-mismatch which is acceptable for the diagnostic.
+        if stage == "trigger" and not _is_flip:
+            # Entry-zone (25%) reject. Live/replay skip this for flip trades
+            # because a flip means reversal from the opposite zone, so price is
+            # naturally in the "wrong" zone for the new direction.
             rw = or_r.range_high - or_r.range_low
             bt = rw * 0.25
             if direction == "buy_call" and ind.current_price < (or_r.range_high - bt):
@@ -514,6 +524,12 @@ def _why_rejected(snapped_t, bars_full, day_vix, symbol: str = "SPY",
 
     rc = RecentMomentumAnalyzer().analyze(ind, bars_5m=sliced_today)
     rec_dir, rec_mom = (rc.direction, rc.momentum_score) if rc else ("neutral", 0)
+
+    # Momentum flip — mirror check_sweet_spot and replay_day before scoring Q.
+    if direction == "buy_call" and rec_mom <= -40:
+        direction = "buy_put"
+    elif direction == "buy_put" and rec_mom >= 40:
+        direction = "buy_call"
 
     h, l, c, v = (sliced["High"].astype(float), sliced["Low"].astype(float),
                   sliced["Close"].astype(float), sliced["Volume"].astype(float))

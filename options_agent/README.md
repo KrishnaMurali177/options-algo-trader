@@ -381,22 +381,29 @@ python scripts/scan_sweet_spot_today.py --max-chop 7 --min-stability 3
 python scripts/scan_sweet_spot_today.py --no-chop-filter
 ```
 
-## 📊 Backtest Results (1yr, SPY + QQQ)
+## 📊 Backtest Results (2yr, SPY + QQQ)
 
-| Metric | SPY | QQQ | Combined |
-|--------|-----|-----|----------|
-| **Trading Days** | 251 | 251 | — |
-| **Trades Taken** | 146 | 145 | 291 |
-| **Win Rate** | **61.0%** | **54.5%** | ~57.8% |
-| **Total P&L** | **+$43.54** | **+$33.04** | **+$76.57** |
-| **Profit Factor** | **1.50** | **1.29** | ~1.39 |
-| **Call WR** | 61.9% | 60.4% | — |
-| **Put WR** | 58.5% | 42.9% | — |
-| **Avg Winner** | $1.46 | $1.88 | — |
-| **Avg Loser** | −$1.52 | −$1.74 | — |
-| **Stop Rate** | 38.6% | 38.6% | — |
-| **T1 Hit Rate** | 31.7% | 33.1% | — |
-| **T2 Hit Rate** | 26.9% | 20.0% | — |
+Generated 2026-05-20 via `replay_sweet_spot.py --days 730 --real-options` at current golden defaults. Real Alpaca 0DTE option pricing (synth fallback < 1% of trades). Verify tool reports **0/42 drifted bars** between live and replay on multiple sampled dates — what's backtested is what runs in production.
+
+| Metric | SPY | QQQ |
+|--------|-----|-----|
+| **Trading Days** | 501 | 501 |
+| **Trades Taken** | 805 | 726 |
+| **Win Rate** | **62.9%** | **58.1%** |
+| **Profit Factor** | **2.21** | **1.79** |
+| **Total P&L** (per contract, ×100) | **+$11,411** | **+$10,076** |
+| **Total P&L** (cascade-sized 3×) | **+$34,232** | **+$30,227** |
+| **Sharpe Ratio** | **3.92** | **3.00** |
+| **Sortino Ratio** | 7.00 | 5.00 |
+| **Max Drawdown** | $13.29 (3.8%) | $20.37 (6.6%) |
+| **Calmar Ratio** | **25.76** | **14.84** |
+| **Avg Winner** | $1.24 | $1.62 |
+| **Avg Loser** | −$0.95 | −$1.26 |
+| **Call WR / PF** | 60.4% / 1.97 | 57.7% / 1.76 |
+| **Put WR / PF** | 66.9% / 2.51 | 58.9% / 1.83 |
+| **Pricing source** | real 799 / synth 6 | real 720 / synth 6 |
+
+> **Live/replay parity:** verified bit-exact at every 5-min bar on 2026-05-20 (both symbols) and 2026-05-15 SPY. Replay's `stag_cooldown_bars` default was reduced 6→1 on 2026-05-20 to match live's actual behavior (live can't enforce a post-stagnation cooldown because by the time stagnation is detected, the cooldown window has already elapsed in wall-clock).
 
 ### Sweet Spot Backtest (1yr SPY, Quality 4–7 + Explosion ≥ 4)
 
@@ -522,23 +529,13 @@ On days with extreme volatility, the agent sits out entirely to avoid whipsaw lo
 
 This filter uses daily closing VIX data. During the Aug 2024–Mar 2025 drawdown period (VIX routinely 25–40+), the filter would have avoided the worst losing streaks.
 
-**2-Year Replay Results (730 days, May 2024–May 2026, Golden Defaults, Real Alpaca 0DTE Options):**
+### Notable golden-default features
 
-| Metric | SPY | QQQ | VOO |
-|--------|-----|-----|-----|
-| Triggers | 764 | 671 | 851 |
-| Win Rate | **65.1%** | **58.1%** | **65.8%** |
-| Profit Factor | **2.37** | **1.81** | **2.99** |
-| Total P&L (cascade-sized) | **+$358.17** | **+$296.05** | **+$373.59** |
-| Sharpe Ratio | **4.22** | **2.97** | **5.49** |
-| Max Drawdown | **$11.88 (3.3%)** | **$21.24 (7.1%)** | **$11.13 (3.0%)** |
-| Calmar Ratio | **30.15** | **13.94** | **33.58** |
-
-> Golden defaults: **max-trades-per-day 4** (raised from 3 on 2026-05-18), cooldown 1 bar (5 min), tiered stagnation ON (bar 8 early exit + 6-bar stag cooldown), stagnation 12 bars / 0.3R, decay halflife 8 bars, PB EMA 13/55, cascade 3/3/3, max-chop 5, max-stops 1, regime guard OFF, **momentum flip ON (threshold 40)**, **flip trade allowance ON (1/day)**, **ATR-normalized acceleration ON (consensus scoring)**.
->
 > **Momentum Flip** (added May 2026): When recent 30-min momentum strongly disagrees with OR direction (|recent_mom| ≥ 40), the trade direction flips to follow recent momentum instead of the stale Opening Range signal. This prevents counter-trend entries on reversal days.
 >
 > **Flip Trade Allowance** (added May 2026): Momentum flip trades get a separate allowance beyond the daily trade cap (max 1 flip/day). Flip trades also bypass entry confirmation (reversal enters from the opposite zone) and use active-range stop/target geometry (OR midpoint stop is nonsensical for reversals).
+
+See [Backtest Results (2yr, SPY + QQQ)](#-backtest-results-2yr-spy--qqq) above for current at-defaults performance.
 
 ### Replay Sweet Spot (historical simulation)
 

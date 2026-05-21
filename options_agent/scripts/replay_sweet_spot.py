@@ -202,7 +202,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                  tiered_stag_early_bar: int = 8,
                  tiered_stag_pnl_lo: float = -0.1,
                  tiered_stag_pnl_hi: float = 0.2,
-                 stag_cooldown_bars: int = 6,
+                 stag_cooldown_bars: int = 1,
                  r_anchored_risk: bool = False,
                  r_anchor_pct: float = 0.25,
                    extension_veto: bool = False,
@@ -1067,6 +1067,18 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             "pricing": ("real" if (simulate_options and priced_real)
                         else "synth" if simulate_options else "shares"),
             "is_flip": is_flip,
+            # Diagnostic features for cohort profiling — added 2026-05-20 for
+            # flip / post-stagnation re-entry analysis. Safe to extend; loaders
+            # use .get() with defaults.
+            "rsi_14": round(rsi_val, 2),
+            "vwap": round(_vwap_val, 4) if _vwap_val is not None else None,
+            "price_vs_vwap": (round(price - _vwap_val, 4) if _vwap_val is not None else None),
+            "sma_20": round(sma_20, 4),
+            "zlema_trend": zlema_trend,
+            "or_direction": or_direction,
+            "recent_dir": recent_dir,
+            "atr_14": round(atr_val, 4),
+            "was_post_stag": bool(last_was_stagnation),
         })
 
         if is_flip:
@@ -1226,8 +1238,9 @@ def main():
                         help="Min P&L as fraction of R for early stag exit (default: -0.1)")
     parser.add_argument("--tiered-stag-pnl-hi", type=float, default=0.2,
                         help="Max P&L as fraction of R for early stag exit (default: 0.2)")
-    parser.add_argument("--stag-cooldown-bars", type=int, default=6,
-                        help="Extended cooldown bars after stagnation exit (default: 6 = 30 min)")
+    parser.add_argument("--stag-cooldown-bars", type=int, default=1,
+                        help="Extended cooldown bars after stagnation exit (default: 1 = matches live agent, "
+                             "which has no extra post-stagnation cooldown — see bug_replay_cooldown_timing_drift)")
     parser.add_argument("--r-anchored-risk", action="store_true", default=False,
                         help="A/B: anchor risk to a fixed fraction of range width (default: 25%%) "
                              "instead of (entry - mid_stop). Removes endogeneity between entry "

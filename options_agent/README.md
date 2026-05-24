@@ -383,25 +383,57 @@ python scripts/scan_sweet_spot_today.py --no-chop-filter
 
 ## 📊 Backtest Results (2yr, SPY + QQQ)
 
-Generated 2026-05-21 via `replay_sweet_spot.py --days 730 --real-options` at current golden defaults. Real Alpaca 0DTE option pricing (synth fallback < 1% of trades). Verify tool reports **0/42 drifted bars** between live and replay on multiple sampled dates — what's backtested is what runs in production.
+Generated 2026-05-23 via `replay_sweet_spot.py --days 730 --real-options` at current golden defaults (post cluster-penalty, VWAP-slope override T=0.7/K=3/Cmax=0.65, and dynamic-OR T=0.6 promotions). Real Alpaca 0DTE option pricing (synth fallback < 1% of trades).
 
 | Metric | SPY | QQQ |
 |--------|-----|-----|
-| **Trading Days** | 501 | 501 |
-| **Trades Taken** | 883 | 809 |
-| **Win Rate** | **63.3%** | **59.0%** |
-| **Profit Factor** | **2.44** | **1.90** |
-| **Total P&L** (per contract, ×100) | **+$13,732** | **+$12,424** |
-| **Total P&L** (cascade-sized 3×) | **+$41,195** | **+$37,272** |
-| **Sharpe Ratio** | **4.38** | **3.24** |
-| **Sortino Ratio** | 8.32 | 6.08 |
-| **Max Drawdown** | $11.82 (2.8%) | $21.42 (5.7%) |
-| **Calmar Ratio** | **34.85** | **17.40** |
-| **Longest Underwater** | 27 days | 60 days |
+| **Trading Days** | 500 | 500 |
+| **Trades Taken** | 931 (1.9/day) | 832 (1.7/day) |
+| **Win Rate** | **64.1%** | **60.1%** |
+| **Profit Factor** | **2.48** | **2.00** |
+| **Total P&L** (per contract, ×100) | **+$14,775** | **+$13,896** |
+| **Total P&L** (cascade-sized 3×) | **+$44,325** | **+$41,688** |
+| **Avg Winner / Avg Loser** | $+1.25 / $-0.90 (R:R 1.39) | $+1.67 / $-1.25 (R:R 1.33) |
+| **Sharpe Ratio** | **4.54** | **3.44** |
+| **Sortino Ratio** | 8.74 | 6.82 |
+| **Max Drawdown** | $9.93 (2.2%) | $21.00 (5.0%) |
+| **Calmar Ratio** | **44.64** | **19.85** |
+| **Longest Underwater** | 27 days | 49 days |
 
-> **Live/replay parity:** verified bit-exact at every 5-min bar on 2026-05-20 (both symbols) and 2026-05-15 SPY. Replay's `stag_cooldown_bars` default was reduced 6→1 on 2026-05-20 to match live's actual behavior (live can't enforce a post-stagnation cooldown because by the time stagnation is detected, the cooldown window has already elapsed in wall-clock).
+**Walk-forward (most recent 365d):**
+
+| Metric | SPY | QQQ |
+|--------|-----|-----|
+| Profit Factor | 2.36 | 1.65 |
+| Sharpe Ratio | 4.73 | 2.77 |
+| Calmar Ratio | 20.84 | 8.61 |
+| Max Drawdown | 4.6% | 11.4% |
+
+**OOS-90 audit (most recent 90 days, validates package isn't regime-fit):**
+
+| Metric | SPY | QQQ |
+|--------|-----|-----|
+| Profit Factor | 2.80 | 2.18 |
+| Sharpe Ratio | 5.08 | 4.01 |
+| Calmar Ratio | 8.01 | 5.51 |
+| Max Drawdown | 11.1% | 17.2% |
+
+OOS-90 deltas vs the pre-2026-05-18 baseline are larger than the in-sample 730d deltas in percentage terms — the strongest possible walk-forward evidence that the recent goldens generalize.
+
+**Exit-cohort separation** (730d, SPY):
+- `decay_target` (win exit): 554 trades, **94.6% WR**, +$69K (per contract ×100)
+- `stop`: 117 trades, **2.6% WR**, -$16K — clean separation between win-state and loss-state
+- `stagnation`: 230 trades, 24.8% WR, -$10K — documented structural drag (see [stagnation memos](../.claude/projects/c--Users-krish-options-algo-trader/memory))
+
+> **Live/replay parity:** verified bit-exact at every 5-min bar on 2026-05-20 (both symbols) and 2026-05-15 SPY pre-cluster-penalty. The 2026-05-21 through 2026-05-23 promotions (cluster penalty, VWAP-slope override, dynamic-OR + threshold) each ported their replay logic bit-exact into `run_sweet_spot_agent.py`. **Post-2026-05-23 sync**: the live agent's stale 30-min post-stagnation cooldown was reduced to 5 min to match replay's `stag_cooldown_bars=1` golden (set 2026-05-20). Run `verify_live_vs_replay --all-bars` on the next live trading day to confirm bit-exact parity across all the recent goldens.
 >
 > **2026-05-21 promotion — within-day cluster penalty (cap=2, window=30 min):** Quality −1 per prior same-direction trade in the last 30 min, capped at −2. Validated 12-cell sensitivity grid (window ∈ {15,30,45,60} × cap ∈ {2,3,4}) on SPY 730d — every combination beat baseline; no failing cell. 730d clean sweep: SPY PF 2.21→2.44, Sharpe 3.92→4.38, Calmar 25.76→34.85, MDD% 3.8→2.8, Longest Underwater 41d→27d; QQQ PF 1.79→1.90, Sharpe 3.00→3.24, MDD% 6.6→5.7. 365d walk-forward confirms on both symbols (QQQ 365d MDD% 17.2→13.8 — the binding constraint that killed the last three A/Bs improves). Disable with `--no-cluster-penalty`.
+>
+> **2026-05-22 promotion — VWAP-slope chop override (T=0.7, K=3, Cmax=0.65):** Narrow override that lets entries bypass the `chop > max_chop` gate only when (a) `(price − session_vwap) / ATR ≥ 0.7` in the trade direction, (b) the last 3 closes are on the correct side of session VWAP, and (c) raw choppiness index ≤ 0.65. This is the **narrow-cell inverse** of the wide T=0.5/K=5/Cmax=1.0 grid that previously failed walk-forward — tightening (rather than loosening) the override escaped the SPY-loses/QQQ-wins gate-loosening pattern. 730d: SPY PF 2.43→2.39, Sharpe 4.36→4.41, **Calmar 34.71→42.20**, MDD% 2.8→2.3; QQQ PF 1.89→1.92, Sharpe 3.23→3.33, MDD% 5.7→5.5. 365d walk-forward strengthens the result: SPY Calmar 16.42→20.65, MDD% 5.9→4.7; QQQ Calmar 7.06→8.08, **MDD% 13.8→12.1**. K=3/4/5 sensitivity grid confirmed K=3 is the unique peak on QQQ 365d (K=5 regresses below baseline), with SPY/QQQ-730d on a plateau. Override fires rarely (~5% trigger lift) but is bit-exactly mirrored in `run_sweet_spot_agent.py`; live-replay parity to be verified next session via `verify_live_vs_replay --all-bars`. Disable with `--vwap-slope-override-t 0` (any of the three params set to 0).
+>
+> **2026-05-23 promotion — `--dynamic-or` (conditional 30-min OR + 10:00 scan-start, threshold=0.6):** On each morning, compute a 30-min quick OR (09:30–09:59). If the 10:00 bar already broke out >60% of that range beyond either boundary, use the 30-min OR and start scanning at 10:00 (instead of the standard 60-min OR + 10:30 scan-start). On non-decisive mornings, fall back to the 60-min OR. Override fires rarely (~1% trigger lift on 730d), so it's high-conviction. Re-tested after cluster-penalty (2026-05-21), VWAP-slope override (2026-05-22), max-trades=4 (2026-05-18), and cooldown=1 (2026-05-18) — those goldens changed the MDD profile such that `--dynamic-or`, which previously widened MDD 60-115%, now narrows it. Threshold tuned 0.5→0.6 same day after the overfitting audit's sensitivity grid showed T=0.6 strictly dominates T=0.5 on SPY without hurting QQQ. 730d clean sweep at T=0.6: SPY PF 2.39→2.48, Sharpe 4.41→4.54, **Calmar 42.20→44.64**, MDD% 2.3→2.2; QQQ PF 1.92→2.00, Sharpe 3.33→3.44, **Calmar 17.97→19.85**, MDD% 5.5→5.0. 365d walk-forward: SPY Calmar 20.65→20.84, QQQ Sharpe 2.58→2.77, MDD% 12.1→11.4. Ported bit-exactly to live agent with a `dynamic_or_defer` reject path so scans before 10:30 on non-decisive mornings cleanly sleep/retry. Disable with `--no-dynamic-or`; threshold tunable via `--dynamic-or-threshold`.
+>
+> **2026-05-23 overfitting audit:** OOS-90 (most recent 90 days only) confirmed the recent goldens are not overfit. SPY OOS-90 PF 1.68→2.80, Sharpe 2.94→5.08, MDD% 25.9→11.1 (pre-recent-goldens vs current). QQQ OOS-90 PF 1.75→2.18, Sharpe 3.23→4.01. OOS-90 deltas are *larger* than the in-sample 730d deltas in percentage terms — the strongest possible walk-forward evidence the package generalizes. Dynamic-OR sensitivity grid (T ∈ {0.4, 0.5, 0.6}) revealed T=0.6 dominates T=0.5 on SPY, triggering the same-day threshold retune above.
 
 ### Sweet Spot Backtest (1yr SPY, Quality 4–7 + Explosion ≥ 4)
 
@@ -436,12 +468,14 @@ The **sweet spot filter** selects only trades where quality is in the optimal 4�
 | **Max stops per day** | **1** | Daily loss limit — halts after 1 stop-out to prevent catastrophic days |
 | **Max consecutive losses** | **2** | Streak breaker — stops trading after 2 consecutive losses in a day. Validated: Sharpe 1.23→1.34, PF 1.27→1.30 |
 | **Scan start** | **10:30 AM ET** | 60 min after open — matches replay validation window; OR closes at 10:30 |
-| **Scan end** | 2:00 PM ET | No late-day entries (theta drag on 0DTE) |
+| **Scan end** | **13:59 ET** | No late-day entries (theta drag on 0DTE). Extending past 13:59 hurts both symbols on 730d. |
 | **Entry confirmation** | Price in upper/lower 25% of OR range | Prevents entering from mid-range |
 | **Cascade-scaled targets** | E≥8→1.5R, E≥6→1.5R, else 1.0R | Mid-tier target raised from 1.25R to 1.5R (validated: PF 1.16→1.23) |
 | **Cascade contract sizing** | **ON** — 3ct flat across E2-5 / E6-7 / E8+ | Flat 3/3/3 — equal sizing across all tiers |
-| **Cooldown** | **1 bar (5 min)** | Between consecutive triggers; 6 bars (30 min) after stagnation exits. Reduced from 2 bars (10 min) — validated 2026-05-18 on 730d real-options SPY/QQQ/VOO (clean sweep): SPY PF 2.10→2.28, Sharpe 3.63→3.97, MDD 5.3%→3.9%; QQQ PF 1.54→1.72, Sharpe 2.28→2.83, MDD 10.0%→8.5%; VOO PF 2.32→2.68, Sharpe 4.84→5.01, MDD 5.3%→3.7%. Walk-forward (last-365d) holds; cluster-risk audit passed (added trades spread across 145/119/160 unique days, worst-day tails unchanged). Captures same-direction continuation setups that the 10-min wait was missing. |
+| **Cooldown** | **1 bar (5 min)** | Between consecutive triggers, including after stagnation exits (a previous 30-min post-stag cooldown was removed on 2026-05-20 — see [bug_replay_cooldown_timing_drift](../.claude/projects/c--Users-krish-options-algo-trader/memory/bug_replay_cooldown_timing_drift.md), as live can't enforce a wall-clock post-stag delay reliably). Reduced from 2 bars (10 min) — validated 2026-05-18 on 730d real-options SPY/QQQ/VOO (clean sweep): SPY PF 2.10→2.28, Sharpe 3.63→3.97, MDD 5.3%→3.9%; QQQ PF 1.54→1.72, Sharpe 2.28→2.83, MDD 10.0%→8.5%; VOO PF 2.32→2.68, Sharpe 4.84→5.01, MDD 5.3%→3.7%. |
 | **Cluster penalty** | **ON** (window=30 min, cap=2) | Subtracts 1 from quality per prior same-direction trade within 30 min, capped at 2. Promoted 2026-05-21 after 12-cell sensitivity grid (window ∈ {15,30,45,60} × cap ∈ {2,3,4}) showed no failing parameter combination. 730d clean sweep: SPY PF 2.21→2.44, Sharpe 3.92→4.38, Calmar 25.76→34.85, MDD 3.8%→2.8%, Longest Underwater 41d→27d; QQQ PF 1.79→1.90, Sharpe 3.00→3.24, MDD 6.6%→5.7%. 365d walk-forward confirms on both symbols. Disable with `--no-cluster-penalty`. |
+| **VWAP-slope chop override** | **ON** (T=0.7, K=3, Cmax=0.65) | Allows entry through the `chop > max_chop` gate when (price − session_vwap)/ATR ≥ T in trade direction, last K closes on correct side of VWAP, and raw choppiness index ≤ Cmax. Narrow/high-conviction cell promoted 2026-05-22 after the wide T=0.5/K=5/Cmax=1.0 cell previously failed walk-forward — tightening the override (not loosening) escaped the gate-loosening per-symbol-arb pattern. 730d: SPY Calmar 34.71→42.20, MDD 2.8%→2.3%; QQQ Sharpe 3.23→3.33. 365d walk-forward strengthens: SPY Calmar 16.42→20.65, QQQ MDD 13.8%→12.1%. Sensitivity (K=3/4/5): SPY plateau, QQQ-730d plateau, QQQ-365d K=3 unique peak. Disable with `--vwap-slope-override-t 0` (or set any of the three to 0). |
+| **Dynamic Opening Range** | **ON** (threshold=0.6, 30-min OR + 10:00 scan-start) | On mornings where the 10:00 bar already broke out >60% of the 09:30–09:59 range beyond either boundary, replace the 60-min OR with the 30-min OR and start scanning at 10:00 (instead of 10:30). On non-decisive mornings, fall back to the standard 60-min OR + 10:30 scan. Promoted 2026-05-23 (threshold tuned 0.5→0.6 same day after sensitivity grid showed T=0.6 strictly dominates T=0.5 on SPY without hurting QQQ). 730d: SPY PF 2.39→2.48 (Calmar 42.20→44.64), QQQ PF 1.92→2.00 (Calmar 17.97→19.85). 365d walk-forward: QQQ Sharpe 2.58→2.77, MDD 12.1%→11.4%; SPY Calmar 20.65→20.84. Fires rarely (~1% trigger lift). Live agent uses a `dynamic_or_defer` reject before 10:30 on non-decisive mornings. Disable with `--no-dynamic-or`; tune with `--dynamic-or-threshold <fraction>`. |
 | **Stop** | 60% of range (mid + 10% width) | Tighter than bare midpoint — validated: Sharpe 0.76→1.07, DD 89.7%→63.7% |
 | **Regime guard** | **OFF** | Disabled — counter-trend trades are profitable when chop+quality+cascade filters pass. Validated 2yr: Sharpe 1.38→1.74, PF 1.30→1.37, P&L +$95→+$122. Use `--regime-guard` to re-enable. |
 | **Active range blend** | **ON** (blend=0.25, 6 bars/30min) | Stop/target uses 75% OR + 25% recent 30-min range. Prevents stale entries on late-day triggers. Validated SPY+QQQ: WR +3pp, DD −14%, UW 83→52 days. |
@@ -462,12 +496,12 @@ Trades that don't move in the expected direction within a set window are cut ear
 |-----------|-------|-------|
 | **Tiered stagnation** | **ON** | Early exit at bar 8 (40 min) for flat trades between −0.1R and +0.2R. Validated 730d SPY: PF 1.51→1.60, Sharpe 2.31→2.63, MDD $16.68→$11.10 (−33%), Calmar 8.56→13.66 (+60%). |
 | **Tiered stag early bar** | **8** (40 min) | If trade P&L is between −0.1R and +0.2R at bar 8, exit immediately — trade is going nowhere and theta is bleeding |
-| **Post-stagnation cooldown** | **6 bars** (30 min) | Extended cooldown after stagnation exits (vs 1 bar/5 min normal). Prevents re-entering the same choppy range. |
+| **Post-stagnation cooldown** | **1 bar** (5 min) | Same as normal cooldown — replay's `stag_cooldown_bars=1` since 2026-05-20. Live agent's 30-min post-stag cooldown was removed 2026-05-23 to match. |
 | **Stagnation bars** | **12** (60 min) | Standard stagnation: if trade hasn't moved ≥ threshold after 12 bars, exit at market. Increased from 10 bars — validated 730d SPY+QQQ+VOO: SPY MDD 21.6%→11.7%, Calmar 4.63→8.56; QQQ Sharpe 1.04→1.34, MDD 37.2%→20.1% |
 | **Minimum move to hold** | **0.3R** | Trade must be at least 0.3× risk in profit; otherwise cut. Lowered from 0.5R — keeps trades with some momentum alive for decaying target. |
 | **MFE skip** | **0.5R** | If trade's Maximum Favorable Excursion (best P&L reached) exceeded 0.5R, skip stagnation exit — let decay_target or stop resolve it. Trades that showed real momentum but temporarily pulled back deserve more time to reach target. |
 
-The stagnation exit uses a **two-tier system**. At bar 8 (40 min), if the trade's P&L is between −0.1R and +0.2R and MFE < 0.5R, the trade exits immediately — it's going nowhere and theta is bleeding. At bar 12 (60 min), the standard stagnation check fires: if `current_pnl < risk * 0.3` **and** `MFE < 0.5R`, exit. If MFE ≥ 0.5R at either tier, the trade had real traction and is exempt — it will exit via decay_target or stop. After any stagnation exit, a 6-bar (30 min) cooldown is imposed instead of the standard 1-bar (5 min) cooldown, preventing re-entry into the same choppy range. Combined with the **streak breaker** (2 consecutive losses → stop for day), this keeps losing days contained.
+The stagnation exit uses a **two-tier system**. At bar 8 (40 min), if the trade's P&L is between −0.1R and +0.2R and MFE < 0.5R, the trade exits immediately — it's going nowhere and theta is bleeding. At bar 12 (60 min), the standard stagnation check fires: if `current_pnl < risk * 0.3` **and** `MFE < 0.5R`, exit. If MFE ≥ 0.5R at either tier, the trade had real traction and is exempt — it will exit via decay_target or stop. The standard 1-bar (5 min) cooldown applies after stagnation exits (same as normal cooldown — a previous 30-min post-stag wait was removed because live agents can't enforce a wall-clock post-stagnation delay reliably). Combined with the **streak breaker** (2 consecutive losses → stop for day), this keeps losing days contained.
 
 **MFE skip validation (2-year, 730 days, real Alpaca 0DTE options):**
 

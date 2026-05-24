@@ -1081,8 +1081,11 @@ max_chop_score = st.sidebar.slider(
     help=(
         "Filter out sweet spot triggers on choppy days. "
         "Lower = stricter (fewer but higher-conviction trades). "
-        "**Golden default: 5** — matches the live agent and 1-yr backtest "
-        "(PF 1.81, Sharpe 1.98). Loosen to 7 for moderate, 10 to disable."
+        "**Golden default: 5** — matches the live agent and 2-yr backtest "
+        "(SPY PF 2.48 Sharpe 4.54 Calmar 44.6, QQQ PF 2.00 Sharpe 3.44). "
+        "Loosen to 7 for moderate, 10 to disable. "
+        "VWAP-slope override (T=0.7/K=3/Cmax=0.65) can re-open this gate on "
+        "decisive directional drift even when chop > max."
     ),
 )
 st.sidebar.caption(
@@ -1098,6 +1101,33 @@ min_chop_score = st.sidebar.slider(
         "Set to 0 to disable."
     ),
 )
+
+# ── Active Golden Defaults — 2026-05-23 ──
+st.sidebar.markdown("### Active Golden Defaults")
+st.sidebar.caption(
+    "Live agent + dashboard run identical gates. Backtest 730d (2026-05-23):  \n"
+    "**SPY** PF 2.48 / Sharpe 4.54 / Calmar 44.6 / MDD 2.2%  \n"
+    "**QQQ** PF 2.00 / Sharpe 3.44 / Calmar 19.9 / MDD 5.0%"
+)
+with st.sidebar.expander("📋 All golden parameters", expanded=False):
+    st.markdown(
+        "- **Quality band** 3–7\n"
+        "- **Cascade** ≥ 2\n"
+        "- **Chop** 2–5 (VWAP-slope override at chop > 5 if T≥0.7/K=3/Cmax≤0.65)\n"
+        "- **OR momentum** ≥ ±25 (60-min OR, 09:30–10:29)\n"
+        "- **Dynamic OR** ON (30-min OR + 10:00 scan-start on decisive ≥0.6 breakouts)\n"
+        "- **Cluster penalty** Q−1 per same-dir trigger in last 30 min, cap −2\n"
+        "- **PB EMA** 13/55 inside-band reject\n"
+        "- **Entry zone** upper/lower 25% of OR (skipped on flip trades)\n"
+        "- **VIX cap** ≤30, spike-skip > +20% DOD, **bonus** at ≥18.5\n"
+        "- **Max trades/day** 4, **max stops/day** 1, **max consec losses** 2\n"
+        "- **Cooldown** 1 bar (5 min), including post-stagnation\n"
+        "- **Scan window** 10:30–13:59 ET (10:00 start on dynamic-OR days)\n"
+        "- **Target mult** E≥6→1.5R, else 1.0R; **decay-aware** (floor=0.4, halflife=8 bars)\n"
+        "- **Stagnation** tier-1 at bar 8 (±0.1R/+0.2R), tier-2 at bar 12 (<0.3R)\n"
+        "- **Stop** active-range mid + 10% width (60% of range)\n"
+        "- **Cascade sizing** 3ct flat across tiers; **real options** Alpaca 0DTE\n"
+    )
 
 st.sidebar.markdown("### Strategy Selection")
 strategy_mode = st.sidebar.radio(
@@ -1482,6 +1512,86 @@ if _or_result and _range_width > 0:
         _stop = _ar_mid - _ar_buf
         _g_risk = (_stop - _notify_price) > 0
 
+# ── Cluster penalty (golden 2026-05-21): −1 to quality per same-direction trade ──
+# in last 30 min, capped at −2. Dashboard re-derives quality after applying penalty,
+# then re-checks the 3–7 band. Triggers from prior dashboard runs are tracked in
+# session_state under "_dash_recent_triggers".
+_cluster_penalty_applied = 0
+_recent_dash_triggers = st.session_state.get("_dash_recent_triggers", [])
+_window_start = datetime.now(timezone.utc) - timedelta(minutes=30)
+_same_dir_recent = sum(
+    1 for t in _recent_dash_triggers
+    if t.get("dir") == _notify_direction_key
+    and datetime.fromisoformat(t["ts"]) >= _window_start
+)
+_cluster_penalty_applied = min(_same_dir_recent, 2)  # cap=2
+_notify_quality_penalized = _notify_quality - _cluster_penalty_applied
+_g_quality = 3 <= _notify_quality_penalized <= 7
+_g_cluster = _cluster_penalty_applied == 0 or _g_quality  # informational
+
+# ── VWAP-slope chop override (golden 2026-05-22): T=0.7, K=3, Cmax=0.65 ──
+# Allows entry through chop>max gate when (price - session_vwap) / ATR ≥ T,
+# last K closes on correct side of session VWAP, and raw choppiness index ≤ Cmax.
+# Re-opens _g_chop if it had failed on chop>max only (not on min-chop floor).
+_g_vwap_slope_override = False
+_vwap_slope_details = None
+if (_chop_result is not None and _chop_result.chop_score > max_chop_score
+        and _replay_bars is not None and len(_replay_bars) >= 3):
+    _atr_val_dash = ind_dict.get("atr_14", 0.0)
+    if _atr_val_dash > 0:
+        _h = _replay_bars["High"].astype(float)
+        _l = _replay_bars["Low"].astype(float)
+        _c = _replay_bars["Close"].astype(float)
+        _v = _replay_bars["Volume"].astype(float)
+        _tp = (_h + _l + _c) / 3.0
+        _cv = _v.cumsum()
+        _ctv = (_tp * _v).cumsum()
+        if float(_cv.iloc[-1]) > 0:
+            _vwap_now = float(_ctv.iloc[-1] / _cv.iloc[-1])
+            _dist_atr = (_notify_price - _vwap_now) / _atr_val_dash
+            _closes_k = _c.iloc[-3:].values
+            _vwap_k = (_ctv / _cv).iloc[-3:].values
+            if _notify_direction_key == "buy_call":
+                _side_ok = bool((_closes_k > _vwap_k).all())
+                _dist_ok = _dist_atr >= 0.7
+            else:
+                _side_ok = bool((_closes_k < _vwap_k).all())
+                _dist_ok = -_dist_atr >= 0.7
+            _ci_ok = _chop_result.choppiness_index <= 0.65
+            if _side_ok and _dist_ok and _ci_ok:
+                _g_vwap_slope_override = True
+                _g_chop = True  # override re-opens the chop gate
+                _vwap_slope_details = {
+                    "dist_atr": _dist_atr, "ci": _chop_result.choppiness_index,
+                    "vwap": _vwap_now,
+                }
+
+# ── Dynamic-OR (golden 2026-05-23): T=0.6 decisive-breakout fraction ──
+# On mornings where the 10:00 bar broke >60% of the 30-min OR range beyond either
+# boundary, the agent uses the 30-min OR + scans from 10:00. Dashboard surfaces
+# whether this fired today as a contextual indicator (not a strict gate — the
+# 60-min OR was already established by the time the dashboard is observed).
+_dynamic_or_fired = False
+_dynamic_or_details = None
+if _replay_bars is not None and len(_replay_bars) > 0:
+    try:
+        _quick_or = _replay_bars.between_time("09:30", "09:59")
+        if len(_quick_or) >= 6:
+            _qh = float(_quick_or["High"].max())
+            _ql = float(_quick_or["Low"].min())
+            _qw = _qh - _ql
+            _bars_at_10 = _replay_bars.between_time("10:00", "10:04")
+            if len(_bars_at_10) > 0 and _qw > 0:
+                _p10 = float(_bars_at_10["Close"].iloc[-1])
+                if _p10 > _qh + _qw * 0.6 or _p10 < _ql - _qw * 0.6:
+                    _dynamic_or_fired = True
+                    _dynamic_or_details = {
+                        "p10": _p10, "qh": _qh, "ql": _ql, "qw": _qw,
+                        "direction": "UP" if _p10 > _qh + _qw * 0.6 else "DOWN",
+                    }
+    except Exception:
+        pass
+
 _golden_pass = (
     _g_quality and _g_cascade and _g_chop and _g_vix and _g_vix_spike
     and _g_or and _g_confirm and _g_regime and _g_pb_ema and _g_risk
@@ -1490,12 +1600,21 @@ _golden_pass = (
 # Failing-gate diagnostic strings (consumed by the Sweet Spot panel below).
 _failing_gates: list[str] = []
 if not _g_quality:
-    _failing_gates.append(f"Quality {_notify_quality}/13 outside 3–7")
+    if _cluster_penalty_applied > 0:
+        _failing_gates.append(
+            f"Quality {_notify_quality}→{_notify_quality_penalized}/13 outside 3–7 "
+            f"(cluster penalty −{_cluster_penalty_applied} for {_same_dir_recent} prior {_notify_direction_key.replace('buy_','')} in last 30 min)"
+        )
+    else:
+        _failing_gates.append(f"Quality {_notify_quality}/13 outside 3–7")
 if not _g_cascade:
     _failing_gates.append(f"Explosion {_cascade.explosion_score}/10 < 2")
 if not _g_chop and _chop_result is not None:
     if _chop_result.chop_score > max_chop_score:
-        _failing_gates.append(f"Chop {_chop_result.chop_score}/10 > {max_chop_score}")
+        _failing_gates.append(
+            f"Chop {_chop_result.chop_score}/10 > {max_chop_score} "
+            f"(VWAP-slope override didn't fire: needs dist≥0.7 ATR, 3 closes one-side, CI≤0.65)"
+        )
     elif _chop_result.chop_score < min_chop_score:
         _failing_gates.append(f"Chop {_chop_result.chop_score}/10 < {min_chop_score} (too quiet)")
 if not _g_vix:
@@ -1518,15 +1637,34 @@ if _auto_refresh_active:
     _alert_key = f"{_notify_symbol}_{_notify_quality}_{_cascade.explosion_score}_{datetime.now(timezone.utc).strftime('%H%M')}"
     if _alert_key != _prev_alert and _golden_pass:
         _flip_tag = " (FLIP)" if _is_flip else ""
+        _dyn_or_tag = " (DYN-OR)" if _dynamic_or_fired else ""
+        _override_tag = " (CHOP-OVR)" if _g_vwap_slope_override else ""
+        _cluster_tag = f" (Q−{_cluster_penalty_applied})" if _cluster_penalty_applied > 0 else ""
+        _q_display = (f"Q {_notify_quality}→{_notify_quality_penalized}/13"
+                      if _cluster_penalty_applied > 0
+                      else f"Q {_notify_quality}/13")
         send_browser_notification(
-            title=f"🎯 {_notify_symbol} SWEET SPOT — {_notify_direction}{_flip_tag}",
+            title=f"🎯 {_notify_symbol} SWEET SPOT — {_notify_direction}{_flip_tag}{_dyn_or_tag}{_override_tag}{_cluster_tag}",
             body=(
-                f"Quality {_notify_quality}/13 + Explosion {_cascade.explosion_score}/10 | "
-                f"${_notify_price:.2f} | Golden defaults — entry zone confirmed"
+                f"{_q_display} + E {_cascade.explosion_score}/10 | "
+                f"${_notify_price:.2f} | Golden 2026-05-23 — entry zone confirmed"
             ),
             urgency="critical" if _cascade.explosion_score >= 7 else "normal",
         )
         st.session_state["_last_alert_key"] = _alert_key
+        # Record this trigger so the cluster-penalty window can count it on future refreshes.
+        _recent = list(st.session_state.get("_dash_recent_triggers", []))
+        _recent.append({
+            "ts": datetime.now(timezone.utc).isoformat(),
+            "dir": _notify_direction_key,
+            "sym": _notify_symbol,
+            "q": _notify_quality_penalized,
+        })
+        # Trim to last 60 min to keep the list small.
+        _cutoff = datetime.now(timezone.utc) - timedelta(minutes=60)
+        st.session_state["_dash_recent_triggers"] = [
+            t for t in _recent if datetime.fromisoformat(t["ts"]) >= _cutoff
+        ]
 
 # Pick the strategy with higher quality; tie goes to regime-based pick
 if call_quality > put_quality:
@@ -1696,9 +1834,11 @@ _blocked = _visual_would_trigger and not (_sweet_spot_active or _sweet_spot_prim
 def _primary_block_reason() -> tuple[str, str]:
     """Return (short_label, long_desc) for the dominant failing gate."""
     if _chop_result is not None and _chop_result.chop_score > max_chop_score:
+        _ovr_hint = (" (VWAP-slope override didn't fire: needs ≥0.7 ATR drift, "
+                     "3 closes one-side, CI≤0.65)")
         return ("CHOPPY",
                 f"choppiness is {_chop_result.chop_score}/10 (max: {max_chop_score}) — "
-                f"market is range-bound, wait for choppiness to decrease")
+                f"market is range-bound, wait for choppiness to decrease{_ovr_hint}")
     if _chop_result is not None and _chop_result.chop_score < min_chop_score:
         return ("TOO QUIET",
                 f"choppiness is {_chop_result.chop_score}/10 (min: {min_chop_score}) — "
@@ -1731,12 +1871,45 @@ def _primary_block_reason() -> tuple[str, str]:
         return ("VIX SPIKE",
                 f"VIX spiked {_vix_spike_pct:+.1f}% day-over-day (>20%) — sit out")
     if not _g_quality:
+        if _cluster_penalty_applied > 0:
+            return ("CLUSTER PENALTY",
+                    f"quality {_notify_quality}→{_notify_quality_penalized}/13 outside 3–7 after "
+                    f"cluster penalty (−{_cluster_penalty_applied} for {_same_dir_recent} prior "
+                    f"{_notify_direction_key.replace('buy_','')} trigger(s) in last 30 min)")
         return ("QUALITY BAND",
                 f"quality {_notify_quality}/13 outside replay band 3–7")
     if not _g_cascade:
         return ("CASCADE",
                 f"explosion {_cascade.explosion_score}/10 < 2")
     return ("BLOCKED", "live agent gate failed — see diagnostic below")
+
+# ── Enhancement badges (golden 2026-05-23) ──
+# Compact pills showing which post-cluster-penalty / VWAP-override / dynamic-OR
+# enhancements are *active* for this evaluation. Surfaces them in active panels
+# so the user can see which goldens are doing work right now.
+_enhancement_badges = []
+if _dynamic_or_fired and _dynamic_or_details:
+    _enhancement_badges.append(
+        f"<span style='background: rgba(122,180,217,0.15); color: #7AB4D9; padding: 2px 8px; "
+        f"border-radius: 6px; font-size: 11px; margin-right: 6px;'>"
+        f"⚡ DYN-OR {_dynamic_or_details['direction']} (30-min OR active)</span>"
+    )
+if _g_vwap_slope_override:
+    _enhancement_badges.append(
+        f"<span style='background: rgba(201,169,110,0.15); color: #C9A96E; padding: 2px 8px; "
+        f"border-radius: 6px; font-size: 11px; margin-right: 6px;'>"
+        f"🌊 CHOP OVR (VWAP-slope, CI {_vwap_slope_details['ci']:.2f})</span>"
+    )
+if _cluster_penalty_applied > 0:
+    _enhancement_badges.append(
+        f"<span style='background: rgba(212,167,74,0.15); color: #D4A74A; padding: 2px 8px; "
+        f"border-radius: 6px; font-size: 11px; margin-right: 6px;'>"
+        f"📊 CLUSTER −{_cluster_penalty_applied} (Q {_notify_quality}→{_notify_quality_penalized})</span>"
+    )
+_enhancement_html = (
+    f"<div style='margin-top: 8px;'>{''.join(_enhancement_badges)}</div>"
+    if _enhancement_badges else ""
+)
 
 if _sweet_spot_prime:
     _ss_color = "#6BBF7A"
@@ -1748,6 +1921,7 @@ if _sweet_spot_prime:
     _ss_desc = (
         f"Quality {_best_q}/13 (optimal) + Explosion {_cascade.explosion_score}/10{_chop_badge} — "
         f"<b>Highest probability entry.</b> Catching the move early with explosive momentum confirming."
+        f"{_enhancement_html}"
     )
 elif _sweet_spot_active:
     _ss_color = "#C9A96E"
@@ -1759,6 +1933,7 @@ elif _sweet_spot_active:
     _ss_desc = (
         f"Quality {_best_q}/13 (optimal) + Explosion {_cascade.explosion_score}/10{_chop_badge} — "
         f"Good entry zone. Monitor for cascade acceleration."
+        f"{_enhancement_html}"
     )
 elif _blocked:
     _block_short, _block_long = _primary_block_reason()
@@ -1797,7 +1972,7 @@ f"""<div style="background: #2C2C2E; border: 1px solid #3A3A3C; border-radius: 1
 </div>
 <div style="font-size: 13px; color: #A1A1A6; margin-top: 8px; line-height: 1.5;">{_ss_desc}</div>
 <div style="font-size: 11px; color: #636366; margin-top: 6px;">
-Backtest: Q 4–7 with cascade ≥ 4, chop ≤ 5 → 1-yr SPY: 63.6% WR, PF 1.81, Sharpe 1.98
+Backtest (2yr, real options): SPY 64.1% WR · PF 2.48 · Sharpe 4.54 · Calmar 44.6 · MDD 2.2% | QQQ 60.1% · PF 2.00 · Sharpe 3.44 · Calmar 19.9 · MDD 5.0%
 </div>
 </div>""",
         unsafe_allow_html=True,

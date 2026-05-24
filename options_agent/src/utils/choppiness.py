@@ -63,6 +63,8 @@ def compute_choppiness(
     vix: float | None = None,     # Current VIX level for adaptive scaling (None = no scaling)
     atr: float | None = None,     # Current ATR for adaptive scaling (None = no scaling)
     median_atr: float | None = None,  # Median ATR over lookback period (for ATR-based scaling)
+    formula_v2b: bool = False,    # If True, chop_score = ci_pts + rev_pts only (drop bar_ratio + consec)
+    formula_2xci: bool = False,   # If True, chop_score = 2*ci_pts + rev_pts + bar_ratio_pts + consec_pts (max 13)
 ) -> ChoppinessResult:
     """Compute choppiness metrics from 5-min bars.
 
@@ -191,7 +193,12 @@ def compute_choppiness(
     else:
         consec_pts = 0
 
-    chop_score = min(10, ci_pts + rev_pts + bar_ratio_pts + consec_pts)
+    if formula_v2b:
+        chop_score = ci_pts + rev_pts  # max 6
+    elif formula_2xci:
+        chop_score = (2 * ci_pts) + rev_pts + bar_ratio_pts + consec_pts  # max 13
+    else:
+        chop_score = min(10, ci_pts + rev_pts + bar_ratio_pts + consec_pts)
 
     # ── Overall Verdict ──
     is_choppy = chop_score >= 6

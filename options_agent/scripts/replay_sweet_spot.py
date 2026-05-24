@@ -190,7 +190,8 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                slippage: float = 0.0,
                vix: float = 20.0,
                prior_bars: pd.DataFrame | None = None,
-               dynamic_or: bool = False,
+               dynamic_or: bool = True,
+               dynamic_or_threshold: float = 0.6,
                real_options: bool = False,
                decay_aware_targets: bool = False,
                 decay_target_floor: float = 0.4,
@@ -213,9 +214,11 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                     momentum_flip: bool = False,
                     momentum_flip_threshold: float = 40.0,
                     max_flip_trades: int = 1,
-                    vwap_slope_override_t: float = 0.0,
-                    vwap_slope_override_k: int = 0,
-                    vwap_slope_override_cmax: float = 0.0,
+                    vwap_slope_override_t: float = 0.7,
+                    vwap_slope_override_k: int = 3,
+                    vwap_slope_override_cmax: float = 0.65,
+                    chop_formula_v2b: bool = False,
+                    chop_formula_2xci: bool = False,
                     debug: bool = False) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
@@ -256,9 +259,9 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             bars_at_10 = day_bars.between_time("10:00", "10:04")
             if len(bars_at_10) > 0 and quick_width > 0:
                 price_at_10 = float(bars_at_10["Close"].iloc[-1])
-                # Decisive = price moved >50% of quick range beyond the range boundary
-                if price_at_10 > quick_high + quick_width * 0.5 or \
-                   price_at_10 < quick_low - quick_width * 0.5:
+                # Decisive = price moved >threshold of quick range beyond the range boundary
+                if price_at_10 > quick_high + quick_width * dynamic_or_threshold or \
+                   price_at_10 < quick_low - quick_width * dynamic_or_threshold:
                     # Use 30-min OR and allow earlier scanning
                     range_high = quick_high
                     range_low = quick_low
@@ -585,7 +588,8 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         # but the gate uses the golden-calibrated fixed max_chop threshold.
         # Low-vol adaptive tightening (VIX<15 → max_chop-1) showed +5.7% per-trade
         # efficiency but −0.2% total P&L over 2yr — insufficient for golden default.
-        chop = compute_choppiness(bars_to_now, vix=vix, atr=atr_val)
+        chop = compute_choppiness(bars_to_now, vix=vix, atr=atr_val,
+                                  formula_v2b=chop_formula_v2b, formula_2xci=chop_formula_2xci)
         chop_override_fired = False
         if chop.chop_score > max_chop:
             # ── VWAP-slope override (audit-driven A/B) ──
@@ -1064,6 +1068,10 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             "quality": quality,
             "explosion": explosion,
             "chop": chop.chop_score,
+            "chop_ci_pts": chop.ci_pts,
+            "chop_rev_pts": chop.rev_pts,
+            "chop_bar_ratio_pts": chop.bar_ratio_pts,
+            "chop_consec_pts": chop.consec_pts,
             "chop_rejects_before": chop_rejects_today,
             "first_chop_reject_time": first_chop_reject_ts.strftime("%H:%M") if first_chop_reject_ts is not None else None,
             "chop_override_fired": chop_override_fired,
@@ -1207,8 +1215,20 @@ def main():
                         help="Contracts for E 6-7 tier (default: 3)")
     parser.add_argument("--cascade-size-high", type=int, default=3,
                         help="Contracts for E 8+ tier (default: 3)")
-    parser.add_argument("--dynamic-or", action="store_true",
-                        help="Enable dynamic opening range (30-min quick OR when breakout is decisive by 10:00)")
+    parser.add_argument("--dynamic-or", action="store_true", default=True,
+                        help="Enable dynamic opening range (30-min quick OR + 10:00 scan-start when "
+                             "the 10:00 bar already broke >50% of the 30-min range beyond the boundary). "
+                             "GOLDEN (2026-05-23): re-tested post cluster-penalty/max-trades=4/cooldown=1/"
+                             "VWAP-slope-override goldens. 730d clean sweep both symbols (SPY Calmar "
+                             "42.20→43.77, QQQ Sharpe 3.33→3.47); QQQ 365d Sharpe +0.15.")
+    parser.add_argument("--no-dynamic-or", dest="dynamic_or", action="store_false",
+                        help="Disable dynamic OR (golden default is ON).")
+    parser.add_argument("--dynamic-or-threshold", type=float, default=0.6,
+                        help="Dynamic OR decisive-breakout fraction (golden: 0.6 = price must "
+                             "move >60%% of 30-min range beyond either boundary by 10:00). "
+                             "Promoted 0.5→0.6 on 2026-05-23 after sensitivity grid: T=0.6 "
+                             "strictly dominates T=0.5 on SPY (PF +0.03 730d, +0.02 365d, Calmar "
+                             "+0.77 730d), QQQ flat plateau.")
     parser.add_argument("--research-mode", action="store_true",
                         help="Loose pre-golden defaults for exploration (chop 10, max-quality 8, no caps, 10:35 scan, no Gainz)")
     parser.add_argument("--shares", action="store_true",
@@ -1289,6 +1309,15 @@ def main():
     parser.add_argument("--debug-date", type=str, default=None,
                         help="Print per-bar debug scores for a specific date (YYYY-MM-DD). "
                              "No performance impact on other days.")
+    parser.add_argument("--chop-formula-v2b", action="store_true", default=False,
+                        help="Use chop_score = ci_pts + rev_pts (drop bar_ratio + consec). "
+                             "Sub-component analysis (2026-05-22) showed consec_pts always 0 in practice "
+                             "and bar_ratio_pts correlates with ci_pts, double-counting slow-grind noise. "
+                             "Use with --max-chop 4 to keep equivalent strictness.")
+    parser.add_argument("--chop-formula-2xci", action="store_true", default=False,
+                        help="Use chop_score = 2*ci_pts + rev_pts + bar_ratio_pts + consec_pts (max 13). "
+                             "Double-weights ci_pts since it was the most discriminating component "
+                             "in trigger-set analysis. Use with --max-chop 8.")
     parser.add_argument("--momentum-flip", action="store_true", default=True,
                         help="Golden default ON: when recent 30-min momentum strongly disagrees with OR direction, "
                              "flip the trade direction to follow recent momentum instead of OR.")
@@ -1298,12 +1327,12 @@ def main():
                         help="Recent momentum score threshold to trigger direction flip (default: 40)")
     parser.add_argument("--max-flip-trades", type=int, default=1,
                         help="Max additional flip trades per day beyond max-trades-per-day (default: 1)")
-    parser.add_argument("--vwap-slope-override-t", type=float, default=0.0,
-                        help="VWAP-slope chop override: (price-vwap)/atr threshold (0=disabled)")
-    parser.add_argument("--vwap-slope-override-k", type=int, default=0,
-                        help="VWAP-slope chop override: consecutive bars on correct side of VWAP (0=disabled)")
-    parser.add_argument("--vwap-slope-override-cmax", type=float, default=0.0,
-                        help="VWAP-slope chop override: max raw CI allowed for override (0=disabled, 1.0=unconditional)")
+    parser.add_argument("--vwap-slope-override-t", type=float, default=0.7,
+                        help="VWAP-slope chop override: (price-vwap)/atr threshold (golden: 0.7, 0=disabled)")
+    parser.add_argument("--vwap-slope-override-k", type=int, default=3,
+                        help="VWAP-slope chop override: consecutive bars on correct side of VWAP (golden: 3, 0=disabled)")
+    parser.add_argument("--vwap-slope-override-cmax", type=float, default=0.65,
+                        help="VWAP-slope chop override: max raw CI allowed for override (golden: 0.65, 0=disabled, 1.0=unconditional)")
     parser.add_argument("--export-triggers", default=None,
                         help="If set, write all triggers as JSON to this path (audit/analysis).")
     args = parser.parse_args()
@@ -1445,6 +1474,7 @@ def main():
                               vix=day_vix,
                               prior_bars=prior_bars,
                               dynamic_or=args.dynamic_or,
+                              dynamic_or_threshold=args.dynamic_or_threshold,
                               real_options=args.real_options and not args.no_real_options,
                               decay_aware_targets=not args.no_decay_aware_targets,
                               decay_target_floor=args.decay_target_floor,
@@ -1470,6 +1500,8 @@ def main():
                               vwap_slope_override_t=args.vwap_slope_override_t,
                               vwap_slope_override_k=args.vwap_slope_override_k,
                               vwap_slope_override_cmax=args.vwap_slope_override_cmax,
+                              chop_formula_v2b=args.chop_formula_v2b,
+                              chop_formula_2xci=args.chop_formula_2xci,
                               debug=(debug_date is not None and day == debug_date))
         all_triggers.extend(triggers)
 

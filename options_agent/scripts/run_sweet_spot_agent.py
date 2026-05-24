@@ -322,7 +322,12 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
                      prior_triggers: list[dict] | None = None,
                      cluster_penalty: bool = True,
                      cluster_penalty_window_min: int = 30,
-                     cluster_penalty_cap: int = 2) -> dict:
+                     cluster_penalty_cap: int = 2,
+                     vwap_slope_override_t: float = 0.7,
+                     vwap_slope_override_k: int = 3,
+                     vwap_slope_override_cmax: float = 0.65,
+                     dynamic_or: bool = True,
+                     dynamic_or_threshold: float = 0.6) -> dict:
     """Evaluate sweet spot conditions. Always returns a verdict dict.
 
     Returns a dict with either:
@@ -476,8 +481,43 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
             return {"status": "reject", "stage": "cascade",
                     "reason": f"explosion {cascade.explosion_score} < 2", **diag_common}
         if chop.chop_score > max_chop:
-            return {"status": "reject", "stage": "chop",
-                    "reason": f"chop {chop.chop_score} > max {max_chop}", **diag_common}
+            # ── VWAP-slope override (golden: T=0.7 / K=3 / Cmax=0.65) ──
+            # Allow entry through chop gate IF directional drift vs session VWAP is
+            # confirmed: (price-vwap)/atr >= T for buy_call (or <= -T for buy_put),
+            # K consecutive bars on the correct side of VWAP, and chop.ci <= Cmax.
+            # Mirror of replay logic in replay_sweet_spot.py:599-637; must stay bit-exact.
+            chop_override_fired = False
+            atr_val = float(indicators.atr_14) if indicators.atr_14 else 0.0
+            if (vwap_slope_override_t > 0 and vwap_slope_override_k > 0
+                    and vwap_slope_override_cmax > 0 and atr_val > 0
+                    and len(day_bars) >= vwap_slope_override_k):
+                _h2 = day_bars["High"].astype(float)
+                _l2 = day_bars["Low"].astype(float)
+                _c2 = day_bars["Close"].astype(float)
+                _v2 = day_bars["Volume"].astype(float)
+                tp2 = (_h2 + _l2 + _c2) / 3.0
+                cv2 = _v2.cumsum()
+                ctv2 = (tp2 * _v2).cumsum()
+                cumvol_n = float(cv2.iloc[-1])
+                if cumvol_n > 0:
+                    vwap_now = float(ctv2.iloc[-1] / cumvol_n)
+                    dist_atr = (indicators.current_price - vwap_now) / atr_val
+                    closes_arr = _c2.iloc[-vwap_slope_override_k:].values
+                    vwap_arr = (ctv2 / cv2).iloc[-vwap_slope_override_k:].values
+                    if direction == "buy_call":
+                        side_ok = bool((closes_arr > vwap_arr).all())
+                        dist_ok = dist_atr >= vwap_slope_override_t
+                    else:
+                        side_ok = bool((closes_arr < vwap_arr).all())
+                        dist_ok = -dist_atr >= vwap_slope_override_t
+                    ci_ok = chop.choppiness_index <= vwap_slope_override_cmax
+                    if side_ok and dist_ok and ci_ok:
+                        chop_override_fired = True
+                        logger.info("CHOP OVERRIDE (vwap-slope): dir=%s chop=%d ci=%.2f dist_atr=%.2f",
+                                    direction, chop.chop_score, chop.choppiness_index, dist_atr)
+            if not chop_override_fired:
+                return {"status": "reject", "stage": "chop",
+                        "reason": f"chop {chop.chop_score} > max {max_chop}", **diag_common}
         if chop.chop_score < min_chop:
             return {"status": "reject", "stage": "chop",
                     "reason": f"chop {chop.chop_score} < min {min_chop}", **diag_common}
@@ -499,6 +539,35 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
         range_high = or_result.range_high if or_result else indicators.current_price
         range_low = or_result.range_low if or_result else indicators.current_price
         range_width = range_high - range_low
+
+        # ── Dynamic Opening Range override (golden 2026-05-23) ──
+        # If the 30-min quick OR (09:30–09:59) was decisively broken by the 10:00 bar
+        # (price moved >50% of quick range beyond either boundary), replace the
+        # 60-min range with the 30-min range. If the break did NOT fire and we are
+        # still before 10:30 ET, defer this scan — the 60-min OR isn't complete yet.
+        # Mirror of replay_sweet_spot.py:248-275; must stay bit-exact for live-replay parity.
+        if dynamic_or:
+            decisive_fired = False
+            quick_or_bars = day_bars.between_time("09:30", "09:59")
+            if len(quick_or_bars) >= 6:
+                quick_high = float(quick_or_bars["High"].max())
+                quick_low = float(quick_or_bars["Low"].min())
+                quick_width = quick_high - quick_low
+                bars_at_10 = day_bars.between_time("10:00", "10:04")
+                if len(bars_at_10) > 0 and quick_width > 0:
+                    price_at_10 = float(bars_at_10["Close"].iloc[-1])
+                    if (price_at_10 > quick_high + quick_width * dynamic_or_threshold
+                            or price_at_10 < quick_low - quick_width * dynamic_or_threshold):
+                        range_high = quick_high
+                        range_low = quick_low
+                        range_width = quick_width
+                        decisive_fired = True
+                        logger.info("DYNAMIC OR: decisive 10:00 break (price=%.2f, 30-min range %.2f-%.2f) — using 30-min OR",
+                                    price_at_10, quick_low, quick_high)
+            if not decisive_fired and now.hour * 60 + now.minute < 10 * 60 + 30:
+                return {"status": "reject", "stage": "dynamic_or_defer",
+                        "reason": "dynamic-OR: no decisive 10:00 break; deferring until 60-min OR closes at 10:30",
+                        **diag_common}
 
         # ── Active range blend: 75% OR + 25% recent 30-min range (golden: 0.25) ──
         ACTIVE_RANGE_BLEND = 0.25
@@ -646,6 +715,8 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             pb_ema: bool = True,
             pb_ema_fast: int = 13,
             pb_ema_slow: int = 55,
+            dynamic_or: bool = True,
+            dynamic_or_threshold: float = 0.6,
             verbose_rejects: bool = False):
     """Run the agent for one trading day."""
     today = date.today()
@@ -701,7 +772,6 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             logger.warning("VIX sit-out check failed: %s — proceeding anyway", e)
 
     last_trigger = None
-    last_was_stagnation = False  # Track for extended post-stagnation cooldown
     scan_count = 0
     trades_today = 0
     flip_trades_today = 0
@@ -963,9 +1033,6 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             open_directions.pop(occ_sym, None)
                             if close_reason == "stop":
                                 stops_today += 1
-                            # Stagnation flag: only set on stagnation, reset on all other exits
-                            # (matches replay: last_was_stagnation = outcome == "stagnation")
-                            last_was_stagnation = (close_reason == "stagnation")
                             # Consecutive loss tracking by exit type (matches replay logic):
                             # stop/stagnation = likely loss, target/gainz = likely win
                             if close_reason in ("stop", "stagnation", "time_stop"):
@@ -999,9 +1066,13 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             time.sleep(300)
             continue
 
-        # Wait for OR to form + scan start delay
-        if not is_past_or(min_after_open=scan_start_min):
-            logger.info("Waiting for scan window (OR + %d min)...", scan_start_min)
+        # Wait for OR to form + scan start delay.
+        # With dynamic_or=True (golden), allow scanning from 10:00 (30 min after open);
+        # check_sweet_spot will verify the 10:00 decisive-breakout condition before
+        # using the 30-min OR, and defer otherwise.
+        effective_scan_start_min = 30 if dynamic_or else scan_start_min
+        if not is_past_or(min_after_open=effective_scan_start_min):
+            logger.info("Waiting for scan window (OR + %d min)...", effective_scan_start_min)
             _write_heartbeat(f"run_day_{symbol}_waiting_scan_window")
             time.sleep(60)
             continue
@@ -1030,7 +1101,9 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         verdict = check_sweet_spot(symbol, max_chop=max_chop, min_chop=min_chop,
                                    regime_guard=regime_guard,
                                    pb_ema=pb_ema, pb_ema_fast=pb_ema_fast, pb_ema_slow=pb_ema_slow,
-                                   prior_triggers=triggers)
+                                   prior_triggers=triggers,
+                                   dynamic_or=dynamic_or,
+                                   dynamic_or_threshold=dynamic_or_threshold)
 
         # Persist every verdict (rejects + triggers) to a daily JSONL for offline analysis.
         try:
@@ -1054,8 +1127,12 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             if at_regular_cap and not trigger.get("is_flip", False):
                 logger.info("✗ %s skip [trade_cap] regular cap reached, non-flip trigger ignored", symbol)
             else:
-                # Deduplicate (5 min cooldown, 30 min after stagnation exit)
-                cooldown_sec = 1800 if last_was_stagnation else 300
+                # Deduplicate (5 min cooldown — matches replay golden cooldown-bars=1).
+                # Post-stagnation cooldown is also 5 min: stag_cooldown_bars=1 in replay
+                # since 2026-05-20, because live can't enforce a longer post-stag cooldown
+                # in wall-clock (by the time stagnation is detected, the cooldown window
+                # has already elapsed). See bug_replay_cooldown_timing_drift memory.
+                cooldown_sec = 300
                 # Block new entries when a same-direction option is already open
                 # (avoids duplicate buys on the same OCC after restart-recovery).
                 already_open_same_dir = any(
@@ -1391,6 +1468,11 @@ def main():
                              "Off by default — only post-direction rejects (gates that killed an actual setup) log.")
     parser.add_argument("--vix-spike-pct", type=float, default=20.0,
                         help="Skip days where VIX spiked >N%% day-over-day (0=disabled, default: 20)")
+    parser.add_argument("--no-dynamic-or", action="store_true",
+                        help="Disable dynamic OR (default: ON — 30-min OR + 10:00 scan-start "
+                             "on decisive-breakout mornings; falls back to 60-min OR otherwise).")
+    parser.add_argument("--dynamic-or-threshold", type=float, default=0.6,
+                        help="Dynamic OR decisive-breakout fraction (golden: 0.6).")
     args = parser.parse_args()
 
     paper_trade = not args.no_paper
@@ -1432,6 +1514,8 @@ def main():
                             pb_ema=not args.no_pb_ema,
                             pb_ema_fast=args.pb_ema_fast,
                             pb_ema_slow=args.pb_ema_slow,
+                            dynamic_or=not args.no_dynamic_or,
+                            dynamic_or_threshold=args.dynamic_or_threshold,
                             verbose_rejects=args.verbose_rejects)
                     # After market close, sleep until next day 9:25 AM
                     tomorrow_925 = (now + timedelta(days=1)).replace(hour=9, minute=25, second=0)
@@ -1474,6 +1558,8 @@ def main():
                 pb_ema=not args.no_pb_ema,
                 pb_ema_fast=args.pb_ema_fast,
                 pb_ema_slow=args.pb_ema_slow,
+                dynamic_or=not args.no_dynamic_or,
+                dynamic_or_threshold=args.dynamic_or_threshold,
                 verbose_rejects=args.verbose_rejects)
 
 

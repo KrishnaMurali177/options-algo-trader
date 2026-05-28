@@ -45,7 +45,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from src.utils.alpaca_data import fetch_bars as alpaca_fetch_bars
+from src.utils.alpaca_data import fetch_bars as alpaca_fetch_bars, is_trading_day
 from src.opening_range import OpeningRangeAnalyzer
 from src.recent_momentum import RecentMomentumAnalyzer
 from src.momentum_cascade import MomentumCascadeDetector
@@ -1481,57 +1481,56 @@ def main():
         logger.info("Starting in daemon mode — will run every trading day")
         while True:
             now = get_et_now()
-            # Only run on weekdays
-            if now.weekday() < 5:
-                if now.hour < 9 or (now.hour == 9 and now.minute < 25):
-                    # Wait until 9:25 AM
-                    wait_until = now.replace(hour=9, minute=25, second=0, microsecond=0)
-                    sleep_sec = (wait_until - now).total_seconds()
-                    logger.info("Sleeping %.0f min until pre-market...", sleep_sec / 60)
-                    _safe_sleep(max(sleep_sec, 60), f"daemon_{args.symbol}_pre_market")
-                elif now.hour < 16:
-                    run_day(args.symbol, args.qty, args.max_chop, paper_trade,
-                            min_chop=args.min_chop,
-                            max_trades_per_day=args.max_trades_per_day,
-                            max_stops_per_day=args.max_stops_per_day,
-                            max_consecutive_losses=args.max_consecutive_losses,
-                            scan_start_min=args.scan_start_min,
-                            scan_end=args.scan_end,
-                            gainz_exit=not args.no_gainz_exit,
-                            gainz_body_ratio=args.gainz_body_ratio,
-                            gainz_rsi_overbought=args.gainz_rsi_overbought,
-                            gainz_rsi_oversold=args.gainz_rsi_oversold,
-                            gainz_min_profit_r=args.gainz_min_profit_r,
-                            trade_shares=args.shares,
-                            contracts=args.contracts,
-                            target_delta=args.target_delta,
-                            cascade_size_low=args.cascade_size_low,
-                            cascade_size_mid=args.cascade_size_mid,
-                            cascade_size_high=args.cascade_size_high,
-                            regime_guard=args.regime_guard,
-                            vix_max=args.vix_max,
-                            vix_spike_pct=args.vix_spike_pct,
-                            pb_ema=not args.no_pb_ema,
-                            pb_ema_fast=args.pb_ema_fast,
-                            pb_ema_slow=args.pb_ema_slow,
-                            dynamic_or=not args.no_dynamic_or,
-                            dynamic_or_threshold=args.dynamic_or_threshold,
-                            verbose_rejects=args.verbose_rejects)
-                    # After market close, sleep until next day 9:25 AM
-                    tomorrow_925 = (now + timedelta(days=1)).replace(hour=9, minute=25, second=0)
-                    sleep_sec = (tomorrow_925 - get_et_now()).total_seconds()
-                    logger.info("Market closed. Sleeping %.1f hours until tomorrow...", sleep_sec / 3600)
-                    _safe_sleep(max(sleep_sec, 3600), f"daemon_{args.symbol}_post_market")
+            if now.weekday() >= 5 or not is_trading_day(now):
+                if now.weekday() >= 5:
+                    days_until_monday = (7 - now.weekday()) % 7 or 7
+                    next_day = (now + timedelta(days=days_until_monday)).replace(hour=9, minute=25, second=0)
+                    label = "Weekend"
                 else:
-                    # After hours — sleep until tomorrow
-                    _safe_sleep(3600, f"daemon_{args.symbol}_after_hours")
+                    next_day = (now + timedelta(days=1)).replace(hour=9, minute=25, second=0)
+                    label = "Market holiday"
+                sleep_sec = (next_day - now).total_seconds()
+                logger.info("%s. Sleeping %.1f hours...", label, sleep_sec / 3600)
+                _safe_sleep(max(sleep_sec, 3600), f"daemon_{args.symbol}_closed")
+            elif now.hour < 9 or (now.hour == 9 and now.minute < 25):
+                wait_until = now.replace(hour=9, minute=25, second=0, microsecond=0)
+                sleep_sec = (wait_until - now).total_seconds()
+                logger.info("Sleeping %.0f min until pre-market...", sleep_sec / 60)
+                _safe_sleep(max(sleep_sec, 60), f"daemon_{args.symbol}_pre_market")
+            elif now.hour < 16:
+                run_day(args.symbol, args.qty, args.max_chop, paper_trade,
+                        min_chop=args.min_chop,
+                        max_trades_per_day=args.max_trades_per_day,
+                        max_stops_per_day=args.max_stops_per_day,
+                        max_consecutive_losses=args.max_consecutive_losses,
+                        scan_start_min=args.scan_start_min,
+                        scan_end=args.scan_end,
+                        gainz_exit=not args.no_gainz_exit,
+                        gainz_body_ratio=args.gainz_body_ratio,
+                        gainz_rsi_overbought=args.gainz_rsi_overbought,
+                        gainz_rsi_oversold=args.gainz_rsi_oversold,
+                        gainz_min_profit_r=args.gainz_min_profit_r,
+                        trade_shares=args.shares,
+                        contracts=args.contracts,
+                        target_delta=args.target_delta,
+                        cascade_size_low=args.cascade_size_low,
+                        cascade_size_mid=args.cascade_size_mid,
+                        cascade_size_high=args.cascade_size_high,
+                        regime_guard=args.regime_guard,
+                        vix_max=args.vix_max,
+                        vix_spike_pct=args.vix_spike_pct,
+                        pb_ema=not args.no_pb_ema,
+                        pb_ema_fast=args.pb_ema_fast,
+                        pb_ema_slow=args.pb_ema_slow,
+                        dynamic_or=not args.no_dynamic_or,
+                        dynamic_or_threshold=args.dynamic_or_threshold,
+                        verbose_rejects=args.verbose_rejects)
+                tomorrow_925 = (now + timedelta(days=1)).replace(hour=9, minute=25, second=0)
+                sleep_sec = (tomorrow_925 - get_et_now()).total_seconds()
+                logger.info("Market closed. Sleeping %.1f hours until tomorrow...", sleep_sec / 3600)
+                _safe_sleep(max(sleep_sec, 3600), f"daemon_{args.symbol}_post_market")
             else:
-                # Weekend — sleep until Monday 9:25
-                days_until_monday = (7 - now.weekday()) % 7 or 7
-                monday = (now + timedelta(days=days_until_monday)).replace(hour=9, minute=25, second=0)
-                sleep_sec = (monday - now).total_seconds()
-                logger.info("Weekend. Sleeping %.1f hours until Monday...", sleep_sec / 3600)
-                _safe_sleep(max(sleep_sec, 3600), f"daemon_{args.symbol}_weekend")
+                _safe_sleep(3600, f"daemon_{args.symbol}_after_hours")
     else:
         # Single day run
         run_day(args.symbol, args.qty, args.max_chop, paper_trade,

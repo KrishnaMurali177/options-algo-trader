@@ -1,5 +1,8 @@
 # Changelog
 
+- [2026-05-27] Modified: options_agent/src/utils/alpaca_data.py — Added is_trading_day() using Alpaca calendar API to detect market holidays
+- [2026-05-27] Modified: options_agent/scripts/run_sweet_spot_agent.py — Daemon loop now skips market holidays (not just weekends) using Alpaca calendar
+- [2026-05-22] Created: options_agent/dashboard/pages/1_Backtest.py — Added /backtest page for screenshot-friendly backtest results
 - [2026-05-17] Modified: options_agent/scripts/verify_live_vs_replay.py — Layer 3: fix prior_bars to 5-day window, prefer bar snapshots from journal
 - [2026-05-16] Modified: options_agent/scripts/run_sweet_spot_agent.py — Layer 2: snapshot extended_bars to parquet at trigger time for perfect reproducibility
 - [2026-05-16] Modified: options_agent/scripts/run_sweet_spot_agent.py — Layer 1: store indicator snapshot (SMA, EMA, RSI, VIX, bar counts) in trigger journal entries

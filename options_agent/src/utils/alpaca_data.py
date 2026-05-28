@@ -55,6 +55,26 @@ def _get_client():
     return StockHistoricalDataClient(api_key=api_key, secret_key=secret_key, raw_data=False)
 
 
+def is_trading_day(date: datetime | None = None) -> bool:
+    """Check if a given date is an NYSE trading day using Alpaca's calendar API."""
+    from alpaca.trading.client import TradingClient
+    from dotenv import load_dotenv
+
+    load_dotenv()
+    api_key = os.environ.get("ALPACA_API_KEY", "")
+    secret_key = os.environ.get("ALPACA_SECRET_KEY", "")
+    if not api_key or not secret_key:
+        logger.warning("Alpaca keys not set — falling back to weekday check")
+        d = date or datetime.now(timezone.utc)
+        return d.weekday() < 5
+
+    client = TradingClient(api_key=api_key, secret_key=secret_key, paper=True)
+    d = (date or datetime.now(timezone.utc)).date()
+    from alpaca.trading.requests import GetCalendarRequest
+    cal = client.get_calendar(GetCalendarRequest(start=str(d), end=str(d)))
+    return len(cal) > 0 and str(cal[0].date) == str(d)
+
+
 def _cache_path(symbol: str, interval: str, days_back: int) -> Path:
     """Return path for the cached Parquet file."""
     return _CACHE_DIR / f"{symbol}_{interval}_{days_back}d.parquet"

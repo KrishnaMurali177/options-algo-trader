@@ -142,20 +142,19 @@ class TestDiscordRetry:
 
 class TestTradeNotifier:
     def test_no_channels_configured(self):
-        tn = TradeNotifier(gmail_recipient="", discord_webhook_url="")
+        tn = TradeNotifier(discord_webhook_url="")
         assert len(tn._channels) == 0
         tn.notify_trade_entry(SAMPLE_TRIGGER)
 
     def test_discord_only(self):
         tn = TradeNotifier(
-            gmail_recipient="",
             discord_webhook_url="https://discord.com/api/webhooks/test/test",
         )
         assert len(tn._channels) == 1
         assert isinstance(tn._channels[0], DiscordNotifier)
 
     def test_dispatches_to_all_channels(self):
-        tn = TradeNotifier(gmail_recipient="", discord_webhook_url="")
+        tn = TradeNotifier(discord_webhook_url="")
         mock_ch1 = MagicMock()
         mock_ch2 = MagicMock()
         tn._channels = [mock_ch1, mock_ch2]
@@ -165,7 +164,7 @@ class TestTradeNotifier:
         mock_ch2.notify_trade_entry.assert_called_once_with(SAMPLE_TRIGGER)
 
     def test_one_channel_failure_doesnt_block_others(self):
-        tn = TradeNotifier(gmail_recipient="", discord_webhook_url="")
+        tn = TradeNotifier(discord_webhook_url="")
         failing = MagicMock()
         failing.notify_trade_entry.side_effect = Exception("boom")
         working = MagicMock()
@@ -175,7 +174,7 @@ class TestTradeNotifier:
         working.notify_trade_entry.assert_called_once_with(SAMPLE_TRIGGER)
 
     def test_exit_dispatches(self):
-        tn = TradeNotifier(gmail_recipient="", discord_webhook_url="")
+        tn = TradeNotifier(discord_webhook_url="")
         mock_ch = MagicMock()
         tn._channels = [mock_ch]
 

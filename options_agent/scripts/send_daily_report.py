@@ -45,7 +45,6 @@ def main():
     total_scans = count_scans(date_str)
 
     notifier = TradeNotifier(
-        gmail_recipient=os.getenv("GMAIL_RECIPIENT", ""),
         discord_webhook_url=os.getenv("DISCORD_WEBHOOK_URL", ""),
     )
     notifier.notify_daily_report(date_str, trades, total_scans)

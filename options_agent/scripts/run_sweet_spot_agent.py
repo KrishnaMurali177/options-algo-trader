@@ -736,7 +736,6 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             logger.error("Paper trader init failed: %s — running journal-only", e)
 
     notifier = TradeNotifier(
-        gmail_recipient=os.getenv("GMAIL_RECIPIENT", ""),
         discord_webhook_url=os.getenv("DISCORD_WEBHOOK_URL", ""),
     )
 

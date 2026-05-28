@@ -1,5 +1,8 @@
 # Changelog
 
+- [2026-05-27] Deleted: options_agent/src/utils/email_notifier.py, scripts/setup_gmail_auth.py, scripts/monitor_agent.py, tests/test_email_notifier.py — Removed Gmail/email notification system entirely
+- [2026-05-27] Modified: options_agent/src/utils/trade_notifier.py — Removed Gmail channel, Discord-only now
+- [2026-05-27] Modified: options_agent/requirements.txt — Removed google-api-python-client, google-auth-httplib2, google-auth-oauthlib
 - [2026-05-27] Created: options_agent/scripts/ensure_agents.sh — Cron script that checks Colima/Docker before starting containers
 - [2026-05-27] Modified: docker-compose.yml — Added proper Streamlit healthcheck for dashboard service
 - [2026-05-27] Modified: options_agent/scripts/run_sweet_spot_agent.py — Reverted cooldown to 600s (10 min) and max_trades_per_day to 3

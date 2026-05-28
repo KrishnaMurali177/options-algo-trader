@@ -11,9 +11,10 @@ __pycache__/
 # Environment
 .env
 
-# Gmail OAuth credentials
+# OAuth / secrets
 gmail_credentials.json
 gmail_token.json
+client_secret*.json
 
 # Data cache
 options_agent/data_cache/

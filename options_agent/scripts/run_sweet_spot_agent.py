@@ -1132,7 +1132,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                 # since 2026-05-20, because live can't enforce a longer post-stag cooldown
                 # in wall-clock (by the time stagnation is detected, the cooldown window
                 # has already elapsed). See bug_replay_cooldown_timing_drift memory.
-                cooldown_sec = 300
+                cooldown_sec = 600
                 # Block new entries when a same-direction option is already open
                 # (avoids duplicate buys on the same OCC after restart-recovery).
                 already_open_same_dir = any(
@@ -1418,7 +1418,7 @@ def main():
     parser.add_argument("--max-chop", type=int, default=5, help="Max choppiness (default: 5)")
     parser.add_argument("--min-chop", type=int, default=2,
                         help="Min choppiness floor (golden: 2). C=0-1 trades are ~50%% WR over 2yr.")
-    parser.add_argument("--max-trades-per-day", type=int, default=4, help="Max trades per day (default: 4)")
+    parser.add_argument("--max-trades-per-day", type=int, default=3, help="Max trades per day (default: 3)")
     parser.add_argument("--max-stops-per-day", type=int, default=1, help="Halt after N stop-outs (default: 1)")
     parser.add_argument("--max-consecutive-losses", type=int, default=2,
                         help="Stop trading after N consecutive losses (default: 2)")

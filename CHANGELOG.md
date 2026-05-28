@@ -1,5 +1,9 @@
 # Changelog
 
+- [2026-05-27] Created: options_agent/scripts/ensure_agents.sh — Cron script that checks Colima/Docker before starting containers
+- [2026-05-27] Modified: docker-compose.yml — Added proper Streamlit healthcheck for dashboard service
+- [2026-05-27] Modified: options_agent/scripts/run_sweet_spot_agent.py — Reverted cooldown to 600s (10 min) and max_trades_per_day to 3
+- [2026-05-27] Modified: options_agent/scripts/replay_sweet_spot.py — Reverted max_trades_per_day default to 3
 - [2026-05-27] Modified: options_agent/src/utils/alpaca_data.py — Added is_trading_day() using Alpaca calendar API to detect market holidays
 - [2026-05-27] Modified: options_agent/scripts/run_sweet_spot_agent.py — Daemon loop now skips market holidays (not just weekends) using Alpaca calendar
 - [2026-05-22] Created: options_agent/dashboard/pages/1_Backtest.py — Added /backtest page for screenshot-friendly backtest results

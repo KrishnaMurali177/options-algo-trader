@@ -83,3 +83,6 @@
 - [2026-05-13] Modified: options_agent/scripts/run_sweet_spot_agent.py — Added heartbeat writes to all sleep points in run_day() to fix false unhealthy status
 - [2026-05-13] Modified: run.sh — Added caffeinate to prevent macOS sleep while agents are running; auto-starts on agents/all/restart, stops on stop-agents/down
 - [2026-05-13] Modified: run.sh — Changed caffeinate from -s to -i (prevents idle sleep on AC or battery)
+- [2026-05-28] Modified: options_agent/sweet_spot_journal/2026-05-28_QQQ.json — Marked QQQ 12:00 trade as forced_closure (manual close, exclude from perf analysis)
+- [2026-05-28] Modified: options_agent/sweet_spot_journal/2026-05-28_SPY.json — Marked SPY 12:00 trade as forced_closure (manual close, exclude from perf analysis)
+- [2026-05-29] Modified: options_agent/scripts/run_sweet_spot_agent.py — Fixed _safe_sleep to use wall clock (time.time) instead of monotonic clock so agents wake up after laptop lid suspend

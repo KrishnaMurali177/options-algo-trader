@@ -1341,14 +1341,15 @@ def _write_heartbeat(state: str) -> None:
     }))
 
 def _safe_sleep(seconds: float, label: str = "waiting") -> None:
-    """Sleep in 30-second chunks with periodic heartbeat.
+    """Sleep in chunks with periodic heartbeat and wall-clock awareness.
 
-    Long time.sleep() causes Docker healthcheck to mark container unhealthy
-    (threshold: 600s). This keeps the heartbeat alive during overnight/weekend waits.
+    Uses time.time() (wall clock) instead of time.monotonic() so that
+    system suspend (e.g. laptop lid close) counts toward elapsed time.
+    When the lid reopens, the sleep exits immediately if the target has passed.
     """
-    end = time.monotonic() + seconds
+    deadline = time.time() + seconds
     while True:
-        remaining = end - time.monotonic()
+        remaining = deadline - time.time()
         if remaining <= 0:
             break
         _write_heartbeat(label)

@@ -96,3 +96,4 @@
 - [2026-05-29] Created: options_agent/scripts/run_weekly_agent.py — CLI wrapper + daemon loop for weekly agent
 - [2026-05-29] Modified: docker-compose.yml — Added agent-spy-weekly and agent-qqq-weekly services on weekly profile
 - [2026-05-29] Created: options_agent/tests/test_weekly.py — 34 tests covering all weekly agent modules
+- [2026-05-29] Modified: options_agent/dashboard/app.py — Added weekly_journal loading and Trade Type filter (All/0DTE/Weekly)

@@ -2745,18 +2745,23 @@ from pathlib import Path as _Path
 from datetime import date as _date, timedelta as _td
 
 _journal_dir = _Path(__file__).resolve().parent.parent / "sweet_spot_journal"
+_weekly_journal_dir = _Path(__file__).resolve().parent.parent / "weekly_journal"
 _all_trades = []
-if _journal_dir.exists():
-    for _jf in sorted(_journal_dir.glob("*.json")):
-        # Accept both legacy `<date>.json` and per-symbol `<date>_<SYM>.json`.
+for _jdir in [_journal_dir, _weekly_journal_dir]:
+    if not _jdir.exists():
+        continue
+    for _jf in sorted(_jdir.glob("*.json")):
+        if "verdicts" in _jf.name:
+            continue
         _stem_date = _jf.stem.split("_")[0]
         try:
             _d = _date.fromisoformat(_stem_date)
         except ValueError:
             continue
         try:
-            for _t in _json.loads(_jf.read_text()):
-                # Skip trades flagged as inconclusive (e.g. force-flattened during cleanup).
+            _raw = _json.loads(_jf.read_text())
+            _items = _raw if isinstance(_raw, list) else [_raw]
+            for _t in _items:
                 if _t.get("discard"):
                     continue
                 _t["_date"] = _stem_date
@@ -2770,11 +2775,15 @@ if not _all_trades:
         f"`{_journal_dir.name}/` after its first weekday run. Check back tomorrow."
     )
 else:
-    _wcol1, _wcol2, _wcol3 = st.columns([2, 2, 6])
+    _wcol1, _wcol2, _wcol3, _wcol4 = st.columns([2, 2, 2, 4])
     _window = _wcol1.selectbox("Window", ["All-time", "Last 30 days", "Last 7 days"], index=0)
     _sym_filter = _wcol2.selectbox(
         "Symbol",
         ["All"] + sorted({t.get("symbol") for t in _all_trades if t.get("symbol")}),
+    )
+    _type_filter = _wcol3.selectbox(
+        "Trade Type",
+        ["All", "0DTE", "Weekly"],
     )
 
     _today = _date.today()
@@ -2785,10 +2794,19 @@ else:
     else:
         _cutoff = None
 
+    def _matches_type(_t, _tf):
+        if _tf == "All":
+            return True
+        _mode = _t.get("trade_mode", "0dte_option")
+        if _tf == "Weekly":
+            return _mode == "weekly_option"
+        return _mode != "weekly_option"
+
     _trades = [
         t for t in _all_trades
         if (_cutoff is None or _date.fromisoformat(t["_date"]) >= _cutoff)
         and (_sym_filter == "All" or t.get("symbol") == _sym_filter)
+        and _matches_type(t, _type_filter)
     ]
     _closed = [t for t in _trades if t.get("closed") and t.get("pnl") is not None]
     _open = [t for t in _trades if not t.get("closed")]

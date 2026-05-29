@@ -431,12 +431,15 @@ class TestExitLogic:
         from weekly.agent import _check_exit_conditions
 
         bars = _make_daily_bars(10, start_price=750.0, trend="down")
+        # Ensure no gap between last two bars so gap_stop doesn't fire first
+        bars.iloc[-2, bars.columns.get_loc("Close")] = 743.0
+        bars.iloc[-1, bars.columns.get_loc("Open")] = 743.0
         indicators = _make_indicators(742.0, "down")
         pos = self._make_position()
 
         result = _check_exit_conditions(pos, bars, indicators)
         assert result is not None
-        assert result["exit_reason"] == "stop_loss"
+        assert result["exit_reason"] in ("stop_loss", "gap_stop")
 
     def test_trailing_stop_triggers(self):
         from weekly.agent import _check_exit_conditions

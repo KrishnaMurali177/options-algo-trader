@@ -97,3 +97,8 @@
 - [2026-05-29] Modified: docker-compose.yml — Added agent-spy-weekly and agent-qqq-weekly services on weekly profile
 - [2026-05-29] Created: options_agent/tests/test_weekly.py — 34 tests covering all weekly agent modules
 - [2026-05-29] Modified: options_agent/dashboard/app.py — Added weekly_journal loading and Trade Type filter (All/0DTE/Weekly)
+- [2026-05-29] Created: options_agent/weekly/backtest/option_pricing.py — Real Alpaca + synthetic weekly option pricing with BS delta estimation
+- [2026-05-29] Created: options_agent/weekly/backtest/replay_weekly.py — Core weekly replay engine with multi-day position lifecycle
+- [2026-05-29] Created: options_agent/weekly/backtest/run_weekly_backtest.py — CLI runner for single-config weekly backtests
+- [2026-05-29] Created: options_agent/weekly/backtest/sweep_weekly.py — Parameter grid search framework (quick ~1K combos, full ~10K+)
+- [2026-05-29] Created: options_agent/tests/test_weekly_backtest.py — 25 tests for backtester modules

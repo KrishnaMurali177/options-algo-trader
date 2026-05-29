@@ -86,3 +86,13 @@
 - [2026-05-28] Modified: options_agent/sweet_spot_journal/2026-05-28_QQQ.json — Marked QQQ 12:00 trade as forced_closure (manual close, exclude from perf analysis)
 - [2026-05-28] Modified: options_agent/sweet_spot_journal/2026-05-28_SPY.json — Marked SPY 12:00 trade as forced_closure (manual close, exclude from perf analysis)
 - [2026-05-29] Modified: options_agent/scripts/run_sweet_spot_agent.py — Fixed _safe_sleep to use wall clock (time.time) instead of monotonic clock so agents wake up after laptop lid suspend
+- [2026-05-29] Created: options_agent/weekly/ — New self-contained weekly options agent package
+- [2026-05-29] Created: options_agent/weekly/chain/weekly_chain.py — Weekly option chain selector (3-7 DTE, Friday expiry, delta 0.35)
+- [2026-05-29] Created: options_agent/weekly/signals/daily_range.py — DailyRangeAnalyzer replacing OpeningRangeAnalyzer for daily bars
+- [2026-05-29] Created: options_agent/weekly/signals/daily_momentum.py — DailyMomentumAnalyzer replacing RecentMomentumAnalyzer for daily bars
+- [2026-05-29] Created: options_agent/weekly/signals/weekly_indicators.py — Builds MarketIndicators from daily OHLCV bars
+- [2026-05-29] Created: options_agent/weekly/state/position_manager.py — Multi-day position persistence with per-position JSON files
+- [2026-05-29] Created: options_agent/weekly/agent.py — Core weekly agent entry/exit/lifecycle logic
+- [2026-05-29] Created: options_agent/scripts/run_weekly_agent.py — CLI wrapper + daemon loop for weekly agent
+- [2026-05-29] Modified: docker-compose.yml — Added agent-spy-weekly and agent-qqq-weekly services on weekly profile
+- [2026-05-29] Created: options_agent/tests/test_weekly.py — 34 tests covering all weekly agent modules

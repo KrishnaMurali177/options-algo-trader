@@ -59,3 +59,45 @@ services:
     restart: unless-stopped
     profiles:
       - live
+
+  agent-spy-weekly:
+    image: options-algo-trader
+    container_name: options-agent-spy-weekly
+    command: python scripts/run_weekly_agent.py --daemon --symbol SPY --verbose-rejects
+    env_file:
+      - options_agent/.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AGENT_SYMBOL=SPY_WEEKLY
+    volumes:
+      - ./options_agent/logs:/app/logs
+      - ./options_agent/weekly_journal:/app/weekly_journal
+      - ./options_agent/data_cache:/app/data_cache
+      - ./options_agent/config:/app/config
+      - ./options_agent/scripts:/app/scripts:ro
+      - ./options_agent/src:/app/src:ro
+      - ./options_agent/weekly:/app/weekly:ro
+    restart: unless-stopped
+    profiles:
+      - weekly
+
+  agent-qqq-weekly:
+    image: options-algo-trader
+    container_name: options-agent-qqq-weekly
+    command: python scripts/run_weekly_agent.py --daemon --symbol QQQ --verbose-rejects
+    env_file:
+      - options_agent/.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AGENT_SYMBOL=QQQ_WEEKLY
+    volumes:
+      - ./options_agent/logs:/app/logs
+      - ./options_agent/weekly_journal:/app/weekly_journal
+      - ./options_agent/data_cache:/app/data_cache
+      - ./options_agent/config:/app/config
+      - ./options_agent/scripts:/app/scripts:ro
+      - ./options_agent/src:/app/src:ro
+      - ./options_agent/weekly:/app/weekly:ro
+    restart: unless-stopped
+    profiles:
+      - weekly

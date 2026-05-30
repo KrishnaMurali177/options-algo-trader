@@ -134,28 +134,28 @@ def fetch_weekly_option_bars(
     start_date: date,
     end_date: date,
 ) -> pd.DataFrame:
-    """Fetch daily option bars for a weekly contract across the hold period."""
+    """Fetch 5-min option bars for a weekly contract across the hold period.
+
+    Uses 5-min bars instead of daily because Alpaca often skips daily bars
+    on low-volume days (e.g., the entry date may have only a few trades,
+    enough for 5-min bars but not a daily aggregate).
+    """
     from src.utils.alpaca_options import fetch_option_bars
 
-    start_dt = datetime(start_date.year, start_date.month, start_date.day, 9, 30, tzinfo=timezone.utc)
-    end_dt = datetime(end_date.year, end_date.month, end_date.day, 20, 0, tzinfo=timezone.utc)
+    start_dt = datetime(start_date.year, start_date.month, start_date.day, 9, 0, tzinfo=timezone.utc)
+    end_dt = datetime(end_date.year, end_date.month, end_date.day, 21, 0, tzinfo=timezone.utc)
 
-    return fetch_option_bars(occ, start_dt, end_dt, interval="1day")
+    return fetch_option_bars(occ, start_dt, end_dt, interval="5min")
 
 
 def weekly_option_close_on_date(bars: pd.DataFrame, target_date: date) -> float | None:
-    """Return option close price on a specific date."""
+    """Return option close price on a specific date (last 5-min bar close of that day)."""
     if bars is None or bars.empty:
         return None
-    for ts, row in bars.iterrows():
-        if hasattr(ts, 'date'):
-            if ts.date() == target_date:
-                return float(row["Close"])
-        else:
-            d = pd.Timestamp(ts).date()
-            if d == target_date:
-                return float(row["Close"])
-    return None
+    day_bars = bars[bars.index.date == target_date]
+    if day_bars.empty:
+        return None
+    return float(day_bars["Close"].iloc[-1])
 
 
 # ── Synthetic Pricing ──

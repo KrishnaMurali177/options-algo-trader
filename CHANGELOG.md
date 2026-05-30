@@ -110,4 +110,6 @@
 - [2026-05-30] Created: options_agent/docs/weekly_sweep_report.md — Detailed sweep report with Jane Street quant critique (gitignored)
 - [2026-05-30] Modified: .gitignore — Added sweep report and uncertainty analysis to gitignore
 - [2026-05-30] Created: options_agent/docs/synth_vs_real_uncertainty.md — Synth vs real pricing comparison with uncertainty bands
+- [2026-05-30] Modified: options_agent/weekly/backtest/option_pricing.py — Fixed real pricing: use 5-min bars (not 1-day) to avoid missing low-volume entry dates; extract EOD close per date
+- [2026-05-30] Modified: options_agent/docs/2026-05-30_synth_vs_real_uncertainty.md — Updated to v2 with actual Alpaca option prices (42/42 real-priced). Synth overestimates by 13x, SPY not viable, QQQ marginal
 - [2026-05-30] Modified: options_agent/docs/ — Dated all reference docs (YYYY-MM-DD prefix), added version/status/next-update headers, gitignore uses wildcard `20*`

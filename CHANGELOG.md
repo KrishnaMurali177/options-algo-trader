@@ -102,3 +102,5 @@
 - [2026-05-29] Created: options_agent/weekly/backtest/run_weekly_backtest.py — CLI runner for single-config weekly backtests
 - [2026-05-29] Created: options_agent/weekly/backtest/sweep_weekly.py — Parameter grid search framework (quick ~1K combos, full ~10K+)
 - [2026-05-29] Created: options_agent/tests/test_weekly_backtest.py — 25 tests for backtester modules
+- [2026-05-29] Modified: options_agent/weekly/backtest/replay_weekly.py — Fixed timezone mismatch with Alpaca tz-aware daily bar index
+- [2026-05-29] Modified: options_agent/README.md — Added full Weekly Options Agent section with architecture, parameters, backtest results, and CLI usage

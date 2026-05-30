@@ -159,20 +159,37 @@ options_agent/
 │   ├── backtester.py           # Intraday replay backtester (5m / 1h)
 │   ├── models/                 # Pydantic data models
 │   ├── strategies/
-│   │   ├── buy_call.py         # 🚀 Buy Call scalping strategy
-│   │   ├── buy_put.py          # 💥 Buy Put scalping strategy
+│   │   ├── buy_call.py         # Buy Call scalping strategy
+│   │   ├── buy_put.py          # Buy Put scalping strategy
 │   │   └── base_strategy.py    # Abstract base class
 │   └── utils/
 │       ├── quality_scorer.py   # Shared 11-point quality scorer
-│       └── choppiness.py       # Choppiness detection & direction stability
+│       ├── choppiness.py       # Choppiness detection & direction stability
+│       └── gainz.py            # GainzAlgoV2 early exit detector
+├── weekly/                     # Weekly options agent (3-7 DTE, self-contained)
+│   ├── agent.py                # Entry/exit/lifecycle logic
+│   ├── chain/weekly_chain.py   # Option chain selector (Friday expiry)
+│   ├── signals/                # Daily-bar signal adapters
+│   │   ├── daily_range.py      # DailyRangeAnalyzer
+│   │   ├── daily_momentum.py   # DailyMomentumAnalyzer
+│   │   └── weekly_indicators.py # Indicators from daily OHLCV
+│   ├── state/position_manager.py # Multi-day position persistence
+│   └── backtest/               # Backtester + parameter sweep
+│       ├── option_pricing.py   # Real Alpaca + synthetic pricing
+│       ├── replay_weekly.py    # Core replay engine
+│       ├── run_weekly_backtest.py # CLI runner
+│       └── sweep_weekly.py     # Grid search framework
 ├── mcp_server/                 # Custom Robinhood MCP server (robin_stocks)
 ├── scripts/                    # CLI runners & backtest
 │   ├── scan_sweet_spot_today.py # Sweet spot scanner with choppiness guardrails
 │   ├── backtest_sweet_spot.py  # Sweet spot backtester with chop filter
 │   ├── backtest.py             # General intraday backtester
 │   ├── run_agent.py            # CLI agent runner
+│   ├── run_weekly_agent.py     # Weekly agent CLI wrapper + daemon
 │   └── run_scheduled.py        # Scheduled execution (9:35, 12:00, 3:30 ET)
 └── tests/                      # Unit & integration tests
+    ├── test_weekly.py          # 34 tests for weekly agent modules
+    └── test_weekly_backtest.py # 25 tests for backtester modules
 ```
 
 ---
@@ -662,6 +679,152 @@ python scripts/track_sweet_spots.py --review-date 2026-05-01
 # Show all historical results
 python scripts/track_sweet_spots.py --history
 ```
+
+## 📅 Weekly Options Agent (3-7 DTE)
+
+A **separate, modular** weekly options system that trades 3-7 DTE contracts using daily bar analysis. Completely self-contained under `weekly/` — zero modifications to the 0DTE pipeline.
+
+### Architecture
+
+```
+options_agent/weekly/
+├── __init__.py
+├── agent.py                        # Core entry/exit/lifecycle logic
+├── chain/
+│   └── weekly_chain.py             # Option chain selector (Friday expiry, delta targeting)
+├── signals/
+│   ├── daily_range.py              # DailyRangeAnalyzer (replaces 60-min OR for daily bars)
+│   ├── daily_momentum.py           # DailyMomentumAnalyzer (replaces 30-min momentum)
+│   └── weekly_indicators.py        # RSI/MACD/ATR/BB/SMA/ZLEMA from daily OHLCV
+├── state/
+│   └── position_manager.py         # Multi-day position persistence (per-position JSON)
+└── backtest/
+    ├── option_pricing.py           # Real Alpaca + synthetic pricing, BS delta estimation
+    ├── replay_weekly.py            # Core replay engine (multi-day position lifecycle)
+    ├── run_weekly_backtest.py       # CLI runner for single-config backtests
+    └── sweep_weekly.py             # Parameter grid search (quick ~1K, full ~10K+ combos)
+```
+
+### Signal Stack (Daily Bar Adapters)
+
+The weekly agent reuses the **same scoring functions** as the 0DTE pipeline (`compute_quality_score()`, `compute_choppiness()`, `MomentumCascadeDetector`, `gainz_signal`) but feeds them daily-bar inputs via adapted analyzers:
+
+| 0DTE Component | Weekly Adapter | What Changes |
+|----------------|----------------|--------------|
+| `OpeningRangeAnalyzer` (60-min) | `DailyRangeAnalyzer` | Prior day's high/low as "range", scores breakout + RSI/MACD/SMA/volume |
+| `RecentMomentumAnalyzer` (30-min) | `DailyMomentumAnalyzer` | Last 5 daily bars: price trend, green/red ratio, RSI, SMA20, volume |
+| `build_indicators()` (5-min) | `build_weekly_indicators()` | RSI-14, MACD 12/26/9, ATR-14, BB 20/2, SMA 20/50/200, ZLEMA 8/21 on daily closes |
+
+### Weekly Theta Decay Model
+
+```
+decay = premium * 0.70 * (1 - sqrt(dte_remaining / dte_at_entry))
+```
+
+Produces the correct convex curve: ~7% decay/day early, ~25% mid-week, ~39% on penultimate day.
+
+### Trailing Stop Tiers (R-Multiples)
+
+| Position reaches | Stop moves to |
+|-----------------|---------------|
+| +1.0R | Breakeven |
+| +1.5R | +0.5R |
+| +2.0R | +1.0R |
+
+### Golden Parameters (Weekly)
+
+| Parameter | Value | Notes |
+|-----------|-------|-------|
+| **Quality range** | 3-7 | Same as 0DTE |
+| **Chop range** | 2-5 | Same as 0DTE |
+| **Explosion min** | 2 | Cascade detector on daily bars (synthesized mode) |
+| **Entry days** | Mon, Tue, Wed | Avoid late-week entries (insufficient DTE) |
+| **Entry window** | 10:00-11:00 ET | Morning evaluation only |
+| **Target delta** | 0.35 | ~35-delta OTM contracts |
+| **DTE window** | 3-7 days | Targets nearest Friday expiry |
+| **Stop loss** | 1.5 × ATR | Underlying-level stop |
+| **Profit target** | 2.0 × ATR | Underlying-level target |
+| **Trailing stops** | ON | Tiered at +1R/+1.5R/+2R |
+| **Decay halflife** | 2.0 sessions | Target shrinks as theta erodes |
+| **Stagnation** | 2 sessions | Cut positions that don't move |
+| **Gainz exit** | ON | RSI 75/25, body 0.6, min profit 0.3R |
+| **VIX filter** | Max 30, spike 20% | Skip high-vol days |
+| **Max open/symbol** | 2 | Concurrent position cap |
+| **Max stops/week** | 1 | Weekly loss limit |
+
+### Exit Priority Chain
+
+1. **Gap stop** — Adverse overnight gap > 1.5 × ATR
+2. **Trailing stop** — R-multiple tiered (see above)
+3. **Hard stop** — Underlying breaches stop level
+4. **Decay target** — Theta decay threshold reached
+5. **DTE expiry** — Position held to < 1 DTE
+6. **Regime degradation** — Choppiness spikes above threshold
+7. **Stagnation** — No meaningful move after 2 sessions
+8. **Gainz** — Opposing reversal candle with profit
+
+### Backtest Results (365d SPY, Synthetic Pricing)
+
+Generated 2026-05-29 via `replay_weekly.py --days 365 --no-real-options` at golden defaults.
+
+| Metric | SPY |
+|--------|-----|
+| **Trading Days** | 251 |
+| **Trades** | 19 |
+| **Win Rate** | **52.6%** |
+| **Profit Factor** | **3.70** |
+| **Total P&L** | **+$966** |
+| **Avg Win / Avg Loss** | $132 / -$40 |
+| **Sharpe** | **1.58** |
+| **Sortino** | 1.76 |
+| **Calmar** | 7.10 |
+| **Max Drawdown** | -$136 |
+| **Avg Hold** | 2.5 days |
+| **Avg DTE at Exit** | 1.1 |
+
+**Exit breakdown:** 57.9% dte_expiry, 15.8% stagnation, 15.8% stop_loss, 10.5% decay_target.
+
+**Observations:**
+- Signal stack is profitable with strong risk-adjusted returns (Sharpe 1.58, PF 3.70)
+- Low trade count (19/year) — quality/chop gates are highly selective
+- 57.9% exits at DTE expiry — positions held to near-expiration; trailing stops and decay targets rarely fire
+- Parameter sweep pending to optimize target_atr_mult, decay_halflife, and DTE window
+
+### Running the Weekly Backtester
+
+```bash
+# Single symbol, 1 year
+docker-compose run --rm dashboard python -m weekly.backtest.run_weekly_backtest --days 365 --symbol SPY
+
+# Multi-ticker
+docker-compose run --rm dashboard python -m weekly.backtest.run_weekly_backtest --days 365 --symbols SPY,QQQ,IWM,DIA
+
+# Parameter sweep (quick grid, ~972 combos)
+docker-compose run --rm dashboard python -m weekly.backtest.sweep_weekly --days 365 --symbol SPY --quick
+
+# Full sweep with multiprocessing
+docker-compose run --rm dashboard python -m weekly.backtest.sweep_weekly --days 365 --symbols SPY,QQQ --full --jobs 4
+
+# Export results
+docker-compose run --rm dashboard python -m weekly.backtest.sweep_weekly --days 365 --symbol SPY --quick --export-csv results/weekly_sweep.csv
+```
+
+### Running the Live Weekly Agent
+
+```bash
+# Start weekly agents (Docker, separate profile)
+docker-compose --profile weekly up -d agent-spy-weekly agent-qqq-weekly
+
+# Or via docker-compose run with custom params
+docker-compose --profile weekly run --rm agent-spy-weekly python scripts/run_weekly_agent.py \
+  --symbol SPY --daemon --target-delta 0.35 --max-premium 5.0
+```
+
+Journal files saved to `weekly_journal/YYYY-MM-DD_SYMBOL_OPEN.json` (renamed to `_CLOSED.json` on exit).
+
+### Dashboard Integration
+
+The Streamlit dashboard loads both `sweet_spot_journal/` (0DTE) and `weekly_journal/` (weekly) trade histories. A **Trade Type** filter (All / 0DTE / Weekly) is available in the sidebar.
 
 ## 📖 Full Design Document
 

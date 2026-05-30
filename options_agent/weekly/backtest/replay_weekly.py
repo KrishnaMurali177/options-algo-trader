@@ -211,9 +211,14 @@ def replay_weekly(
         logger.warning("Insufficient daily bars for %s (%d)", symbol, len(daily_bars) if daily_bars is not None else 0)
         return []
 
+    # Normalize index to dates for iteration
+    if daily_bars.index.tz is not None:
+        _idx_dates = daily_bars.index.tz_convert("America/New_York")
+    else:
+        _idx_dates = daily_bars.index
     trading_days = sorted(set(
         d.date() if hasattr(d, 'date') else d
-        for d in daily_bars.index
+        for d in _idx_dates
     ))
 
     open_positions: list[WeeklyPosition] = []
@@ -242,7 +247,10 @@ def replay_weekly(
                 continue
         prev_vix = vix
 
-        bars_to_date = daily_bars[daily_bars.index <= pd.Timestamp(trade_date)]
+        ts = pd.Timestamp(trade_date)
+        if daily_bars.index.tz is not None:
+            ts = ts.tz_localize(daily_bars.index.tz)
+        bars_to_date = daily_bars[daily_bars.index <= ts]
         if len(bars_to_date) < 15:
             continue
 

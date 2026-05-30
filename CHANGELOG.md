@@ -104,3 +104,10 @@
 - [2026-05-29] Created: options_agent/tests/test_weekly_backtest.py — 25 tests for backtester modules
 - [2026-05-29] Modified: options_agent/weekly/backtest/replay_weekly.py — Fixed timezone mismatch with Alpaca tz-aware daily bar index
 - [2026-05-29] Modified: options_agent/README.md — Added full Weekly Options Agent section with architecture, parameters, backtest results, and CLI usage
+- [2026-05-29] Created: options_agent/docs/0dte_vs_weekly_comparison.md — Detailed signal-by-signal comparison of 0DTE vs weekly systems (gitignored, personal reference)
+- [2026-05-29] Modified: .gitignore — Added 0dte_vs_weekly_comparison.md to gitignore
+- [2026-05-30] Modified: options_agent/weekly/backtest/replay_weekly.py — Force synthesized cascade mode in backtester (skip yfinance live fetch)
+- [2026-05-30] Created: options_agent/docs/weekly_sweep_report.md — Detailed sweep report with Jane Street quant critique (gitignored)
+- [2026-05-30] Modified: .gitignore — Added sweep report and uncertainty analysis to gitignore
+- [2026-05-30] Created: options_agent/docs/synth_vs_real_uncertainty.md — Synth vs real pricing comparison with uncertainty bands
+- [2026-05-30] Modified: options_agent/docs/ — Dated all reference docs (YYYY-MM-DD prefix), added version/status/next-update headers, gitignore uses wildcard `20*`

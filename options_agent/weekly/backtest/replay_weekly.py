@@ -391,8 +391,8 @@ def _scan_entry(
     if chop < config.chop_min or chop > config.chop_max:
         return None
 
-    # Explosion
-    cascade_result = cascade_detector.analyze(indicators, quality, or_momentum, recent_momentum)
+    # Explosion — force synthesized mode (no intraday bars in weekly backtest)
+    cascade_result = cascade_detector._analyze_synthesized(indicators, quality, or_momentum, recent_momentum)
     explosion = cascade_result.explosion_score
     if explosion < config.explosion_min:
         return None

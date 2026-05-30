@@ -16,5 +16,8 @@ gmail_credentials.json
 gmail_token.json
 client_secret*.json
 
+# Personal reference docs (not for repo)
+options_agent/docs/20*
+
 # Data cache
 options_agent/data_cache/

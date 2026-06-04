@@ -154,9 +154,11 @@ def _build_indicators_from_bars(bars: pd.DataFrame, symbol: str = "SPY") -> Mark
 def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                min_chop: int = 2,
                min_cascade: int = 4, min_cascade_call: int | None = None,
-               cluster_penalty: bool = True,
+               cluster_penalty: bool = False,
                cluster_penalty_window_min: int = 30,
                cluster_penalty_cap: int = 2,
+               rsi_extreme_penalty: float = 30.0,
+               rsi_extreme_cost: int = 0,
                vix_stop_slope: float = 0.0, vix_stop_anchor: float = 15.0,
                min_quality: int = 4, max_quality: int = 7,
                breakout_pct: float = 0.25, cooldown_bars: int = 2,
@@ -171,6 +173,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                max_stops_per_day: int = 1,
                max_consecutive_losses: int = 2,
                daily_loss_limit: float = 0.0,
+               cluster_brake_n: int = 0,
                confirmation_bar: bool = False,
                stagnation_bars: int = 12,
                stagnation_threshold: float = 0.3,
@@ -219,6 +222,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                     vwap_slope_override_cmax: float = 0.65,
                     chop_formula_v2b: bool = False,
                     chop_formula_2xci: bool = False,
+                    block_overlap_same_dir: bool = False,
                     debug: bool = False) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
@@ -280,9 +284,17 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
     triggers = []
     last_trigger_idx = -999
     last_was_stagnation = False  # Track for extended stag cooldown
+    open_until: dict[str, pd.Timestamp | None] = {"buy_call": None, "buy_put": None}
     stops_today = 0  # Track stop-outs for daily loss limit
     consecutive_losses = 0  # Track streak for streak breaker
     daily_pnl_cumulative = 0.0  # Track cumulative daily P&L
+    # Pending exits: positions whose stop/exit hasn't fired by the current scan
+    # bar yet. Each: {"exit_ts": pd.Timestamp, "outcome": str, "pnl": float,
+    # "direction": str}. Drained at the top of each scan iteration to update
+    # daily limits AT THE WALL-CLOCK BAR the exit actually fires — eliminating
+    # look-ahead bias on max_stops_per_day, consecutive_losses, and
+    # daily_pnl_cumulative (2026-05-26). "direction" supports cluster-brake-n.
+    pending_exits: list[dict] = []
     chop_rejects_today = 0  # Count of chop-gate rejections before next entry (audit)
     first_chop_reject_ts = None  # Earliest bar that hit chop reject this day
     flip_trades_today = 0  # Track momentum-flip trades (separate allowance)
@@ -355,6 +367,25 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
     day_pb_ema_slow = day_close.ewm(span=pb_ema_slow, adjust=False).mean() if pb_ema else None
 
     for i, (ts, bar) in enumerate(scan_bars.iterrows()):
+        # ── Drain pending exits that have fired by this bar's timestamp ──
+        # Updates stops_today / consecutive_losses / daily_pnl_cumulative at the
+        # wall-clock bar the exit actually occurred (not the entry bar). This is
+        # what a live agent observes: a stop is "known" only after its bar closes.
+        if pending_exits:
+            still_pending = []
+            for px in pending_exits:
+                if px["exit_ts"] <= ts:
+                    if px["outcome"] == "stop":
+                        stops_today += 1
+                    if px["pnl"] <= 0:
+                        consecutive_losses += 1
+                    else:
+                        consecutive_losses = 0
+                    daily_pnl_cumulative += px["pnl"]
+                else:
+                    still_pending.append(px)
+            pending_exits = still_pending
+
         # ── Daily limits (hard stops — no flip override) ──
         if max_stops_per_day > 0 and stops_today >= max_stops_per_day:
             break
@@ -486,6 +517,33 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 direction = "buy_put"
                 is_flip = True
 
+        # ── Live-parity gate: block new trigger if same-dir position still open ──
+        # Mirrors run_sweet_spot_agent.py:1138 (open_directions same-dir check).
+        # OFF by default for backward compatibility with all prior A/Bs.
+        if block_overlap_same_dir and open_until.get(direction) is not None and ts < open_until[direction]:
+            if debug:
+                bar_time = ts.strftime("%H:%M")
+                logger.info("  [DEBUG] %s  dir=%s → BLOCKED (same-dir position open until %s)",
+                            bar_time, direction, open_until[direction].strftime("%H:%M"))
+            continue
+
+        # ── Cluster brake: block if N same-dir positions are still in-flight ──
+        # Targets stack-into-bleeding-cluster failures (e.g. SPY 2026-05-20
+        # 4 CALL stack, QQQ 2026-05-29 3 PUT stack). Pending_exits already
+        # tracks open positions; we count same-direction ones whose exit_ts
+        # is still in the future (live agent's analog: count of open contracts).
+        if cluster_brake_n > 0:
+            same_dir_open = sum(
+                1 for px in pending_exits
+                if px["exit_ts"] > ts and px.get("direction") == direction
+            )
+            if same_dir_open >= cluster_brake_n:
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s → CLUSTER BRAKE (%d same-dir open >= %d)",
+                                bar_time, direction, same_dir_open, cluster_brake_n)
+                continue
+
         # ── Post-flip trade cap: skip non-flip trades if at regular cap ──
         if at_regular_cap and not is_flip:
             continue
@@ -551,6 +609,24 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                     same_dir_recent += 1
             penalty = min(same_dir_recent, cluster_penalty_cap)
             quality -= penalty
+
+        # ── RSI-extreme penalty (proposed 2026-06-01, diagnostic-validated) ──
+        # Penalty cell: rsi_pressure = sign(dir)*(rsi_14-50) >= threshold means
+        # entry into directional exhaustion (e.g. RSI>=80 for CALL, <=20 for PUT).
+        # 730d diagnostic (n=68 SPY / n=60 QQQ at threshold=30): both symbols and
+        # both directions negative aggregate P&L. Default OFF for A/B isolation.
+        # NOTE: applied as a hard reject rather than a Q discount because Q
+        # discount could pull Q>=8 trades INTO the Q-band [3,7] and net-increase
+        # triggers — observed in initial wiring on 2026-06-01.
+        if rsi_extreme_penalty > 0 and rsi_val != 50.0:
+            _sign = 1.0 if direction == "buy_call" else -1.0
+            _rsi_pressure = _sign * (rsi_val - 50.0)
+            if _rsi_pressure >= rsi_extreme_penalty:
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s rsi=%.1f rsi_p=%.1f → RSI EXTREME REJECT",
+                                bar_time, direction, rsi_val, _rsi_pressure)
+                continue
 
         if not (min_quality <= quality <= max_quality):
             if debug:
@@ -1021,18 +1097,40 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             option_pnl_total = None
             est_premium = None
 
-        if outcome == "stop":
-            stops_today += 1
-
-        # Track stagnation for extended cooldown
+        # Track stagnation for extended cooldown.
+        # NOTE: this fires at ENTRY bar, not exit bar. Stagnation cooldown is a
+        # cooldown on NEXT entry, so timing it from entry is intentional (the
+        # outer loop's cooldown check happens at the next scan iteration which
+        # is already past the entry bar). The "did this entry stagnate?" lookup
+        # is read at the next trigger candidate, before any pending-exit drain
+        # could matter — so this stays where it is for replay/live parity.
         last_was_stagnation = (outcome == "stagnation")
 
-        # ── Update daily risk trackers ──
-        daily_pnl_cumulative += pnl
-        if pnl <= 0:
-            consecutive_losses += 1
+        # Track when this position closes for live-parity same-dir block.
+        # exit_ts is the bar timestamp of the closing bar; a new trigger at a
+        # later bar is unblocked. Always recorded; only consulted when the flag is on.
+        if exit_ts is not None:
+            open_until[direction] = exit_ts
+
+        # ── Register pending exit for look-ahead-free daily-limit accounting ──
+        # The stop/consecutive-loss/daily-PnL trackers used to update inline here
+        # (at entry bar i), which caused replay's max_stops_per_day to halt the
+        # day at i+1 even though the live agent would not learn of the stop until
+        # the bar it actually fires. Fix shipped 2026-05-26: register the exit
+        # in `pending_exits`; the outer loop drains them by ts on each iteration.
+        if exit_ts is not None:
+            pending_exits.append({"exit_ts": exit_ts, "outcome": outcome, "pnl": pnl,
+                                  "direction": direction})
         else:
-            consecutive_losses = 0
+            # Defensive: if exit_ts is missing for any reason, fall back to
+            # immediate (entry-bar) accounting so we don't lose the trade.
+            if outcome == "stop":
+                stops_today += 1
+            if pnl <= 0:
+                consecutive_losses += 1
+            else:
+                consecutive_losses = 0
+            daily_pnl_cumulative += pnl
 
         # Cascade-tiered contracts
         if cascade_sizing:
@@ -1082,6 +1180,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             "target": round(target, 2),
             "target_mult": target_mult,
             "exit_price": round(exit_price, 2),
+            "exit_time": exit_ts.strftime("%Y-%m-%d %H:%M") if exit_ts is not None else None,
             "outcome": outcome,
             "pnl": round(pnl, 4),
             "underlying_move": round(underlying_move, 4),
@@ -1108,6 +1207,11 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             "recent_dir": recent_dir,
             "atr_14": round(atr_val, 4),
             "was_post_stag": bool(last_was_stagnation),
+            # Added 2026-06-04 for day-archetype diagnostic (Improvement 1).
+            # OR range bounds at trigger time (post-dynamic-OR adjustment if any).
+            "range_high": round(range_high, 4),
+            "range_low": round(range_low, 4),
+            "vix": round(vix, 2),
         })
 
         if is_flip:
@@ -1137,6 +1241,11 @@ def main():
     # loose pre-golden defaults (chop 10, no caps, 10:35 scan, no Gainz, no decay).
     parser.add_argument("--symbol", "-s", default="SPY")
     parser.add_argument("--days", type=int, default=30, help="Number of recent trading days")
+    parser.add_argument("--start-date", type=str, default=None,
+                        help="Filter trading days to start on or after this date (YYYY-MM-DD). "
+                             "Applied after --days fetches the bar window.")
+    parser.add_argument("--end-date", type=str, default=None,
+                        help="Filter trading days to end on or before this date (YYYY-MM-DD).")
     parser.add_argument("--max-chop", type=int, default=5, help="Max choppiness (golden: 5)")
     parser.add_argument("--min-chop", type=int, default=2,
                         help="Min choppiness floor (golden: 2). C=0-1 trades are ~50%% WR over 2yr. "
@@ -1145,18 +1254,30 @@ def main():
     parser.add_argument("--min-quality", type=int, default=3, help="Minimum quality score (golden: 3)")
     parser.add_argument("--max-quality", type=int, default=7, help="Maximum quality score (golden: 7)")
     parser.add_argument("--min-cascade", type=int, default=2, help="Minimum cascade proxy (golden: 2, was 4)")
-    parser.add_argument("--cluster-penalty", action="store_true", default=True,
+    parser.add_argument("--cluster-penalty", action="store_true", default=False,
                         help="Within-day clustering penalty: subtract 1 from quality per prior "
-                             "same-direction trade in the window, capped. GOLDEN (2026-05-21): "
-                             "Promoted after 12-cell sensitivity grid showed no failing parameter "
-                             "combination; SPY 730d Sharpe 3.92→4.38, Calmar 25.76→34.85, MDD%% 3.8→2.8.")
+                             "same-direction trade in the window, capped. DEMOTED 2026-05-27: "
+                             "drop-one ablation under the look-ahead-fixed replay showed removal "
+                             "improves SPY Sharpe 2.10→2.27, Calmar 7.71→9.16, MDD%% 12.3→10.5 "
+                             "with zero downside; QQQ-neutral. Original promotion was on biased data.")
     parser.add_argument("--no-cluster-penalty", dest="cluster_penalty", action="store_false",
-                        help="Disable the cluster penalty (golden default is ON).")
+                        help="Disable the cluster penalty (golden default is OFF as of 2026-05-27).")
     parser.add_argument("--cluster-penalty-window-min", type=int, default=30,
                         help="Cluster penalty: lookback window in minutes (golden: 30).")
     parser.add_argument("--cluster-penalty-cap", type=int, default=2,
                         help="Cluster penalty: maximum quality reduction per trade (golden: 2). "
                              "Sensitivity grid showed cap=2 best across all windows.")
+    parser.add_argument("--rsi-extreme-penalty", type=float, default=30.0,
+                        help="RSI-pressure threshold (sign(dir)*(rsi-50)) above which to "
+                             "REJECT the trigger. 30 = RSI>=80 for CALL, RSI<=20 for PUT. "
+                             "GOLDEN (promoted 2026-06-02): 730d SPY Sharpe 2.73→3.04 / "
+                             "Calmar 12.46→16.70 / MDD%% 7.7→5.8; QQQ 365d MDD%% 68.2→38.0. "
+                             "Set to 0 to disable.")
+    parser.add_argument("--no-rsi-extreme-penalty", dest="rsi_extreme_penalty",
+                        action="store_const", const=0.0,
+                        help="Disable the RSI-extreme reject (golden default is 30).")
+    parser.add_argument("--rsi-extreme-cost", type=int, default=0,
+                        help="DEPRECATED: superseded by hard reject. Kept for arg compatibility.")
     parser.add_argument("--min-cascade-call", type=int, default=None,
                         help="Side-asymmetric: separate min cascade for CALLs only "
                              "(corrects cascade bull-bias). Default: None (use --min-cascade for both).")
@@ -1186,6 +1307,10 @@ def main():
                         help="OR momentum threshold for direction decision (golden: 25, test: 30/35)")
     parser.add_argument("--max-trades-per-day", type=int, default=4, help="Max trades per day (0=unlimited, golden: 4)")
     parser.add_argument("--max-stops-per-day", type=int, default=1, help="Stop trading after N stop-outs (0=unlimited, golden: 1)")
+    parser.add_argument("--cluster-brake-n", type=int, default=0,
+                        help="Block new entry if N same-direction positions are still in-flight "
+                             "(0=disabled). Targets stack-into-cluster bleed without throttling "
+                             "single-position trend days.")
     parser.add_argument("--max-consecutive-losses", type=int, default=2,
                         help="Stop trading after N consecutive losses in a day (0=disabled, golden: 2)")
     parser.add_argument("--daily-loss-limit", type=float, default=0.0,
@@ -1333,6 +1458,10 @@ def main():
                         help="VWAP-slope chop override: consecutive bars on correct side of VWAP (golden: 3, 0=disabled)")
     parser.add_argument("--vwap-slope-override-cmax", type=float, default=0.65,
                         help="VWAP-slope chop override: max raw CI allowed for override (golden: 0.65, 0=disabled, 1.0=unconditional)")
+    parser.add_argument("--block-overlap-same-dir", action="store_true", default=False,
+                        help="Live-parity gate: block new trigger if same-direction position still open. "
+                             "Mirrors run_sweet_spot_agent.py open_directions check. OFF by default for "
+                             "backward compatibility with prior A/B baselines.")
     parser.add_argument("--export-triggers", default=None,
                         help="If set, write all triggers as JSON to this path (audit/analysis).")
     args = parser.parse_args()
@@ -1375,6 +1504,12 @@ def main():
         return
 
     trading_days = sorted(set(df.index.date))
+    if args.start_date:
+        _sd = date.fromisoformat(args.start_date)
+        trading_days = [d for d in trading_days if d >= _sd]
+    if args.end_date:
+        _ed = date.fromisoformat(args.end_date)
+        trading_days = [d for d in trading_days if d <= _ed]
     logger.info("Replaying %d trading days...", len(trading_days))
 
     # ── Fetch historical VIX for realistic quality scoring ──
@@ -1441,6 +1576,8 @@ def main():
                               cluster_penalty=args.cluster_penalty,
                               cluster_penalty_window_min=args.cluster_penalty_window_min,
                               cluster_penalty_cap=args.cluster_penalty_cap,
+                              rsi_extreme_penalty=args.rsi_extreme_penalty,
+                              rsi_extreme_cost=args.rsi_extreme_cost,
                               vix_stop_slope=args.vix_stop_slope, vix_stop_anchor=args.vix_stop_anchor,
                               breakout_pct=args.breakout_pct,
                               cooldown_bars=args.cooldown_bars, scan_end=args.scan_end,
@@ -1452,6 +1589,7 @@ def main():
                               symbol=args.symbol,
                               max_trades_per_day=args.max_trades_per_day,
                               max_stops_per_day=args.max_stops_per_day,
+                              cluster_brake_n=args.cluster_brake_n,
                               max_consecutive_losses=args.max_consecutive_losses,
                               daily_loss_limit=args.daily_loss_limit,
                               confirmation_bar=args.confirmation_bar,
@@ -1502,6 +1640,7 @@ def main():
                               vwap_slope_override_cmax=args.vwap_slope_override_cmax,
                               chop_formula_v2b=args.chop_formula_v2b,
                               chop_formula_2xci=args.chop_formula_2xci,
+                              block_overlap_same_dir=args.block_overlap_same_dir,
                               debug=(debug_date is not None and day == debug_date))
         all_triggers.extend(triggers)
 

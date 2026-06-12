@@ -378,8 +378,11 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         if i - last_trigger_idx < effective_cooldown:
             continue
 
-        # Use all bars up to current time for indicators
-        bars_to_now = day_bars[day_bars.index <= ts]
+        # Use bars BEFORE current time — the bar at ts is still forming in
+        # real-time (Alpaca timestamps bars at open). The live agent drops
+        # this partial bar via _drop_partial_trailing_bar, so replay must
+        # match by using strictly-prior bars.
+        bars_to_now = day_bars[day_bars.index < ts]
         n = len(bars_to_now)
         price = float(day_close.iloc[:n].iloc[-1])
 

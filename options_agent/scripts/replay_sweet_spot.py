@@ -193,6 +193,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                dynamic_or: bool = True,
                dynamic_or_threshold: float = 0.6,
                real_options: bool = False,
+               require_real_options: bool = False,
                decay_aware_targets: bool = False,
                 decay_target_floor: float = 0.4,
                 decay_halflife_bars: int = 8,
@@ -988,6 +989,11 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 logger.debug("Real-options pricing failed for %s %s: %s — falling back to synth",
                              symbol, ts, e)
 
+        # Real-pricing-only mode: skip trades that have no real 0DTE contract
+        # (e.g. symbols without daily expirations) instead of synth-pricing them.
+        if simulate_options and real_options and require_real_options and not priced_real:
+            continue
+
         if simulate_options and not priced_real:
             # Estimate premium: ATR * premium_atr_pct (rough ATM 0DTE premium)
             est_premium = atr_val * premium_atr_pct
@@ -1250,6 +1256,10 @@ def main():
                              "Note: Alpaca options data starts ~Feb 2024.")
     parser.add_argument("--no-real-options", action="store_true",
                         help="Disable real Alpaca options pricing; use synthesized delta-gamma model instead.")
+    parser.add_argument("--require-real-options", action="store_true",
+                        help="Real-pricing-only: skip any trigger that lacks a real 0DTE contract/bars "
+                             "instead of synth-pricing it. Use for symbols without daily expirations "
+                             "(e.g. GOOGL) to see the tradeable-only subset.")
     parser.add_argument("--no-decay-aware-targets", action="store_true",
                         help="Disable time-decay-aware targets (golden: enabled). "
                              "When enabled, take-profit shrinks as theta erodes "
@@ -1479,6 +1489,7 @@ def main():
                               dynamic_or=args.dynamic_or,
                               dynamic_or_threshold=args.dynamic_or_threshold,
                               real_options=args.real_options and not args.no_real_options,
+                              require_real_options=args.require_real_options,
                               decay_aware_targets=not args.no_decay_aware_targets,
                               decay_target_floor=args.decay_target_floor,
                               decay_halflife_bars=args.decay_halflife_bars,

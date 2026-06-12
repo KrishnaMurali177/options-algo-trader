@@ -86,3 +86,4 @@
 - [2026-05-28] Modified: options_agent/sweet_spot_journal/2026-05-28_QQQ.json — Marked QQQ 12:00 trade as forced_closure (manual close, exclude from perf analysis)
 - [2026-05-28] Modified: options_agent/sweet_spot_journal/2026-05-28_SPY.json — Marked SPY 12:00 trade as forced_closure (manual close, exclude from perf analysis)
 - [2026-05-29] Modified: options_agent/scripts/run_sweet_spot_agent.py — Fixed _safe_sleep to use wall clock (time.time) instead of monotonic clock so agents wake up after laptop lid suspend
+- [2026-06-12] Modified: options_agent/scripts/replay_sweet_spot.py — Added --require-real-options flag for real-pricing-only replay (skips synth fallback)

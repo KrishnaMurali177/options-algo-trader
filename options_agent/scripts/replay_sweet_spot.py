@@ -1125,7 +1125,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
     return triggers
 
 
-def main():
+def build_parser():
     parser = argparse.ArgumentParser(description="Replay Sweet Spot Agent on historical data")
     # Defaults match GOLDEN parameters (see README) — produces validated 2-yr SPY
     # results (real Alpaca options): 608 trades, +$5,053/contract, +$15,159 cascade-sized.
@@ -1348,6 +1348,11 @@ def main():
                         help="VWAP-slope chop override: max raw CI allowed for override (golden: 0.65, 0=disabled, 1.0=unconditional)")
     parser.add_argument("--export-triggers", default=None,
                         help="If set, write all triggers as JSON to this path (audit/analysis).")
+    return parser
+
+
+def main():
+    parser = build_parser()
     args = parser.parse_args()
 
     if args.research_mode:

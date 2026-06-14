@@ -59,3 +59,43 @@ services:
     restart: unless-stopped
     profiles:
       - live
+
+  agent-msft:
+    image: options-algo-trader
+    container_name: options-agent-msft
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol MSFT --verbose-rejects
+    env_file:
+      - options_agent/.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AGENT_SYMBOL=MSFT
+    volumes:
+      - ./options_agent/logs:/app/logs
+      - ./options_agent/sweet_spot_journal:/app/sweet_spot_journal
+      - ./options_agent/data_cache:/app/data_cache
+      - ./options_agent/config:/app/config
+      - ./options_agent/scripts:/app/scripts:ro
+      - ./options_agent/src:/app/src:ro
+    restart: unless-stopped
+    profiles:
+      - live
+
+  agent-aapl:
+    image: options-algo-trader
+    container_name: options-agent-aapl
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol AAPL --verbose-rejects
+    env_file:
+      - options_agent/.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AGENT_SYMBOL=AAPL
+    volumes:
+      - ./options_agent/logs:/app/logs
+      - ./options_agent/sweet_spot_journal:/app/sweet_spot_journal
+      - ./options_agent/data_cache:/app/data_cache
+      - ./options_agent/config:/app/config
+      - ./options_agent/scripts:/app/scripts:ro
+      - ./options_agent/src:/app/src:ro
+    restart: unless-stopped
+    profiles:
+      - live

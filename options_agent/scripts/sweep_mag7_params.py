@@ -74,9 +74,15 @@ def load_vix(trading_days: list[date]) -> dict[date, float]:
 
 
 def run_days(args, df: pd.DataFrame, trading_days: list[date],
-             vix_map: dict[date, float]) -> list[dict]:
+             vix_map: dict[date, float], feature_cache: dict | None = None) -> list[dict]:
     """Replay a set of trading days. Verbatim mirror of replay_sweet_spot.main()'s
-    per-day loop, parameterised by `args` (a golden namespace with grid overrides)."""
+    per-day loop, parameterised by `args` (a golden namespace with grid overrides).
+
+    feature_cache: optional shared dict memoizing the combo-independent analyzer
+    outputs (OpeningRange + RecentMomentum) keyed by (trade_date, bar index). Pass
+    the SAME dict across combos of one symbol to compute analyzers once. Must NOT
+    be reused across symbols (keys are (date, i) and would collide across tickers
+    sharing a trading date)."""
     all_triggers: list[dict] = []
     full_days = trading_days  # for prior-bar / prev-VIX lookback continuity
     for idx, day in enumerate(full_days):
@@ -179,6 +185,7 @@ def run_days(args, df: pd.DataFrame, trading_days: list[date],
                               vwap_slope_override_cmax=args.vwap_slope_override_cmax,
                               chop_formula_v2b=args.chop_formula_v2b,
                               chop_formula_2xci=args.chop_formula_2xci,
+                              feature_cache=feature_cache,
                               debug=False)
         # Keep only triggers that fall in the requested window (prior days are
         # included in the loop only for SMA/VIX warmup continuity).
@@ -279,6 +286,13 @@ def sweep_symbol(symbol: str, days: int, train_frac: float, topk: int,
     combos = list(itertools.product(*[GRID[k] for k in keys]))
     print(f"  Sweeping {len(combos)} combos on train...", flush=True)
 
+    # Per-symbol feature cache: the OpeningRange + RecentMomentum analyzer
+    # outputs are identical across combos (they don't depend on any swept
+    # param), so compute them once on the first combo and reuse thereafter.
+    # Fresh per symbol — keys are (date, bar index) and would collide across
+    # tickers that share trading dates.
+    feat_cache: dict = {}
+
     rows = []
     for n, vals in enumerate(combos, 1):
         a = copy.copy(base_args)
@@ -286,7 +300,7 @@ def sweep_symbol(symbol: str, days: int, train_frac: float, topk: int,
         overrides = dict(zip(keys, vals))
         for k, v in overrides.items():
             setattr(a, k, v)
-        triggers = run_days(a, df, train_days, vix_map)
+        triggers = run_days(a, df, train_days, vix_map, feature_cache=feat_cache)
         m = compute_metrics(triggers, train_days)
         rows.append({**overrides, **m})
         if n % 60 == 0:
@@ -306,7 +320,7 @@ def sweep_symbol(symbol: str, days: int, train_frac: float, topk: int,
         a.symbol = symbol
         for k in keys:
             setattr(a, k, r[k])
-        ht = run_days(a, df, holdout_days, vix_map)
+        ht = run_days(a, df, holdout_days, vix_map, feature_cache=feat_cache)
         hm = compute_metrics(ht, holdout_days)
         r["h_trades"], r["h_pf"], r["h_sharpe"], r["h_pnl"] = (
             hm["trades"], hm["pf"], hm["sharpe"], hm["pnl"])

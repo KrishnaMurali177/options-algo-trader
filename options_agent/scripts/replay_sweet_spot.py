@@ -220,6 +220,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                     vwap_slope_override_cmax: float = 0.65,
                     chop_formula_v2b: bool = False,
                     chop_formula_2xci: bool = False,
+                    feature_cache: dict | None = None,
                     debug: bool = False) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
@@ -450,13 +451,23 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             zlema_trend=zlema_trend,
         )
 
-        # ── Opening Range Analysis (EXACT same as live agent) ──
-        or_result = or_analyzer.analyze(indicators, bars_5m=bars_to_now)
+        # ── Opening Range + Recent Momentum (EXACT same as live agent) ──
+        # These analyzer outputs depend only on (indicators, bars_to_now), both
+        # of which are independent of the entry/exit threshold params. A param
+        # sweep over chop/quality/cascade/target re-evaluates the SAME bars, so
+        # an optional feature_cache keyed by (trade_date, bar index) lets the
+        # sweep compute them once and reuse across combos. Safe ONLY because the
+        # cached values do not depend on any swept parameter.
+        _ck = (trade_date, i)
+        if feature_cache is not None and _ck in feature_cache:
+            or_result, rc_result = feature_cache[_ck]
+        else:
+            or_result = or_analyzer.analyze(indicators, bars_5m=bars_to_now)
+            rc_result = rc_analyzer.analyze(indicators, bars_5m=bars_to_now)
+            if feature_cache is not None:
+                feature_cache[_ck] = (or_result, rc_result)
         or_direction = or_result.breakout_direction.value  # "bullish", "bearish", "neutral"
         or_momentum = or_result.momentum_score
-
-        # ── Recent Momentum Analysis (EXACT same as live agent) ──
-        rc_result = rc_analyzer.analyze(indicators, bars_5m=bars_to_now)
         recent_dir = rc_result.direction
         recent_momentum = rc_result.momentum_score
 

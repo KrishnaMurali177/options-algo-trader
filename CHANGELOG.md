@@ -96,3 +96,4 @@
 - [2026-06-13] Created: options_agent/scripts/sweep_mag7_params.py — Walk-forward param sweep (composite rank, real-pricing-only) for Mag 7
 - [2026-06-14] Modified: options_agent/scripts/replay_sweet_spot.py — Added optional feature_cache to replay_day (memoizes combo-independent OR+RC analyzers; 0-mismatch validated)
 - [2026-06-14] Modified: options_agent/scripts/sweep_mag7_params.py — Wired per-symbol feature_cache into sweep (~2.5x speedup, identical results)
+- [2026-06-14] Created: options_agent/docs/2026-06-14_msft_aapl_param_sweep.md — Walk-forward param sweep results for MSFT/AAPL

@@ -284,6 +284,18 @@ def get_et_now() -> datetime:
 _BAR_CLOSE_BUFFER_SEC = 5
 
 
+# FOMC meeting END dates (rate decision days, 2:00 PM ET presser). Public schedule.
+# Golden 2026-06-04: skip these days — both symbols, both windows clean sweep.
+# Mirror of FOMC_DATES in replay_sweet_spot.py — keep in sync.
+FOMC_DATES: set[str] = {
+    "2024-06-12", "2024-07-31", "2024-09-18", "2024-11-07", "2024-12-18",
+    "2025-01-29", "2025-03-19", "2025-05-07", "2025-06-18", "2025-07-30",
+    "2025-09-17", "2025-10-29", "2025-12-10",
+    "2026-01-28", "2026-03-18", "2026-04-29",
+    "2026-06-17", "2026-07-29", "2026-09-16", "2026-11-04", "2026-12-16",
+}
+
+
 def seconds_until_next_bar_close(now_et: datetime | None = None, bar_sec: int = 300) -> float:
     """Seconds from now until the next 5-min bar close (+ buffer).
 
@@ -729,6 +741,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             regime_guard: bool = False,
             vix_max: float = 30.0,
             vix_spike_pct: float = 20.0,
+            skip_fomc: bool = True,
+            skip_failed_bounce: bool = False,
+            failed_bounce_gap_max: float = 0.50,
+            failed_bounce_close_pos_max: float = 0.20,
             pb_ema: bool = True,
             pb_ema_fast: int = 13,
             pb_ema_slow: int = 55,
@@ -764,6 +780,48 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                 f"{pb_ema_fast}/{pb_ema_slow}" if pb_ema else "OFF",
                 bool(trader),
                 "shares" if trade_shares else f"0DTE options (contracts={contracts}, delta={target_delta})")
+
+    # ── FOMC sit-out filter (golden 2026-06-04: skip rate-decision days) ──
+    if skip_fomc and today.isoformat() in FOMC_DATES:
+        logger.info("🚫 FOMC SIT-OUT: %s is an FOMC rate-decision day. Skipping today.", today.isoformat())
+        return
+
+    # ── Failed-bounce day-regime filter (golden 2026-06-06) ──
+    # Skip days where today gaps up small (0% to 0.50%) AND yesterday closed in
+    # the lower 20% of its range — bearish-capitulation close + weak overnight bid
+    # = failed bounce archetype. Diagnostic-grounded cross-symbol cohort.
+    # A/B: SPY 730d PF 3.09→3.38, Sharpe 5.83→6.04; QQQ 365d Calmar 17→26, MDD% 5.8→3.8.
+    if skip_failed_bounce:
+        try:
+            symbol_for_bars = symbol
+            # Pull the last 2 daily bars to compute prior_close, prior_high, prior_low, today_open
+            from src.utils.alpaca_data import fetch_bars
+            recent_5m = fetch_bars(symbol_for_bars, days_back=3, interval="5min")
+            if recent_5m is not None and len(recent_5m) > 0:
+                recent_5m["_d"] = recent_5m.index.date
+                daily = recent_5m.groupby("_d").agg(
+                    Open=("Open", "first"), High=("High", "max"),
+                    Low=("Low", "min"), Close=("Close", "last"),
+                )
+                if len(daily) >= 2:
+                    today_open = float(daily["Open"].iloc[-1])
+                    p_close = float(daily["Close"].iloc[-2])
+                    p_high = float(daily["High"].iloc[-2])
+                    p_low = float(daily["Low"].iloc[-2])
+                    p_range = p_high - p_low
+                    if p_close > 0 and p_range > 0:
+                        gap_pct = (today_open - p_close) / p_close * 100
+                        close_pos = (p_close - p_low) / p_range
+                        if (0 < gap_pct <= failed_bounce_gap_max
+                                and close_pos <= failed_bounce_close_pos_max):
+                            logger.info(
+                                "🚫 FAILED-BOUNCE SIT-OUT: gap_pct=%.2f%% ∈ (0, %.2f] AND "
+                                "prior_close_pos=%.2f ≤ %.2f — skipping today.",
+                                gap_pct, failed_bounce_gap_max,
+                                close_pos, failed_bounce_close_pos_max)
+                            return
+        except Exception as e:
+            logger.warning("Failed-bounce filter check failed (%s) — proceeding without it.", e)
 
     # ── VIX sit-out filter (golden: skip if VIX > 30 or spiked > 20% day-over-day) ──
     if vix_max > 0 or vix_spike_pct > 0:
@@ -1168,8 +1226,18 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                    dynamic_or_threshold=dynamic_or_threshold)
 
         # Persist every verdict (rejects + triggers) to a daily JSONL for offline analysis.
+        # Attach a yfinance options-chain feature snapshot (Dimension 2 data collection).
+        # Cached 60s inside the helper so this only hits yfinance ~once/min/symbol.
+        try:
+            from options_agent.src.utils.yf_chain_features import snapshot as _yf_snap
+            chain_snap = _yf_snap(symbol, spot=verdict.get("close") or verdict.get("price"))
+        except Exception as e:
+            logger.debug("Chain snapshot failed: %s", e)
+            chain_snap = None
         try:
             verdict_record = {"ts": now.isoformat(), "symbol": symbol, **verdict}
+            if chain_snap is not None:
+                verdict_record["chain"] = chain_snap
             with verdicts_file.open("a", encoding="utf-8") as vf:
                 vf.write(json.dumps(verdict_record, default=str) + "\n")
         except Exception as e:
@@ -1568,6 +1636,22 @@ def main():
                              "Off by default — only post-direction rejects (gates that killed an actual setup) log.")
     parser.add_argument("--vix-spike-pct", type=float, default=20.0,
                         help="Skip days where VIX spiked >N%% day-over-day (0=disabled, default: 20)")
+    parser.add_argument("--allow-fomc-days", dest="skip_fomc", action="store_false", default=True,
+                        help="Disable FOMC sit-out (default: ON — skip rate-decision days). "
+                             "Promoted 2026-06-04: SPY Sharpe +0.12 / QQQ Sharpe +0.10-0.18 / "
+                             "clean sweep both symbols both windows.")
+    parser.add_argument("--skip-failed-bounce", dest="skip_failed_bounce", action="store_true",
+                        default=False,
+                        help="Failed-bounce sit-out (default: OFF as of 2026-06-13). "
+                             "DEMOTED: 90d A/B showed SPY clean regression (PF 1.67→2.02, "
+                             "Sharpe 2.34→2.85, Calmar 1.92→3.17, MDD%% 39.7→31.0, +$1,692) "
+                             "with QQQ unaffected. 6/9 SPY trend day was the most expensive "
+                             "single veto ($2,034). Pass this flag to re-enable.")
+    parser.add_argument("--allow-failed-bounce", dest="skip_failed_bounce", action="store_false",
+                        help="Disable failed-bounce sit-out (already default OFF as of 2026-06-13; "
+                             "kept for back-compat with run_daily.bat).")
+    parser.add_argument("--failed-bounce-gap-max", type=float, default=0.50)
+    parser.add_argument("--failed-bounce-close-pos-max", type=float, default=0.20)
     parser.add_argument("--no-dynamic-or", action="store_true",
                         help="Disable dynamic OR (default: ON — 30-min OR + 10:00 scan-start "
                              "on decisive-breakout mornings; falls back to 60-min OR otherwise).")
@@ -1611,6 +1695,10 @@ def main():
                             regime_guard=args.regime_guard,
                             vix_max=args.vix_max,
                             vix_spike_pct=args.vix_spike_pct,
+                            skip_fomc=args.skip_fomc,
+                            skip_failed_bounce=args.skip_failed_bounce,
+                            failed_bounce_gap_max=args.failed_bounce_gap_max,
+                            failed_bounce_close_pos_max=args.failed_bounce_close_pos_max,
                             pb_ema=not args.no_pb_ema,
                             pb_ema_fast=args.pb_ema_fast,
                             pb_ema_slow=args.pb_ema_slow,
@@ -1655,6 +1743,10 @@ def main():
                 regime_guard=args.regime_guard,
                 vix_max=args.vix_max,
                 vix_spike_pct=args.vix_spike_pct,
+                skip_fomc=args.skip_fomc,
+                skip_failed_bounce=args.skip_failed_bounce,
+                failed_bounce_gap_max=args.failed_bounce_gap_max,
+                failed_bounce_close_pos_max=args.failed_bounce_close_pos_max,
                 pb_ema=not args.no_pb_ema,
                 pb_ema_fast=args.pb_ema_fast,
                 pb_ema_slow=args.pb_ema_slow,

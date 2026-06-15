@@ -38,7 +38,7 @@ from dataclasses import dataclass
 @dataclass
 class QualityResult:
     """Result of the 11-point quality scoring."""
-    score: int               # 0-11
+    score: float             # 0-11 (integer in binary mode; float when vix_continuous=True)
     label: str               # "🟢 HIGH", "🔵 MEDIUM", "🟡 LOW"
     confirmations: list[str] # human-readable confirmation descriptions
     cautions: list[str]      # human-readable caution descriptions
@@ -62,6 +62,7 @@ def compute_quality_score(
     zlema_trend: str | None = None,   # "bullish", "bearish", "neutral"
     vpvr_level_broken: bool = False,  # True if price broke a High Volume Node
     vwap: float | None = None,       # Real intraday VWAP (if available; falls back to sma_20)
+    vix_continuous: bool = False,    # When True, replace binary VIX≥18.5 with a graded score
 ) -> QualityResult:
     """Compute quality score (0-11) combining opening range + recent momentum + daily signals."""
     score = 0
@@ -124,9 +125,24 @@ def compute_quality_score(
     # flickered Q ±1 across the strict 18.0 boundary (SPY 2026-05-13 incident).
     # 18.5 sits comfortably above intraday noise without materially shifting the
     # population of trades that earn the bonus.
-    if vix >= 18.5:
-        score += 1
-        confirmations.append(f"✅ VIX elevated ({vix:.1f} ≥ 18.5) — wider ranges, better R:R (+1)")
+    # --
+    # Continuous-VIX experiment (2026-06-06): the GBM diagnostic ranked raw
+    # VIX as the dominant feature (gain=54, 43 splits) — strongly indicating
+    # the binary threshold throws away information. Under vix_continuous=True
+    # we replace +1/VIX≥18.5 with a graded contribution clamped to [0, 2]:
+    #   score += clamp((vix - 15) / 10, 0, 2)
+    # So VIX 15 → +0.0, VIX 20 → +0.5, VIX 25 → +1.0, VIX 35 → +2.0.
+    # Snap-to-0.5-grid preserves the original intraday-flicker mitigation.
+    if vix_continuous:
+        raw = max(0.0, min(2.0, (vix - 15.0) / 10.0))
+        vix_pts = round(raw * 2) / 2  # snap to nearest 0.5
+        if vix_pts > 0:
+            score += vix_pts
+            confirmations.append(f"✅ VIX={vix:.1f} → graded score (+{vix_pts:.1f})")
+    else:
+        if vix >= 18.5:
+            score += 1
+            confirmations.append(f"✅ VIX elevated ({vix:.1f} ≥ 18.5) — wider ranges, better R:R (+1)")
 
     # #6 VWAP confirmation (SMA20 as proxy — golden-calibrated, do not change)
     # Score uses SMA20 for backward compatibility. Real VWAP divergence is

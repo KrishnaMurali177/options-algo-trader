@@ -6,6 +6,9 @@
 
 set -uo pipefail
 
+# cron runs with a minimal PATH (/usr/bin:/bin); ensure `docker` resolves.
+export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
 PROJ_DIR="/Users/sirius/projects/options-algo-trader"
 ENV_FILE="$PROJ_DIR/options_agent/.env"
 STATE_FILE="$PROJ_DIR/options_agent/logs/.agent_health_state"

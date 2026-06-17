@@ -4,6 +4,10 @@
 
 set -euo pipefail
 
+# cron runs with a minimal PATH (/usr/bin:/bin), so colima can't find limactl
+# and bare `docker` is unresolved. Put Homebrew's bin first.
+export PATH="/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin:$PATH"
+
 PROJ_DIR="/Users/sirius/projects/options-algo-trader"
 COLIMA="/opt/homebrew/bin/colima"
 DC="/opt/homebrew/bin/docker-compose"

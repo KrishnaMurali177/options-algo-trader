@@ -1,5 +1,7 @@
 # Changelog
 
+- [2026-06-17] Modified: options_agent/scripts/ensure_agents.sh — Export Homebrew PATH so cron can find limactl/colima/docker (fixes "limactl not found" failure)
+- [2026-06-17] Modified: options_agent/scripts/check_agents_health.sh — Export Homebrew PATH so cron can resolve docker
 - [2026-06-17] Created: options_agent/scripts/check_agents_health.sh — Host cron health check that pings Discord when any agent container goes down/unhealthy (transition-deduped)
 - [2026-05-27] Deleted: options_agent/src/utils/email_notifier.py, scripts/setup_gmail_auth.py, scripts/monitor_agent.py, tests/test_email_notifier.py — Removed Gmail/email notification system entirely
 - [2026-05-27] Modified: options_agent/src/utils/trade_notifier.py — Removed Gmail channel, Discord-only now

@@ -101,3 +101,17 @@ Train 187d → holdout 63d. "Robust pick" = best train combo that also holds the
 4. **Avoid:** USO (losing), and the weak/fragile cluster (GLD, DIA, XLE, XLK, EEM, HYG, FXI).
 5. Nothing here changes live config. If pursued, IWM would be the next paper agent — separate
    service per the modular preference — but only after a forward paper-trading confirmation.
+
+## Recheck — 2026-06-18 (fresh data, holdout extended to 2026-06-18)
+Reran breadth + walk-forward 3 days later (holdout now 2026-03-20→2026-06-18, 63d). The
+conclusions held with high stability:
+
+| Symbol | Breadth Sharpe (6/15→6/18) | Holdout Sharpe (6/15→6/18) | Status |
+|--------|---------------------------|----------------------------|--------|
+| IWM | 2.17 → 2.29 | **2.07 → 2.00** | ✅ Confirmed robust (reproducible) |
+| XLF | 2.00 → 2.22 | 2.39 → **3.03** (PF 5.94) | ✅ Validates again, still ~24 OOS trades (thin) |
+| TLT | 1.56 → 1.83 | 0.59 → **1.26** | 🟡→ upgraded to decent with new data |
+| SLV | 1.28 → 1.25 | **-2.82 → -3.07** | ❌ Confirmed overfit (fails harder) |
+
+Takeaways unchanged and now twice-validated: **IWM robust**, **SLV overfit**, **XLF strong but
+thin**, breadth-without-holdout is misleading. USO still the worst (Sharpe -0.59 → -0.87).

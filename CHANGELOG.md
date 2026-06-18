@@ -99,3 +99,4 @@
 - [2026-06-14] Created: options_agent/docs/2026-06-14_msft_aapl_param_sweep.md — Walk-forward param sweep results for MSFT/AAPL
 - [2026-06-14] Evaluated MSFT --min-chop 1 sweep tweak; kept default min-chop 2 (chop=1 gain was 6 in-sample trades only, holdout identical — no out-of-sample support). docker-compose.yml unchanged.
 - [2026-06-15] Created: options_agent/docs/2026-06-15_experimental_etf_universe_analysis.md — Experimental 0DTE sweep over 12 ETFs (breadth + walk-forward deep-dive)
+- [2026-06-18] Modified: options_agent/docs/2026-06-15_experimental_etf_universe_analysis.md — Added 2026-06-18 recheck (IWM robust + SLV overfit confirmed on fresh data)

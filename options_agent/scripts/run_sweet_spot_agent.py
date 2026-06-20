@@ -750,11 +750,18 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             pb_ema_slow: int = 55,
             dynamic_or: bool = True,
             dynamic_or_threshold: float = 0.6,
+            dte: int = 0,
             verbose_rejects: bool = False):
     """Run the agent for one trading day."""
     today = date.today()
     # Per-symbol journal so concurrent SPY/QQQ/VOO agents don't clobber each other's writes.
-    journal_file = JOURNAL_DIR / f"{today.isoformat()}_{symbol}.json"
+    # When dte>0, suffix with "_{dte}dte" to keep 1DTE/2DTE strategy state isolated from
+    # the legacy 0DTE journal (which keeps its unprefixed filename for backward-compat
+    # of restart-recovery on the existing live 0DTE agent).
+    if dte > 0:
+        journal_file = JOURNAL_DIR / f"{today.isoformat()}_{symbol}_{dte}dte.json"
+    else:
+        journal_file = JOURNAL_DIR / f"{today.isoformat()}_{symbol}.json"
     verdicts_file = JOURNAL_DIR / f"{today.isoformat()}_verdicts.jsonl"
     triggers = json.loads(journal_file.read_text()) if journal_file.exists() else []
 
@@ -779,7 +786,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                 "ON" if regime_guard else "OFF",
                 f"{pb_ema_fast}/{pb_ema_slow}" if pb_ema else "OFF",
                 bool(trader),
-                "shares" if trade_shares else f"0DTE options (contracts={contracts}, delta={target_delta})")
+                "shares" if trade_shares else f"{dte}DTE options (contracts={contracts}, delta={target_delta})")
+    logger.info("Exit goldens: tiered_stag_early_bar=6 (30min, golden 2026-06-19), tiered_stag_pnl_band=[-0.1, +0.2]R, "
+                "tiered_stag_mfe_skip=0.5R, fallback_stagnation=bar12 (60min, threshold=0.3R), "
+                "stop=mid±0.10×OR_width, decay_target_halflife=8 (40min), decay_target_floor=0.4, time_stop=15:30 ET")
 
     # ── FOMC sit-out filter (golden 2026-06-04: skip rate-decision days) ──
     if skip_fomc and today.isoformat() in FOMC_DATES:
@@ -873,8 +883,9 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
     if trader and not trade_shares:
         try:
             live_positions = {p.symbol: p for p in trader.client.get_all_positions()}
+            expected_trade_mode = f"{dte}dte_option"
             for trig in triggers:
-                if trig.get("closed") or trig.get("discard") or trig.get("trade_mode") != "0dte_option":
+                if trig.get("closed") or trig.get("discard") or trig.get("trade_mode") != expected_trade_mode:
                     continue
                 occ = trig.get("occ_symbol")
                 if occ and occ in live_positions and occ.startswith(symbol):
@@ -1092,8 +1103,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
 
                         # Stagnation exit: if 60 min (12 bars) have passed and trade
                         # hasn't moved 0.3R in its favor, cut it to avoid theta bleed.
-                        # Tiered stagnation (golden): at 40 min (8 bars), exit flat trades
-                        # between -0.1R and +0.2R early. At 60 min, standard stagnation.
+                        # Tiered stagnation (golden 2026-06-19: 8→6 bars promoted): at 30 min
+                        # (6 bars), exit flat trades between -0.1R and +0.2R early. At 60 min,
+                        # standard stagnation. Phase 3b strict-real grid: SPY 0DTE PF 1.91→2.02,
+                        # QQQ 0DTE PF 1.41→1.47, 4/4 quartiles passed both symbols/DTEs.
                         # MFE skip (golden): if trade already reached 0.5R, don't stagnation-exit —
                         # let decay_target or stop resolve it. Trades that showed real momentum
                         # but temporarily pulled back deserve more time to reach target.
@@ -1108,8 +1121,8 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                 mfe_ratio = mfe / risk if risk > 0 else 0
                                 pnl_r = current_pnl / risk
 
-                                # Tiered stagnation: early exit at bar 8 (40 min) if flat
-                                if 38 <= minutes_in_trade < 42:  # ~40 min window (bar 8)
+                                # Tiered stagnation: early exit at bar 6 (30 min) if flat
+                                if 28 <= minutes_in_trade < 32:  # ~30 min window (bar 6)
                                     if -0.1 <= pnl_r <= 0.2 and mfe_ratio < 0.5:
                                         should_close = True
                                         close_reason = "stagnation"
@@ -1313,11 +1326,11 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                 trigger["trade_mode"] = "shares"
                                 open_directions[symbol] = trigger["direction"]
                             else:
-                                # 0DTE options: fetch chain, pick contract, buy-to-open
-                                from src.utils.alpaca_data import get_0dte_chain
+                                # {dte}DTE options: fetch chain, pick contract, buy-to-open
+                                from src.utils.alpaca_data import get_dte_chain
                                 opt_type = "call" if "call" in trigger["direction"] else "put"
-                                contract = get_0dte_chain(
-                                    symbol, option_type=opt_type,
+                                contract = get_dte_chain(
+                                    symbol, dte=dte, option_type=opt_type,
                                     target_delta=target_delta,
                                     spot_price=trigger.get("price"),
                                 )
@@ -1376,7 +1389,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                         trigger["option_strike"] = contract["strike"]
                                         trigger["option_delta"] = contract["delta"]
                                         trigger["option_premium"] = contract["mid"]
-                                        trigger["trade_mode"] = "0dte_option"
+                                        trigger["trade_mode"] = f"{dte}dte_option"
                                         trigger["num_contracts"] = num_contracts
 
                                         # Synthetic position_id: OCC + entry timestamp. Multiple cluster
@@ -1399,25 +1412,41 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                             "max_favorable_excursion": 0.0,  # MFE tracking for stagnation skip
                                         }
                                         open_directions[pos_id] = trigger["direction"]
-                                        logger.info("  📝 0DTE %s order: %s strike=$%.2f Δ=%.2f premium=$%.2f × %d contracts (pos_id=%s)",
-                                                    opt_type.upper(), new_occ,
+                                        logger.info("  📝 %dDTE %s order: %s strike=$%.2f Δ=%.2f premium=$%.2f × %d contracts (pos_id=%s)",
+                                                    dte, opt_type.upper(), new_occ,
                                                     contract["strike"], contract["delta"], contract["mid"],
                                                     num_contracts, pos_id[-12:])
                                 else:
-                                    logger.warning("  ⚠️ No 0DTE contract found — falling back to shares")
-                                    order = trader.place_sweet_spot_trade(
-                                        symbol=symbol,
-                                        direction=trigger["direction"],
-                                        qty=qty,
-                                        entry=None,
-                                        stop=trigger["stop"],
-                                        target=trigger["target"],
-                                        time_in_force="day",
-                                    )
-                                    trigger["order_id"] = order["order_id"]
-                                    trigger["trade_mode"] = "shares_fallback"
-                                    # Shares fallback: position_id = underlying symbol (one shares position per symbol).
-                                    open_directions[symbol] = trigger["direction"]
+                                    # Chain unavailable for the requested DTE.
+                                    # 0DTE: legacy shares-fallback (don't change live 0DTE behavior).
+                                    # >0DTE: skip trade entirely (user policy 2026-06-18 — avoid mixing
+                                    # 0DTE-priced fills into a 1DTE-tagged strategy, and avoid colliding
+                                    # with the 0DTE agent if both are running).
+                                    if dte > 0:
+                                        logger.warning("  ⚠️ No %dDTE contract found — skipping trade (skip-on-no-chain policy)",
+                                                       dte)
+                                        trigger["discard"] = True
+                                        trigger["discard_reason"] = f"no_{dte}dte_chain"
+                                        # Roll back daily counters so a clean retry can fire next bar.
+                                        trades_today -= 1
+                                        if trigger.get("is_flip", False):
+                                            flip_trades_today -= 1
+                                        last_trigger = None
+                                    else:
+                                        logger.warning("  ⚠️ No 0DTE contract found — falling back to shares")
+                                        order = trader.place_sweet_spot_trade(
+                                            symbol=symbol,
+                                            direction=trigger["direction"],
+                                            qty=qty,
+                                            entry=None,
+                                            stop=trigger["stop"],
+                                            target=trigger["target"],
+                                            time_in_force="day",
+                                        )
+                                        trigger["order_id"] = order["order_id"]
+                                        trigger["trade_mode"] = "shares_fallback"
+                                        # Shares fallback: position_id = underlying symbol (one shares position per symbol).
+                                        open_directions[symbol] = trigger["direction"]
 
                             journal_file.write_text(json.dumps(triggers, indent=2, default=str))
                             logger.info("  📝 Order placed: %s", trigger.get("order_id", "?")[:12])
@@ -1657,6 +1686,12 @@ def main():
                              "on decisive-breakout mornings; falls back to 60-min OR otherwise).")
     parser.add_argument("--dynamic-or-threshold", type=float, default=0.6,
                         help="Dynamic OR decisive-breakout fraction (golden: 0.6).")
+    parser.add_argument("--dte", type=int, default=0,
+                        help="Days-to-expiry of the option contract bought at entry. "
+                             "0 (default) = same-day expiry, legacy behavior. 1 = next-business-day "
+                             "expiry (validated by Phase 2 replay 2026-06-16: SPY PF 1.90→2.28, "
+                             "CALL PF 1.34→1.73). When >0, journal filename is suffixed _{dte}dte; "
+                             "missing chain triggers skip-trade instead of shares fallback.")
     args = parser.parse_args()
 
     paper_trade = not args.no_paper
@@ -1704,6 +1739,7 @@ def main():
                             pb_ema_slow=args.pb_ema_slow,
                             dynamic_or=not args.no_dynamic_or,
                             dynamic_or_threshold=args.dynamic_or_threshold,
+                            dte=args.dte,
                             verbose_rejects=args.verbose_rejects)
                     # After market close, sleep until next day 9:25 AM
                     tomorrow_925 = (now + timedelta(days=1)).replace(hour=9, minute=25, second=0)
@@ -1752,6 +1788,7 @@ def main():
                 pb_ema_slow=args.pb_ema_slow,
                 dynamic_or=not args.no_dynamic_or,
                 dynamic_or_threshold=args.dynamic_or_threshold,
+                dte=args.dte,
                 verbose_rejects=args.verbose_rejects)
 
 

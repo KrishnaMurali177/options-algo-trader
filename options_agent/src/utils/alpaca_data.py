@@ -458,3 +458,244 @@ def get_0dte_chain(
         option_type, best["occ_symbol"], best["strike"], _spot, best["mid"],
     )
     return best
+
+
+def get_dte_chain(
+    symbol: str,
+    dte: int = 0,
+    option_type: str = "call",
+    target_delta: float = 0.50,
+    delta_tolerance: float = 0.15,
+    spot_price: float | None = None,
+) -> dict | None:
+    """Fetch live options chain at expiration = today + dte business days.
+
+    dte=0 → identical to get_0dte_chain (same-day expiry; delegates to preserve
+    proven path). dte=1 → next business day expiry. dte=2 → two business days
+    out. Holidays handled via pandas BDay offset.
+
+    Returns the same dict shape as get_0dte_chain, or None if no suitable
+    contract is found at the computed expiration. Live agent's policy on
+    None is determined by the caller (skip trade / fall back to shares / etc.).
+    """
+    if dte == 0:
+        return get_0dte_chain(
+            symbol=symbol,
+            option_type=option_type,
+            target_delta=target_delta,
+            delta_tolerance=delta_tolerance,
+            spot_price=spot_price,
+        )
+
+    from alpaca.data.historical import OptionHistoricalDataClient
+    from alpaca.trading.client import TradingClient
+    from alpaca.trading.requests import GetOptionContractsRequest
+    from dotenv import load_dotenv
+    from datetime import date, timedelta
+
+    load_dotenv()
+
+    api_key = os.environ.get("ALPACA_API_KEY", "")
+    secret_key = os.environ.get("ALPACA_SECRET_KEY", "")
+    if not api_key or not secret_key:
+        raise RuntimeError("ALPACA_API_KEY / ALPACA_SECRET_KEY not set")
+
+    trading_client = TradingClient(api_key=api_key, secret_key=secret_key, paper=True)
+    today = date.today()
+
+    # Find the Nth tradeable expiry strictly after today. Probing forward day-by-day
+    # is holiday-safe: Alpaca only lists expirations on actual trading days, so any
+    # date returning >0 contracts is a valid expiry. We need `dte` such tradeable
+    # expirations beyond today (dte=1 → next listed expiry, dte=2 → two expiries out).
+    exp_date = None
+    expiries_found = 0
+    probe = today
+    for _ in range(14):  # probe up to 2 weeks forward (covers any holiday gap)
+        probe = probe + timedelta(days=1)
+        # Quick existence check: ask for 1 contract on this date.
+        try:
+            req = GetOptionContractsRequest(
+                underlying_symbols=[symbol],
+                expiration_date=probe,
+                type=option_type,
+                status="active",
+                limit=1,
+            )
+            resp = trading_client.get_option_contracts(req)
+            if resp and resp.option_contracts:
+                expiries_found += 1
+                if expiries_found == dte:
+                    exp_date = probe
+                    break
+        except Exception as e:
+            logger.warning("Probe for %s expiry %s failed: %s", symbol, probe, e)
+            continue
+
+    if exp_date is None:
+        logger.warning("No %dDTE %s expiry found for %s within 14 days of %s",
+                       dte, option_type, symbol, today)
+        return None
+
+    try:
+        contracts = []
+        page_token = None
+        while True:
+            req = GetOptionContractsRequest(
+                underlying_symbols=[symbol],
+                expiration_date=exp_date,
+                type=option_type,
+                status="active",
+                page_token=page_token,
+            )
+            contracts_resp = trading_client.get_option_contracts(req)
+            if not contracts_resp:
+                break
+            contracts.extend(contracts_resp.option_contracts or [])
+            page_token = getattr(contracts_resp, "next_page_token", None)
+            if not page_token:
+                break
+    except Exception as e:
+        logger.error("Failed to fetch %dDTE chain for %s (exp=%s): %s", dte, symbol, exp_date, e)
+        return None
+
+    if not contracts:
+        logger.warning("No %dDTE %s contracts found for %s expiring %s", dte, option_type, symbol, exp_date)
+        return None
+
+    snapshots = {}
+    try:
+        option_client = OptionHistoricalDataClient(api_key=api_key, secret_key=secret_key)
+        occ_symbols = [c.symbol for c in contracts]
+        from alpaca.data.requests import OptionSnapshotRequest
+        for i in range(0, len(occ_symbols), 100):
+            batch = occ_symbols[i:i + 100]
+            batch_snaps = option_client.get_option_snapshot(
+                OptionSnapshotRequest(symbol_or_symbols=batch)
+            )
+            if batch_snaps:
+                snapshots.update(batch_snaps)
+    except Exception as e:
+        logger.warning("Failed to fetch option snapshots (%dDTE): %s — using strike proximity only", dte, e)
+
+    _spot = spot_price
+    if _spot is None or _spot <= 0:
+        try:
+            from alpaca.data.historical import StockHistoricalDataClient
+            from alpaca.data.requests import StockLatestTradeRequest
+            stock_client = StockHistoricalDataClient(api_key=api_key, secret_key=secret_key)
+            trade_resp = stock_client.get_stock_latest_trade(
+                StockLatestTradeRequest(symbol_or_symbols=symbol)
+            )
+            if symbol in trade_resp:
+                _spot = float(trade_resp[symbol].price)
+        except Exception:
+            pass
+
+    MAX_STRIKE_PCT_FROM_SPOT = 0.02
+
+    best = None
+    best_delta_diff = float("inf")
+    for contract in contracts:
+        occ = contract.symbol
+        snap = snapshots.get(occ)
+        if snap and snap.greeks:
+            delta = abs(snap.greeks.delta) if snap.greeks.delta else 0.0
+            # implied_volatility was removed from OptionsGreeks in newer alpaca-py.
+            # get_0dte_chain's identical code only avoids crashing because paper-feed
+            # always returns greeks=None, tripping the else branch. Be defensive here.
+            iv = getattr(snap.greeks, "implied_volatility", 0.0) or 0.0
+            gamma = snap.greeks.gamma or 0.0
+            theta = snap.greeks.theta or 0.0
+        else:
+            delta = 0.0
+            iv = gamma = theta = 0.0
+        bid = float(snap.latest_quote.bid_price) if snap and snap.latest_quote else 0.0
+        ask = float(snap.latest_quote.ask_price) if snap and snap.latest_quote else 0.0
+        mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else 0.0
+        if mid <= 0.01:
+            continue
+        strike = float(contract.strike_price)
+        if _spot and _spot > 0:
+            if abs(strike - _spot) / _spot > MAX_STRIKE_PCT_FROM_SPOT:
+                continue
+        delta_diff = abs(delta - target_delta)
+        if delta_diff < best_delta_diff and delta_diff <= delta_tolerance:
+            best_delta_diff = delta_diff
+            best = {
+                "occ_symbol": occ,
+                "underlying": symbol,
+                "strike": float(contract.strike_price),
+                "expiration": str(contract.expiration_date),
+                "option_type": option_type,
+                "delta": delta,
+                "gamma": gamma,
+                "theta": theta,
+                "iv": iv,
+                "bid": bid,
+                "ask": ask,
+                "mid": mid,
+            }
+
+    if best:
+        logger.info(
+            "Selected %dDTE %s: %s strike=$%.2f delta=%.2f mid=$%.2f (exp=%s)",
+            dte, option_type, best["occ_symbol"], best["strike"], best["delta"], best["mid"], best["expiration"],
+        )
+        return best
+
+    # Strike-proximity fallback (same logic as get_0dte_chain).
+    if not _spot or _spot <= 0:
+        logger.warning("No %dDTE %s contract near delta %.2f for %s (no spot for fallback)",
+                       dte, option_type, target_delta, symbol)
+        return None
+
+    best_strike_diff = float("inf")
+    best_contract = None
+    best_snap = None
+    for contract in contracts:
+        strike = float(contract.strike_price)
+        if abs(strike - _spot) / _spot > MAX_STRIKE_PCT_FROM_SPOT:
+            continue
+        strike_diff = abs(strike - _spot)
+        if strike_diff < best_strike_diff:
+            best_strike_diff = strike_diff
+            best_contract = contract
+            best_snap = snapshots.get(contract.symbol)
+
+    if best_contract is None:
+        logger.warning("No %dDTE %s contract within %.0f%% of spot $%.2f for %s",
+                       dte, option_type, MAX_STRIKE_PCT_FROM_SPOT * 100, _spot, symbol)
+        return None
+
+    strike = float(best_contract.strike_price)
+    bid = float(best_snap.latest_quote.bid_price) if best_snap and best_snap.latest_quote else 0.0
+    ask = float(best_snap.latest_quote.ask_price) if best_snap and best_snap.latest_quote else 0.0
+    mid = (bid + ask) / 2 if (bid > 0 and ask > 0) else 0.0
+
+    if mid <= 0.01:
+        logger.warning(
+            "%dDTE %s closest-strike contract %s (strike=$%.2f, spot=$%.2f) has no quote — "
+            "skipping trade rather than trading on synthesized premium",
+            dte, option_type, best_contract.symbol, strike, _spot,
+        )
+        return None
+
+    best = {
+        "occ_symbol": best_contract.symbol,
+        "underlying": symbol,
+        "strike": strike,
+        "expiration": str(best_contract.expiration_date),
+        "option_type": option_type,
+        "delta": 0.50,
+        "gamma": 0.0,
+        "theta": 0.0,
+        "iv": 0.0,
+        "bid": bid,
+        "ask": ask,
+        "mid": mid,
+    }
+    logger.info(
+        "Selected %dDTE %s by strike proximity (greeks unavailable): %s strike=$%.2f spot=$%.2f mid=$%.2f (exp=%s)",
+        dte, option_type, best["occ_symbol"], best["strike"], _spot, best["mid"], best["expiration"],
+    )
+    return best

@@ -218,7 +218,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                  pb_ema_fast: int = 9,
                  pb_ema_slow: int = 21,
                  tiered_stagnation: bool = False,
-                 tiered_stag_early_bar: int = 8,
+                 tiered_stag_early_bar: int = 6,
                  tiered_stag_pnl_lo: float = -0.1,
                  tiered_stag_pnl_hi: float = 0.2,
                  stag_cooldown_bars: int = 1,
@@ -242,6 +242,9 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                     logit_r_max_threshold: float = 1e9,
                     vix_continuous: bool = False,
                     atr_stop_k: float = 0.0,
+                    stop_buffer_pct: float = 0.10,
+                    dte: int = 0,
+                    strict_real_options: bool = False,
                     debug: bool = False) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
@@ -925,8 +928,8 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             else:
                 mid = (ar_range_high + ar_range_low) / 2
                 # VIX-conditional stop buffer: widens in turbulent regimes,
-                # anchored to baseline 0.10 at VIX <= vix_stop_anchor.
-                buffer_pct = 0.10 + vix_stop_slope * max(0.0, vix - vix_stop_anchor)
+                # anchored to baseline stop_buffer_pct (golden 0.10) at VIX <= vix_stop_anchor.
+                buffer_pct = stop_buffer_pct + vix_stop_slope * max(0.0, vix - vix_stop_anchor)
                 stop = mid + buffer_pct * (ar_range_high - ar_range_low)
                 risk = entry - stop
             if risk <= 0:
@@ -939,7 +942,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 stop = entry + risk
             else:
                 mid = (ar_range_high + ar_range_low) / 2
-                buffer_pct = 0.10 + vix_stop_slope * max(0.0, vix - vix_stop_anchor)
+                buffer_pct = stop_buffer_pct + vix_stop_slope * max(0.0, vix - vix_stop_anchor)
                 stop = mid - buffer_pct * (ar_range_high - ar_range_low)
                 risk = stop - entry
             if risk <= 0:
@@ -1117,10 +1120,10 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 from src.utils.alpaca_options import (
                     fetch_intraday_option_bars,
                     option_close_at,
-                    resolve_atm_0dte,
+                    resolve_atm_dte,
                 )
                 opt_type = "call" if direction == "buy_call" else "put"
-                occ_symbol = resolve_atm_0dte(symbol, trade_date, opt_type, price)
+                occ_symbol = resolve_atm_dte(symbol, trade_date, dte, opt_type, price)
                 if occ_symbol:
                     opt_bars = fetch_intraday_option_bars(occ_symbol, trade_date, "5min")
                     entry_premium = option_close_at(opt_bars, ts)
@@ -1139,6 +1142,16 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             except Exception as e:
                 logger.debug("Real-options pricing failed for %s %s: %s — falling back to synth",
                              symbol, ts, e)
+
+        # Strict-real-options mode: when real pricing is unavailable, skip the trigger
+        # entirely rather than fall back to synth. Mirrors the live 1DTE agent's
+        # skip-on-no-chain policy. Used for honest A/B numbers — see
+        # [[feedback_real_options_ab_discipline]] (synth inflates PF/Sharpe/Calmar 40-65%).
+        # Skip happens before state tracking (pending_exits / open_until / stagnation
+        # cooldown), so the trigger is treated as if it never fired — same semantics as
+        # a chop reject.
+        if simulate_options and real_options and strict_real_options and not priced_real:
+            continue
 
         if simulate_options and not priced_real:
             # Estimate premium: ATR * premium_atr_pct (rough ATM 0DTE premium)
@@ -1307,8 +1320,8 @@ def main():
     # Defaults match GOLDEN parameters (see README) — produces validated 2-yr SPY
     # results (real Alpaca options): 608 trades, +$5,053/contract, +$15,159 cascade-sized.
     # Tighter stops (60% of range), decay floor 0.4, mid-tier target 1.5R.
-    # Stagnation: tiered (bar 8 early exit + bar 12 standard), MFE skip at 0.5R.
-    # Tiered stagnation: exits flat trades (-0.1R to +0.2R) at bar 8 (40 min);
+    # Stagnation: tiered (bar 6 early exit + bar 12 standard), MFE skip at 0.5R.
+    # Tiered stagnation: exits flat trades (-0.1R to +0.2R) at bar 6 (30 min, promoted 8→6 on 2026-06-19);
     #   extends cooldown to 6 bars (30 min) after stagnation exits.
     #   Validated 730d SPY: PF 1.51→1.60, Sharpe 2.31→2.63, MDD −33%, Calmar +60%.
     # Stagnation threshold: 0.3R (was 0.5R — keeps trades with some momentum alive).
@@ -1500,12 +1513,16 @@ def main():
                         help="Skip days where VIX spiked >N%% day-over-day (0=disabled, default: 20)")
     # ── Tiered Stagnation (golden default: ON) ──
     parser.add_argument("--tiered-stagnation", action="store_true", default=True,
-                        help="Enable tiered stagnation: early exit at bar 8 if trade is flat (-0.1R to +0.2R),"
-                             " plus extended 6-bar cooldown after stagnation exits (golden: ON)")
+                        help="Enable tiered stagnation: early exit at bar 6 if trade is flat (-0.1R to +0.2R),"
+                             " plus standard cooldown after stagnation exits (golden: ON)")
     parser.add_argument("--no-tiered-stagnation", action="store_true",
                         help="Disable tiered stagnation (revert to bar-12-only stagnation)")
-    parser.add_argument("--tiered-stag-early-bar", type=int, default=8,
-                        help="Bar at which tiered stagnation checks for flat trades (default: 8 = 40 min)")
+    parser.add_argument("--tiered-stag-early-bar", type=int, default=6,
+                        help="Bar at which tiered stagnation checks for flat trades (golden 2026-06-19: "
+                             "8→6 promoted after Phase 3b grid passed strict gate on SPY+QQQ × 0DTE+1DTE, "
+                             "4/4 quartiles all cells. SPY 0DTE PF 1.91→2.02 Sharpe 3.20→3.45, "
+                             "QQQ 0DTE PF 1.41→1.47 Sharpe 1.84→2.02. CALL PF improves on every cell. "
+                             "6 bars = 30 min after entry.)")
     parser.add_argument("--tiered-stag-pnl-lo", type=float, default=-0.1,
                         help="Min P&L as fraction of R for early stag exit (default: -0.1)")
     parser.add_argument("--tiered-stag-pnl-hi", type=float, default=0.2,
@@ -1586,6 +1603,26 @@ def main():
                         help="ATR-anchored stop: stop = entry ± k × ATR_14, replacing the "
                              "range-anchored 'mid ± 0.10 × OR_width' default. 0 = disabled "
                              "(use range-anchored). Try k ∈ {0.4, 0.5, 0.6, 0.8, 1.0}.")
+    parser.add_argument("--stop-buffer-pct", type=float, default=0.10,
+                        help="Range-anchored stop buffer: stop = mid ± buffer_pct × OR_width. "
+                             "Golden 0.10. Tested 2026-06-19 for 1DTE retune (theta drag is "
+                             "lower on 1DTE, so wider stops may give more breathing room "
+                             "without per-bar theta penalty). VIX-conditional widening adds "
+                             "on top via --vix-stop-slope.")
+    parser.add_argument("--dte", type=int, default=0,
+                        help="Days-to-expiry of the option contract bought at entry. "
+                             "0 (default) = 0DTE same-day expiry (legacy). 1 = expiry next "
+                             "business day, 2 = two business days out, etc. Same-day exit "
+                             "regardless. Real-options pricing required; falls back to synth "
+                             "if Alpaca chain unavailable for the longer expiry.")
+    parser.add_argument("--strict-real-options", action="store_true", default=False,
+                        help="Skip trade entirely when real Alpaca pricing is unavailable "
+                             "(no synth fallback). Matches the live 1DTE agent's "
+                             "skip-on-no-chain policy. Use for honest A/B numbers since synth "
+                             "pricing inflates PF/Sharpe/Calmar 40-65%% per "
+                             "feedback_real_options_ab_discipline. Skipped triggers do not "
+                             "register in pending_exits / stagnation cooldown / open_until "
+                             "state — treated as if the trigger never fired.")
     parser.add_argument("--skip-failed-bounce", dest="skip_failed_bounce",
                         action="store_true", default=False,
                         help="Day-regime sit-out: skip days where gap_pct ∈ (0, X] AND prior-day "
@@ -1847,6 +1884,9 @@ def main():
                               logit_r_max_threshold=args.logit_r_max_threshold,
                               vix_continuous=args.vix_continuous,
                               atr_stop_k=args.atr_stop_k,
+                              stop_buffer_pct=args.stop_buffer_pct,
+                              dte=args.dte,
+                              strict_real_options=args.strict_real_options,
                               debug=(debug_date is not None and day == debug_date))
         all_triggers.extend(triggers)
 
@@ -1856,7 +1896,10 @@ def main():
     if args.shares:
         mode_label = "SHARES"
     elif args.real_options and not args.no_real_options:
-        mode_label = "0DTE OPTIONS (Alpaca historical bars; synth fallback)"
+        if args.strict_real_options:
+            mode_label = f"{args.dte}DTE OPTIONS (Alpaca historical bars; STRICT — no synth fallback)"
+        else:
+            mode_label = f"{args.dte}DTE OPTIONS (Alpaca historical bars; synth fallback)"
     else:
         mode_label = f"0DTE OPTIONS (synth Δ={args.option_delta}, γ={args.option_gamma})"
     print(f"  Mode: {mode_label}")

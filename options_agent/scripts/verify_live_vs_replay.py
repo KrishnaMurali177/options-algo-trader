@@ -326,7 +326,7 @@ def main() -> None:
         decay_aware_targets=True, decay_target_floor=0.4, decay_halflife_bars=8,
         active_range=True, active_range_bars=6, active_range_blend=0.25,
         pb_ema=pb_ema_on, pb_ema_fast=13, pb_ema_slow=55,
-        tiered_stagnation=True, tiered_stag_early_bar=8,
+        tiered_stagnation=True, tiered_stag_early_bar=6,
         tiered_stag_pnl_lo=-0.1, tiered_stag_pnl_hi=0.2, stag_cooldown_bars=1,
         momentum_flip=True, momentum_flip_threshold=40.0, max_flip_trades=1,
         vix=day_vix, prior_bars=prior_bars,

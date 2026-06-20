@@ -284,6 +284,18 @@ def get_et_now() -> datetime:
 _BAR_CLOSE_BUFFER_SEC = 5
 
 
+# FOMC meeting END dates (rate decision days, 2:00 PM ET presser). Public schedule.
+# Golden 2026-06-04: skip these days — both symbols, both windows clean sweep.
+# Mirror of FOMC_DATES in replay_sweet_spot.py — keep in sync.
+FOMC_DATES: set[str] = {
+    "2024-06-12", "2024-07-31", "2024-09-18", "2024-11-07", "2024-12-18",
+    "2025-01-29", "2025-03-19", "2025-05-07", "2025-06-18", "2025-07-30",
+    "2025-09-17", "2025-10-29", "2025-12-10",
+    "2026-01-28", "2026-03-18", "2026-04-29",
+    "2026-06-17", "2026-07-29", "2026-09-16", "2026-11-04", "2026-12-16",
+}
+
+
 def seconds_until_next_bar_close(now_et: datetime | None = None, bar_sec: int = 300) -> float:
     """Seconds from now until the next 5-min bar close (+ buffer).
 
@@ -320,12 +332,13 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
                      regime_guard: bool = True,
                      pb_ema: bool = True, pb_ema_fast: int = 13, pb_ema_slow: int = 55,
                      prior_triggers: list[dict] | None = None,
-                     cluster_penalty: bool = True,
+                     cluster_penalty: bool = False,
                      cluster_penalty_window_min: int = 30,
                      cluster_penalty_cap: int = 2,
-                     vwap_slope_override_t: float = 0.7,
-                     vwap_slope_override_k: int = 3,
-                     vwap_slope_override_cmax: float = 0.65,
+                     rsi_extreme_penalty: float = 30.0,
+                     vwap_slope_override_t: float = 0.0,
+                     vwap_slope_override_k: int = 0,
+                     vwap_slope_override_cmax: float = 0.0,
                      dynamic_or: bool = True,
                      dynamic_or_threshold: float = 0.6) -> dict:
     """Evaluate sweet spot conditions. Always returns a verdict dict.
@@ -453,6 +466,22 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
                     same_dir_recent += 1
             penalty = min(same_dir_recent, cluster_penalty_cap)
             quality -= penalty
+
+        # ── RSI-extreme reject (golden 2026-06-02, replay parity) ──
+        # Reject triggers entering directional exhaustion (RSI>=80 CALL / <=20 PUT).
+        # 730d + 365d A/B: SPY Sharpe 2.73→3.04 / Calmar 12.46→16.70; QQQ 365d
+        # MDD% 68.2→38.0. See strategy_rsi_extreme_promoted_2026_06_02 memory.
+        # rsi_14 == 50.0 is the fallback default (no data) — treat as missing.
+        if rsi_extreme_penalty > 0 and indicators.rsi_14 != 50.0:
+            _sign = 1.0 if direction == "buy_call" else -1.0
+            _rsi_pressure = _sign * (indicators.rsi_14 - 50.0)
+            if _rsi_pressure >= rsi_extreme_penalty:
+                return {"status": "reject", "stage": "rsi_extreme",
+                        "reason": f"{direction.replace('buy_', '').upper()} vetoed by RSI extreme "
+                                  f"(rsi={indicators.rsi_14:.1f}, pressure={_rsi_pressure:.1f} "
+                                  f">= {rsi_extreme_penalty:.1f})",
+                        "direction": direction, "rsi_14": indicators.rsi_14,
+                        "rsi_pressure": _rsi_pressure}
 
         cascade = MomentumCascadeDetector().analyze(
             indicators, quality_score=quality,
@@ -712,16 +741,27 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             regime_guard: bool = False,
             vix_max: float = 30.0,
             vix_spike_pct: float = 20.0,
+            skip_fomc: bool = True,
+            skip_failed_bounce: bool = False,
+            failed_bounce_gap_max: float = 0.50,
+            failed_bounce_close_pos_max: float = 0.20,
             pb_ema: bool = True,
             pb_ema_fast: int = 13,
             pb_ema_slow: int = 55,
             dynamic_or: bool = True,
             dynamic_or_threshold: float = 0.6,
+            dte: int = 0,
             verbose_rejects: bool = False):
     """Run the agent for one trading day."""
     today = date.today()
     # Per-symbol journal so concurrent SPY/QQQ/VOO agents don't clobber each other's writes.
-    journal_file = JOURNAL_DIR / f"{today.isoformat()}_{symbol}.json"
+    # When dte>0, suffix with "_{dte}dte" to keep 1DTE/2DTE strategy state isolated from
+    # the legacy 0DTE journal (which keeps its unprefixed filename for backward-compat
+    # of restart-recovery on the existing live 0DTE agent).
+    if dte > 0:
+        journal_file = JOURNAL_DIR / f"{today.isoformat()}_{symbol}_{dte}dte.json"
+    else:
+        journal_file = JOURNAL_DIR / f"{today.isoformat()}_{symbol}.json"
     verdicts_file = JOURNAL_DIR / f"{today.isoformat()}_verdicts.jsonl"
     triggers = json.loads(journal_file.read_text()) if journal_file.exists() else []
 
@@ -745,7 +785,52 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                 "ON" if regime_guard else "OFF",
                 f"{pb_ema_fast}/{pb_ema_slow}" if pb_ema else "OFF",
                 bool(trader),
-                "shares" if trade_shares else f"0DTE options (contracts={contracts}, delta={target_delta})")
+                "shares" if trade_shares else f"{dte}DTE options (contracts={contracts}, delta={target_delta})")
+    logger.info("Exit goldens: tiered_stag_early_bar=6 (30min, golden 2026-06-19), tiered_stag_pnl_band=[-0.1, +0.2]R, "
+                "tiered_stag_mfe_skip=0.5R, fallback_stagnation=bar12 (60min, threshold=0.3R), "
+                "stop=mid±0.10×OR_width, decay_target_halflife=8 (40min), decay_target_floor=0.4, time_stop=15:30 ET")
+
+    # ── FOMC sit-out filter (golden 2026-06-04: skip rate-decision days) ──
+    if skip_fomc and today.isoformat() in FOMC_DATES:
+        logger.info("🚫 FOMC SIT-OUT: %s is an FOMC rate-decision day. Skipping today.", today.isoformat())
+        return
+
+    # ── Failed-bounce day-regime filter (golden 2026-06-06) ──
+    # Skip days where today gaps up small (0% to 0.50%) AND yesterday closed in
+    # the lower 20% of its range — bearish-capitulation close + weak overnight bid
+    # = failed bounce archetype. Diagnostic-grounded cross-symbol cohort.
+    # A/B: SPY 730d PF 3.09→3.38, Sharpe 5.83→6.04; QQQ 365d Calmar 17→26, MDD% 5.8→3.8.
+    if skip_failed_bounce:
+        try:
+            symbol_for_bars = symbol
+            # Pull the last 2 daily bars to compute prior_close, prior_high, prior_low, today_open
+            from src.utils.alpaca_data import fetch_bars
+            recent_5m = fetch_bars(symbol_for_bars, days_back=3, interval="5min")
+            if recent_5m is not None and len(recent_5m) > 0:
+                recent_5m["_d"] = recent_5m.index.date
+                daily = recent_5m.groupby("_d").agg(
+                    Open=("Open", "first"), High=("High", "max"),
+                    Low=("Low", "min"), Close=("Close", "last"),
+                )
+                if len(daily) >= 2:
+                    today_open = float(daily["Open"].iloc[-1])
+                    p_close = float(daily["Close"].iloc[-2])
+                    p_high = float(daily["High"].iloc[-2])
+                    p_low = float(daily["Low"].iloc[-2])
+                    p_range = p_high - p_low
+                    if p_close > 0 and p_range > 0:
+                        gap_pct = (today_open - p_close) / p_close * 100
+                        close_pos = (p_close - p_low) / p_range
+                        if (0 < gap_pct <= failed_bounce_gap_max
+                                and close_pos <= failed_bounce_close_pos_max):
+                            logger.info(
+                                "🚫 FAILED-BOUNCE SIT-OUT: gap_pct=%.2f%% ∈ (0, %.2f] AND "
+                                "prior_close_pos=%.2f ≤ %.2f — skipping today.",
+                                gap_pct, failed_bounce_gap_max,
+                                close_pos, failed_bounce_close_pos_max)
+                            return
+        except Exception as e:
+            logger.warning("Failed-bounce filter check failed (%s) — proceeding without it.", e)
 
     # ── VIX sit-out filter (golden: skip if VIX > 30 or spiked > 20% day-over-day) ──
     if vix_max > 0 or vix_spike_pct > 0:
@@ -776,18 +861,30 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
     flip_trades_today = 0
     stops_today = 0
     consecutive_losses = 0
-    open_directions: dict[str, str] = {}  # symbol/occ_symbol → "buy_call" / "buy_put"
-    open_options: dict[str, dict] = {}  # occ_symbol → {entry_premium, stop_price, target_price, direction}
+    # Position tracking — supports MULTIPLE positions per (symbol, direction) to
+    # match replay's stacking behavior. Keyed on synthetic position_id (occ#entry_iso)
+    # rather than raw OCC, because cluster entries 5 min apart may resolve to the
+    # same OCC strike, and we need each entry tracked independently for journaling.
+    #
+    # OCC-fate-cohort: Alpaca's close_position(occ) closes the entire OCC qty, so
+    # when one position at OCC X exits, all positions sharing X exit together.
+    # This is acceptable — same-OCC positions have nearly identical Greeks.
+    open_directions: dict[str, str] = {}  # position_id → "buy_call" / "buy_put"
+    open_options: dict[str, dict] = {}  # position_id → {entry_premium, stop_price, target_price, direction, occ_symbol, ...}
 
     # ── Restart recovery: rehydrate open positions from Alpaca + journal ──
     # If the agent was restarted mid-day, in-memory state is empty. Pull live
     # Alpaca positions for this symbol's 0DTE options and rejoin with the
     # journal so exit monitoring resumes seamlessly.
+    #
+    # Multi-position aware: iterate ALL unclosed triggers (not just unique OCCs),
+    # so a cluster of N same-OCC entries is fully rehydrated as N position_ids.
     if trader and not trade_shares:
         try:
             live_positions = {p.symbol: p for p in trader.client.get_all_positions()}
+            expected_trade_mode = f"{dte}dte_option"
             for trig in triggers:
-                if trig.get("closed") or trig.get("discard") or trig.get("trade_mode") != "0dte_option":
+                if trig.get("closed") or trig.get("discard") or trig.get("trade_mode") != expected_trade_mode:
                     continue
                 occ = trig.get("occ_symbol")
                 if occ and occ in live_positions and occ.startswith(symbol):
@@ -796,7 +893,9 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                         entry_time = datetime.fromisoformat(entry_time_str)
                     except Exception:
                         entry_time = get_et_now()
-                    open_options[occ] = {
+                    pos_id = f"{occ}#{entry_time.isoformat()}"
+                    open_options[pos_id] = {
+                        "occ_symbol": occ,
                         "entry_premium": trig.get("option_premium", 1.0),
                         "stop_price": trig["stop"],
                         "target_price": trig["target"],
@@ -807,12 +906,12 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                         "entry_underlying": trig.get("price", trig["entry"]),
                         "max_favorable_excursion": 0.0,
                     }
-                    open_directions[occ] = trig["direction"]
+                    open_directions[pos_id] = trig["direction"]
                     trades_today += 1  # count toward daily cap so we don't over-trade
                     # Set cooldown anchor so next scan doesn't immediately re-trigger.
                     last_trigger = max(last_trigger, entry_time) if last_trigger else entry_time
-                    logger.info("♻ Recovered open position from journal: %s (stop=$%.2f target=$%.2f)",
-                                occ, trig["stop"], trig["target"])
+                    logger.info("♻ Recovered open position from journal: %s @ %s (stop=$%.2f target=$%.2f)",
+                                occ, entry_time.strftime("%H:%M"), trig["stop"], trig["target"])
         except Exception as e:
             logger.warning("Restart-recovery scan failed: %s — proceeding with empty state", e)
 
@@ -831,22 +930,33 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             continue
 
         # ── Gainz early-exit check (runs every loop, even after entry cutoff) ──
+        # Iterates by position_id; an OCC-fate-cohort close drops ALL positions
+        # sharing that OCC together (single Alpaca close_position call closes them all).
         if gainz_exit and trader and open_directions:
             try:
                 live_symbols = {p["symbol"] for p in trader.get_positions()}
             except Exception as e:
                 logger.warning("Failed to fetch positions for Gainz check: %s", e)
                 live_symbols = set()
-            # Drop tracked symbols that are no longer open (stop/target/EOD already fired)
-            open_directions = {s: d for s, d in open_directions.items() if s in live_symbols}
-            for sym, dir_ in list(open_directions.items()):
+            # Drop tracked positions whose OCC is no longer open at Alpaca
+            # (stop/target/EOD already fired). For shares fallback, the "occ" is the underlying symbol.
+            def _pos_alpaca_symbol(pid):
+                info = open_options.get(pid, {})
+                return info.get("occ_symbol") or pid  # shares fallback: pid IS the underlying symbol
+            open_directions = {pid: d for pid, d in open_directions.items()
+                               if _pos_alpaca_symbol(pid) in live_symbols}
+            open_options = {pid: info for pid, info in open_options.items() if pid in open_directions}
+            for pos_id, dir_ in list(open_directions.items()):
+                if pos_id not in open_directions:
+                    continue  # already closed earlier this iteration (fate cohort)
+                occ_or_sym = _pos_alpaca_symbol(pos_id)
                 # Always evaluate Gainz on the underlying's bars, never the OCC symbol.
                 if _check_gainz_exit(symbol, dir_, gainz_body_ratio,
                                      gainz_rsi_overbought, gainz_rsi_oversold):
                     # ── Min-profit gate: only Gainz-exit if P&L >= gainz_min_profit_r × risk ──
                     if gainz_min_profit_r > 0:
                         trig_match = next((t for t in triggers
-                                           if (t.get("symbol") == sym or t.get("occ_symbol") == sym)
+                                           if (t.get("symbol") == occ_or_sym or t.get("occ_symbol") == occ_or_sym)
                                            and not t.get("closed")), None)
                         if trig_match:
                             risk = abs(trig_match.get("entry", 0) - trig_match.get("stop", 0))
@@ -863,47 +973,62 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                             ul_pnl = entry_ul - cur_price
                                         if ul_pnl < risk * gainz_min_profit_r:
                                             logger.debug("Gainz exit skipped for %s — underlying P&L $%.2f < %.1fR ($%.2f)",
-                                                         sym, ul_pnl,
+                                                         occ_or_sym, ul_pnl,
                                                          gainz_min_profit_r, risk * gainz_min_profit_r)
                                             continue
                                 except Exception as e:
-                                    logger.warning("Min-profit gate check failed for %s: %s", sym, e)
-                    is_option = sym in open_options
-                    logger.info("⚡ GAINZ EXIT: closing %s %s on opposing reversal signal",
-                                sym, "CALL" if "call" in dir_ else "PUT")
+                                    logger.warning("Min-profit gate check failed for %s: %s", occ_or_sym, e)
+                    is_option = open_options.get(pos_id, {}).get("occ_symbol") is not None
+                    # Identify the OCC-fate-cohort: all position_ids sharing this OCC close together.
+                    cohort_ids = [pid for pid, info in open_options.items()
+                                  if (info.get("occ_symbol") or pid) == occ_or_sym]
+                    if not cohort_ids:
+                        cohort_ids = [pos_id]
+                    logger.info("⚡ GAINZ EXIT: closing %s %s on opposing reversal signal (cohort=%d position(s))",
+                                occ_or_sym, "CALL" if "call" in dir_ else "PUT", len(cohort_ids))
                     if is_option:
-                        close_result = trader.close_options_position(sym)
+                        close_result = trader.close_options_position(occ_or_sym)
                     else:
-                        close_result = trader.close_position(sym)
-                    # Stamp the matching trigger with the Gainz exit info
+                        close_result = trader.close_position(occ_or_sym)
+                    # Stamp ALL triggers in the cohort with the Gainz exit info
+                    cohort_entry_times = {open_options[pid].get("entry_time") for pid in cohort_ids if pid in open_options}
                     for trig in triggers:
-                        if (trig.get("occ_symbol") == sym or trig.get("symbol") == sym) and not trig.get("closed"):
-                            trig["exit_reason"] = "gainz_exit"
-                            trig["exit_time"] = get_et_now().isoformat()
-                            if close_result:
-                                trig["close_order_id"] = close_result["order_id"]
-                            trig["closed"] = True
-                            break
+                        if trig.get("closed"):
+                            continue
+                        trig_occ = trig.get("occ_symbol") or trig.get("symbol")
+                        if trig_occ != occ_or_sym:
+                            continue
+                        trig["exit_reason"] = "gainz_exit"
+                        trig["exit_time"] = get_et_now().isoformat()
+                        if close_result:
+                            trig["close_order_id"] = close_result["order_id"]
+                        trig["closed"] = True
                     journal_file.write_text(json.dumps(triggers, indent=2, default=str))
+                    try:
+                        g_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
+                        g_price = float(g_bars["Close"].iloc[-1]) if len(g_bars) > 0 else 0
+                    except Exception:
+                        g_price = 0
                     for trig in triggers:
-                        if (trig.get("occ_symbol") == sym or trig.get("symbol") == sym) and trig.get("closed"):
-                            try:
-                                g_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
-                                g_price = float(g_bars["Close"].iloc[-1]) if len(g_bars) > 0 else trig.get("entry", 0)
-                            except Exception:
-                                g_price = trig.get("entry", 0)
-                            notifier.notify_trade_exit(trig, "gainz", g_price)
-                            break
-                    open_directions.pop(sym, None)
-                    open_options.pop(sym, None)
+                        trig_occ = trig.get("occ_symbol") or trig.get("symbol")
+                        if trig_occ == occ_or_sym and trig.get("closed") and trig.get("exit_reason") == "gainz_exit":
+                            notifier.notify_trade_exit(trig, "gainz", g_price or trig.get("entry", 0))
+                    for pid in cohort_ids:
+                        open_directions.pop(pid, None)
+                        open_options.pop(pid, None)
 
         # ── Options stop/target/time-stop monitoring (underlying-based, since no bracket for options) ──
+        # Iterates per position_id. When one position triggers an exit, the entire
+        # OCC-fate-cohort closes together via Alpaca's close_position(occ).
         if not trade_shares and trader and open_options:
             try:
                 current_price_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
                 if len(current_price_bars) > 0:
                     underlying_price = float(current_price_bars["Close"].iloc[-1])
-                    for occ_sym, opt_info in list(open_options.items()):
+                    for pos_id, opt_info in list(open_options.items()):
+                        if pos_id not in open_options:
+                            continue  # already closed earlier this iteration via OCC cohort
+                        occ_sym = opt_info.get("occ_symbol", pos_id)
                         should_close = False
                         close_reason = ""
 
@@ -977,8 +1102,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
 
                         # Stagnation exit: if 60 min (12 bars) have passed and trade
                         # hasn't moved 0.3R in its favor, cut it to avoid theta bleed.
-                        # Tiered stagnation (golden): at 40 min (8 bars), exit flat trades
-                        # between -0.1R and +0.2R early. At 60 min, standard stagnation.
+                        # Tiered stagnation (golden 2026-06-19: 8→6 bars promoted): at 30 min
+                        # (6 bars), exit flat trades between -0.1R and +0.2R early. At 60 min,
+                        # standard stagnation. Phase 3b strict-real grid: SPY 0DTE PF 1.91→2.02,
+                        # QQQ 0DTE PF 1.41→1.47, 4/4 quartiles passed both symbols/DTEs.
                         # MFE skip (golden): if trade already reached 0.5R, don't stagnation-exit —
                         # let decay_target or stop resolve it. Trades that showed real momentum
                         # but temporarily pulled back deserve more time to reach target.
@@ -993,8 +1120,8 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                 mfe_ratio = mfe / risk if risk > 0 else 0
                                 pnl_r = current_pnl / risk
 
-                                # Tiered stagnation: early exit at bar 8 (40 min) if flat
-                                if 38 <= minutes_in_trade < 42:  # ~40 min window (bar 8)
+                                # Tiered stagnation: early exit at bar 6 (30 min) if flat
+                                if 28 <= minutes_in_trade < 32:  # ~30 min window (bar 6)
                                     if -0.1 <= pnl_r <= 0.2 and mfe_ratio < 0.5:
                                         should_close = True
                                         close_reason = "stagnation"
@@ -1011,9 +1138,14 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             close_reason = "time_stop"
 
                         if should_close:
-                            logger.info("⚡ OPTIONS %s: closing %s (%s at $%.2f)",
-                                        close_reason.upper(), occ_sym, opt_info["direction"], underlying_price)
+                            # OCC-fate-cohort: all positions sharing this OCC close together.
+                            cohort_ids = [pid for pid, info in open_options.items()
+                                          if info.get("occ_symbol", pid) == occ_sym]
+                            logger.info("⚡ OPTIONS %s: closing %s (%s at $%.2f) — cohort=%d position(s)",
+                                        close_reason.upper(), occ_sym, opt_info["direction"],
+                                        underlying_price, len(cohort_ids))
                             close_result = trader.close_options_position(occ_sym)
+                            closed_count = 0
                             for trig in triggers:
                                 if trig.get("occ_symbol") == occ_sym and not trig.get("closed"):
                                     trig["exit_reason"] = close_reason
@@ -1022,18 +1154,19 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                     if close_result:
                                         trig["close_order_id"] = close_result["order_id"]
                                     trig["closed"] = True
-                                    break
+                                    closed_count += 1
                             journal_file.write_text(json.dumps(triggers, indent=2, default=str))
                             for trig in triggers:
-                                if trig.get("occ_symbol") == occ_sym and trig.get("closed"):
+                                if trig.get("occ_symbol") == occ_sym and trig.get("closed") and \
+                                   trig.get("exit_reason") == close_reason:
                                     notifier.notify_trade_exit(trig, close_reason, underlying_price)
-                                    break
-                            open_options.pop(occ_sym, None)
-                            open_directions.pop(occ_sym, None)
+                            for pid in cohort_ids:
+                                open_options.pop(pid, None)
+                                open_directions.pop(pid, None)
+                            # Risk trackers count the COHORT as 1 outcome (one stop event = one stop_today)
+                            # not N stops, since they all closed on the same underlying threshold.
                             if close_reason == "stop":
                                 stops_today += 1
-                            # Consecutive loss tracking by exit type (matches replay logic):
-                            # stop/stagnation = likely loss, target/gainz = likely win
                             if close_reason in ("stop", "stagnation", "time_stop"):
                                 consecutive_losses += 1
                             else:
@@ -1105,8 +1238,18 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                    dynamic_or_threshold=dynamic_or_threshold)
 
         # Persist every verdict (rejects + triggers) to a daily JSONL for offline analysis.
+        # Attach a yfinance options-chain feature snapshot (Dimension 2 data collection).
+        # Cached 60s inside the helper so this only hits yfinance ~once/min/symbol.
+        try:
+            from options_agent.src.utils.yf_chain_features import snapshot as _yf_snap
+            chain_snap = _yf_snap(symbol, spot=verdict.get("close") or verdict.get("price"))
+        except Exception as e:
+            logger.debug("Chain snapshot failed: %s", e)
+            chain_snap = None
         try:
             verdict_record = {"ts": now.isoformat(), "symbol": symbol, **verdict}
+            if chain_snap is not None:
+                verdict_record["chain"] = chain_snap
             with verdicts_file.open("a", encoding="utf-8") as vf:
                 vf.write(json.dumps(verdict_record, default=str) + "\n")
         except Exception as e:
@@ -1131,16 +1274,13 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                 # since 2026-05-20, because live can't enforce a longer post-stag cooldown
                 # in wall-clock (by the time stagnation is detected, the cooldown window
                 # has already elapsed). See bug_replay_cooldown_timing_drift memory.
-                cooldown_sec = 600
-                # Block new entries when a same-direction option is already open
-                # (avoids duplicate buys on the same OCC after restart-recovery).
-                already_open_same_dir = any(
-                    d == trigger["direction"] for d in open_directions.values()
-                )
-                if already_open_same_dir:
-                    logger.info("✗ %s skip [open_position] %s already open in %s — not stacking",
-                                symbol, trigger["direction"], list(open_directions.keys()))
-                elif last_trigger and (now - last_trigger).total_seconds() < cooldown_sec:
+                cooldown_sec = 300
+                # Same-direction stacking is ALLOWED (matches replay parity, 2026-05-25).
+                # Replay opens multiple same-dir positions when triggers cluster on
+                # trend days; live now mirrors this. Duplicate-order safety is enforced
+                # at placement time by comparing in-memory position count vs Alpaca qty.
+                # See [[bug_live_replay_position_stacking]].
+                if last_trigger and (now - last_trigger).total_seconds() < cooldown_sec:
                     logger.debug("Skipping duplicate trigger within cooldown (%d min)", cooldown_sec // 60)
                 else:
                     last_trigger = now
@@ -1186,11 +1326,11 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                 trigger["trade_mode"] = "shares"
                                 open_directions[symbol] = trigger["direction"]
                             else:
-                                # 0DTE options: fetch chain, pick contract, buy-to-open
-                                from src.utils.alpaca_data import get_0dte_chain
+                                # {dte}DTE options: fetch chain, pick contract, buy-to-open
+                                from src.utils.alpaca_data import get_dte_chain
                                 opt_type = "call" if "call" in trigger["direction"] else "put"
-                                contract = get_0dte_chain(
-                                    symbol, option_type=opt_type,
+                                contract = get_dte_chain(
+                                    symbol, dte=dte, option_type=opt_type,
                                     target_delta=target_delta,
                                     spot_price=trigger.get("price"),
                                 )
@@ -1204,51 +1344,109 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                     else:
                                         num_contracts = contracts * cascade_size_low
 
-                                    order = trader.place_options_trade(
-                                        occ_symbol=contract["occ_symbol"],
-                                        direction=trigger["direction"],
-                                        qty=num_contracts,
-                                        # No limit_price = market order (0DTE needs instant fill)
-                                        time_in_force="day",
+                                    # ── Duplicate-order guard ──
+                                    # Before placing, verify Alpaca's reported qty at this OCC matches
+                                    # the SUM of qty across our open positions at this OCC. If Alpaca
+                                    # has more than expected, an out-of-band buy occurred (restart race
+                                    # or parallel agent). Abort to prevent double-buying.
+                                    new_occ = contract["occ_symbol"]
+                                    expected_qty = sum(
+                                        info.get("num_contracts", 0)
+                                        for pid, info in open_options.items()
+                                        if info.get("occ_symbol") == new_occ
                                     )
-                                    trigger["order_id"] = order["order_id"]
-                                    trigger["occ_symbol"] = contract["occ_symbol"]
-                                    trigger["option_strike"] = contract["strike"]
-                                    trigger["option_delta"] = contract["delta"]
-                                    trigger["option_premium"] = contract["mid"]
-                                    trigger["trade_mode"] = "0dte_option"
-                                    trigger["num_contracts"] = num_contracts
+                                    try:
+                                        live_positions_now = {p.symbol: p for p in trader.client.get_all_positions()}
+                                        existing = live_positions_now.get(new_occ)
+                                        existing_qty = int(float(existing.qty)) if existing else 0
+                                    except Exception as e:
+                                        logger.warning("Duplicate-order guard: Alpaca position fetch failed: %s — proceeding with placement", e)
+                                        existing_qty = expected_qty  # assume in sync, allow placement
+                                    if existing_qty > expected_qty:
+                                        logger.warning(
+                                            "✗ %s skip [duplicate_order_guard] OCC %s has %d contracts at Alpaca but in-memory expected %d. "
+                                            "Aborting buy to prevent double-purchase. Investigate stale state or parallel agent.",
+                                            symbol, new_occ, existing_qty, expected_qty)
+                                        # Mark the journaled trigger as discarded so restart-recovery skips it
+                                        trigger["discard"] = True
+                                        trigger["discard_reason"] = "duplicate_order_guard"
+                                        journal_file.write_text(json.dumps(triggers, indent=2, default=str))
+                                        # Roll back the cooldown anchor and daily counters so a clean retry can fire next bar.
+                                        trades_today -= 1
+                                        if trigger.get("is_flip", False):
+                                            flip_trades_today -= 1
+                                        last_trigger = None  # next trigger isn't blocked by this skip
+                                    else:
+                                        order = trader.place_options_trade(
+                                            occ_symbol=new_occ,
+                                            direction=trigger["direction"],
+                                            qty=num_contracts,
+                                            # No limit_price = market order (0DTE needs instant fill)
+                                            time_in_force="day",
+                                        )
+                                        trigger["order_id"] = order["order_id"]
+                                        trigger["occ_symbol"] = new_occ
+                                        trigger["option_strike"] = contract["strike"]
+                                        trigger["option_delta"] = contract["delta"]
+                                        trigger["option_premium"] = contract["mid"]
+                                        trigger["trade_mode"] = f"{dte}dte_option"
+                                        trigger["num_contracts"] = num_contracts
 
-                                    # Track for stop/target monitoring (underlying-based)
-                                    open_options[contract["occ_symbol"]] = {
-                                        "entry_premium": contract["mid"],
-                                        "stop_price": trigger["stop"],
-                                        "target_price": trigger["target"],
-                                        "original_target_dist": abs(trigger["target"] - trigger["entry"]),
-                                        "direction": trigger["direction"],
-                                        "delta": contract["delta"],
-                                        "entry_time": get_et_now(),
-                                        "entry_underlying": trigger.get("price", trigger["entry"]),
-                                        "max_favorable_excursion": 0.0,  # MFE tracking for stagnation skip
-                                    }
-                                    open_directions[contract["occ_symbol"]] = trigger["direction"]
-                                    logger.info("  📝 0DTE %s order: %s strike=$%.2f Δ=%.2f premium=$%.2f × %d contracts",
-                                                opt_type.upper(), contract["occ_symbol"],
-                                                contract["strike"], contract["delta"], contract["mid"], num_contracts)
+                                        # Synthetic position_id: OCC + entry timestamp. Multiple cluster
+                                        # entries at the same OCC each get their own id.
+                                        entry_ts_now = get_et_now()
+                                        pos_id = f"{new_occ}#{entry_ts_now.isoformat()}"
+
+                                        # Track for stop/target monitoring (underlying-based)
+                                        open_options[pos_id] = {
+                                            "occ_symbol": new_occ,
+                                            "num_contracts": num_contracts,
+                                            "entry_premium": contract["mid"],
+                                            "stop_price": trigger["stop"],
+                                            "target_price": trigger["target"],
+                                            "original_target_dist": abs(trigger["target"] - trigger["entry"]),
+                                            "direction": trigger["direction"],
+                                            "delta": contract["delta"],
+                                            "entry_time": entry_ts_now,
+                                            "entry_underlying": trigger.get("price", trigger["entry"]),
+                                            "max_favorable_excursion": 0.0,  # MFE tracking for stagnation skip
+                                        }
+                                        open_directions[pos_id] = trigger["direction"]
+                                        logger.info("  📝 %dDTE %s order: %s strike=$%.2f Δ=%.2f premium=$%.2f × %d contracts (pos_id=%s)",
+                                                    dte, opt_type.upper(), new_occ,
+                                                    contract["strike"], contract["delta"], contract["mid"],
+                                                    num_contracts, pos_id[-12:])
                                 else:
-                                    logger.warning("  ⚠️ No 0DTE contract found — falling back to shares")
-                                    order = trader.place_sweet_spot_trade(
-                                        symbol=symbol,
-                                        direction=trigger["direction"],
-                                        qty=qty,
-                                        entry=None,
-                                        stop=trigger["stop"],
-                                        target=trigger["target"],
-                                        time_in_force="day",
-                                    )
-                                    trigger["order_id"] = order["order_id"]
-                                    trigger["trade_mode"] = "shares_fallback"
-                                    open_directions[symbol] = trigger["direction"]
+                                    # Chain unavailable for the requested DTE.
+                                    # 0DTE: legacy shares-fallback (don't change live 0DTE behavior).
+                                    # >0DTE: skip trade entirely (user policy 2026-06-18 — avoid mixing
+                                    # 0DTE-priced fills into a 1DTE-tagged strategy, and avoid colliding
+                                    # with the 0DTE agent if both are running).
+                                    if dte > 0:
+                                        logger.warning("  ⚠️ No %dDTE contract found — skipping trade (skip-on-no-chain policy)",
+                                                       dte)
+                                        trigger["discard"] = True
+                                        trigger["discard_reason"] = f"no_{dte}dte_chain"
+                                        # Roll back daily counters so a clean retry can fire next bar.
+                                        trades_today -= 1
+                                        if trigger.get("is_flip", False):
+                                            flip_trades_today -= 1
+                                        last_trigger = None
+                                    else:
+                                        logger.warning("  ⚠️ No 0DTE contract found — falling back to shares")
+                                        order = trader.place_sweet_spot_trade(
+                                            symbol=symbol,
+                                            direction=trigger["direction"],
+                                            qty=qty,
+                                            entry=None,
+                                            stop=trigger["stop"],
+                                            target=trigger["target"],
+                                            time_in_force="day",
+                                        )
+                                        trigger["order_id"] = order["order_id"]
+                                        trigger["trade_mode"] = "shares_fallback"
+                                        # Shares fallback: position_id = underlying symbol (one shares position per symbol).
+                                        open_directions[symbol] = trigger["direction"]
 
                             journal_file.write_text(json.dumps(triggers, indent=2, default=str))
                             logger.info("  📝 Order placed: %s", trigger.get("order_id", "?")[:12])
@@ -1468,11 +1666,32 @@ def main():
                              "Off by default — only post-direction rejects (gates that killed an actual setup) log.")
     parser.add_argument("--vix-spike-pct", type=float, default=20.0,
                         help="Skip days where VIX spiked >N%% day-over-day (0=disabled, default: 20)")
+    parser.add_argument("--allow-fomc-days", dest="skip_fomc", action="store_false", default=True,
+                        help="Disable FOMC sit-out (default: ON — skip rate-decision days). "
+                             "Promoted 2026-06-04: SPY Sharpe +0.12 / QQQ Sharpe +0.10-0.18 / "
+                             "clean sweep both symbols both windows.")
+    parser.add_argument("--skip-failed-bounce", dest="skip_failed_bounce", action="store_true",
+                        default=True,
+                        help="Failed-bounce sit-out (default: ON as of 2026-06-20). "
+                             "RE-PROMOTED after look-ahead-fix re-validation reversed the 2026-06-13 "
+                             "demotion: turning the filter ON improves 7/8 cells (SPY+QQQ × 730d+365d) "
+                             "on PF/Sharpe/Calmar/MDD%%. Clean Sharpe sweep +0.15-0.26, clean MDD%% "
+                             "sweep -0.1pp to -7.1pp. The 2026-06-13 demotion was a look-ahead artifact.")
+    parser.add_argument("--allow-failed-bounce", dest="skip_failed_bounce", action="store_false",
+                        help="Disable failed-bounce sit-out (default is ON as of 2026-06-20).")
+    parser.add_argument("--failed-bounce-gap-max", type=float, default=0.50)
+    parser.add_argument("--failed-bounce-close-pos-max", type=float, default=0.20)
     parser.add_argument("--no-dynamic-or", action="store_true",
                         help="Disable dynamic OR (default: ON — 30-min OR + 10:00 scan-start "
                              "on decisive-breakout mornings; falls back to 60-min OR otherwise).")
     parser.add_argument("--dynamic-or-threshold", type=float, default=0.6,
                         help="Dynamic OR decisive-breakout fraction (golden: 0.6).")
+    parser.add_argument("--dte", type=int, default=0,
+                        help="Days-to-expiry of the option contract bought at entry. "
+                             "0 (default) = same-day expiry, legacy behavior. 1 = next-business-day "
+                             "expiry (validated by Phase 2 replay 2026-06-16: SPY PF 1.90→2.28, "
+                             "CALL PF 1.34→1.73). When >0, journal filename is suffixed _{dte}dte; "
+                             "missing chain triggers skip-trade instead of shares fallback.")
     args = parser.parse_args()
 
     paper_trade = not args.no_paper
@@ -1519,11 +1738,16 @@ def main():
                         regime_guard=args.regime_guard,
                         vix_max=args.vix_max,
                         vix_spike_pct=args.vix_spike_pct,
+                        skip_fomc=args.skip_fomc,
+                        skip_failed_bounce=args.skip_failed_bounce,
+                        failed_bounce_gap_max=args.failed_bounce_gap_max,
+                        failed_bounce_close_pos_max=args.failed_bounce_close_pos_max,
                         pb_ema=not args.no_pb_ema,
                         pb_ema_fast=args.pb_ema_fast,
                         pb_ema_slow=args.pb_ema_slow,
                         dynamic_or=not args.no_dynamic_or,
                         dynamic_or_threshold=args.dynamic_or_threshold,
+                        dte=args.dte,
                         verbose_rejects=args.verbose_rejects)
                 tomorrow_925 = (now + timedelta(days=1)).replace(hour=9, minute=25, second=0)
                 sleep_sec = (tomorrow_925 - get_et_now()).total_seconds()
@@ -1554,11 +1778,16 @@ def main():
                 regime_guard=args.regime_guard,
                 vix_max=args.vix_max,
                 vix_spike_pct=args.vix_spike_pct,
+                skip_fomc=args.skip_fomc,
+                skip_failed_bounce=args.skip_failed_bounce,
+                failed_bounce_gap_max=args.failed_bounce_gap_max,
+                failed_bounce_close_pos_max=args.failed_bounce_close_pos_max,
                 pb_ema=not args.no_pb_ema,
                 pb_ema_fast=args.pb_ema_fast,
                 pb_ema_slow=args.pb_ema_slow,
                 dynamic_or=not args.no_dynamic_or,
                 dynamic_or_threshold=args.dynamic_or_threshold,
+                dte=args.dte,
                 verbose_rejects=args.verbose_rejects)
 
 

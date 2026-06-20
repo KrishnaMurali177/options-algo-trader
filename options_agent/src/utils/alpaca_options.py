@@ -127,6 +127,27 @@ def resolve_atm_0dte(symbol: str, trade_date: date, option_type: str, spot: floa
     return best["symbol"]
 
 
+def resolve_atm_dte(symbol: str, trade_date: date, dte: int, option_type: str, spot: float) -> str | None:
+    """Return the OCC symbol of the ATM contract expiring `trade_date + dte business days`.
+
+    dte=0 is equivalent to resolve_atm_0dte (same-day expiry). dte=1 picks the
+    next business day's expiry, dte=2 the one after, etc. Holidays handled via
+    pandas BDay offset.
+
+    Returns None if no listing exists for the computed expiry date. The caller
+    decides how to handle that (skip trade, fall back, etc.).
+    """
+    if dte == 0:
+        return resolve_atm_0dte(symbol, trade_date, option_type, spot)
+    import pandas as _pd
+    exp_date = (_pd.Timestamp(trade_date) + _pd.tseries.offsets.BDay(dte)).date()
+    contracts = list_contracts(symbol, exp_date, option_type)
+    if not contracts:
+        return None
+    best = min(contracts, key=lambda c: abs(c["strike"] - spot))
+    return best["symbol"]
+
+
 # ── Bars ─────────────────────────────────────────────────────────────────────
 
 def _bars_cache_path(occ: str, interval: str) -> Path:

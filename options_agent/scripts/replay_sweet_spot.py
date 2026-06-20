@@ -46,6 +46,18 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(me
 logger = logging.getLogger(__name__)
 
 
+# FOMC meeting END dates (rate decision days, 2:00 PM ET presser). Public schedule.
+# Diagnostic 2026-06-04 (730d): SPY FOMC 53.8% stop-rate / -$10.17; QQQ 31.0% / -$9.42.
+# 2026-H2 dates per Fed published schedule; 2027 published by Fed mid-2026.
+FOMC_DATES: set[str] = {
+    "2024-06-12", "2024-07-31", "2024-09-18", "2024-11-07", "2024-12-18",
+    "2025-01-29", "2025-03-19", "2025-05-07", "2025-06-18", "2025-07-30",
+    "2025-09-17", "2025-10-29", "2025-12-10",
+    "2026-01-28", "2026-03-18", "2026-04-29",
+    "2026-06-17", "2026-07-29", "2026-09-16", "2026-11-04", "2026-12-16",
+}
+
+
 def _build_indicators_from_bars(bars: pd.DataFrame, symbol: str = "SPY") -> MarketIndicators:
     """Build a MarketIndicators snapshot from historical 5-min bars.
 
@@ -154,9 +166,11 @@ def _build_indicators_from_bars(bars: pd.DataFrame, symbol: str = "SPY") -> Mark
 def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                min_chop: int = 2,
                min_cascade: int = 4, min_cascade_call: int | None = None,
-               cluster_penalty: bool = True,
+               cluster_penalty: bool = False,
                cluster_penalty_window_min: int = 30,
                cluster_penalty_cap: int = 2,
+               rsi_extreme_penalty: float = 30.0,
+               rsi_extreme_cost: int = 0,
                vix_stop_slope: float = 0.0, vix_stop_anchor: float = 15.0,
                min_quality: int = 4, max_quality: int = 7,
                breakout_pct: float = 0.25, cooldown_bars: int = 2,
@@ -171,6 +185,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                max_stops_per_day: int = 1,
                max_consecutive_losses: int = 2,
                daily_loss_limit: float = 0.0,
+               cluster_brake_n: int = 0,
                confirmation_bar: bool = False,
                stagnation_bars: int = 12,
                stagnation_threshold: float = 0.3,
@@ -204,7 +219,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                  pb_ema_fast: int = 9,
                  pb_ema_slow: int = 21,
                  tiered_stagnation: bool = False,
-                 tiered_stag_early_bar: int = 8,
+                 tiered_stag_early_bar: int = 6,
                  tiered_stag_pnl_lo: float = -0.1,
                  tiered_stag_pnl_hi: float = 0.2,
                  stag_cooldown_bars: int = 1,
@@ -215,11 +230,22 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                     momentum_flip: bool = False,
                     momentum_flip_threshold: float = 40.0,
                     max_flip_trades: int = 1,
-                    vwap_slope_override_t: float = 0.7,
-                    vwap_slope_override_k: int = 3,
-                    vwap_slope_override_cmax: float = 0.65,
+                    vwap_slope_override_t: float = 0.0,
+                    vwap_slope_override_k: int = 0,
+                    vwap_slope_override_cmax: float = 0.0,
                     chop_formula_v2b: bool = False,
                     chop_formula_2xci: bool = False,
+                    block_overlap_same_dir: bool = False,
+                    logit_q_model: object | None = None,
+                    logit_q_reject_threshold: float = 0.0,
+                    logit_r_model: object | None = None,
+                    logit_r_min_threshold: float = -1e9,
+                    logit_r_max_threshold: float = 1e9,
+                    vix_continuous: bool = False,
+                    atr_stop_k: float = 0.0,
+                    stop_buffer_pct: float = 0.10,
+                    dte: int = 0,
+                    strict_real_options: bool = False,
                     debug: bool = False) -> list[dict]:
     """Replay one day scanning every 5 min window after 10:35.
 
@@ -281,9 +307,17 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
     triggers = []
     last_trigger_idx = -999
     last_was_stagnation = False  # Track for extended stag cooldown
+    open_until: dict[str, pd.Timestamp | None] = {"buy_call": None, "buy_put": None}
     stops_today = 0  # Track stop-outs for daily loss limit
     consecutive_losses = 0  # Track streak for streak breaker
     daily_pnl_cumulative = 0.0  # Track cumulative daily P&L
+    # Pending exits: positions whose stop/exit hasn't fired by the current scan
+    # bar yet. Each: {"exit_ts": pd.Timestamp, "outcome": str, "pnl": float,
+    # "direction": str}. Drained at the top of each scan iteration to update
+    # daily limits AT THE WALL-CLOCK BAR the exit actually fires — eliminating
+    # look-ahead bias on max_stops_per_day, consecutive_losses, and
+    # daily_pnl_cumulative (2026-05-26). "direction" supports cluster-brake-n.
+    pending_exits: list[dict] = []
     chop_rejects_today = 0  # Count of chop-gate rejections before next entry (audit)
     first_chop_reject_ts = None  # Earliest bar that hit chop reject this day
     flip_trades_today = 0  # Track momentum-flip trades (separate allowance)
@@ -356,6 +390,25 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
     day_pb_ema_slow = day_close.ewm(span=pb_ema_slow, adjust=False).mean() if pb_ema else None
 
     for i, (ts, bar) in enumerate(scan_bars.iterrows()):
+        # ── Drain pending exits that have fired by this bar's timestamp ──
+        # Updates stops_today / consecutive_losses / daily_pnl_cumulative at the
+        # wall-clock bar the exit actually occurred (not the entry bar). This is
+        # what a live agent observes: a stop is "known" only after its bar closes.
+        if pending_exits:
+            still_pending = []
+            for px in pending_exits:
+                if px["exit_ts"] <= ts:
+                    if px["outcome"] == "stop":
+                        stops_today += 1
+                    if px["pnl"] <= 0:
+                        consecutive_losses += 1
+                    else:
+                        consecutive_losses = 0
+                    daily_pnl_cumulative += px["pnl"]
+                else:
+                    still_pending.append(px)
+            pending_exits = still_pending
+
         # ── Daily limits (hard stops — no flip override) ──
         if max_stops_per_day > 0 and stops_today >= max_stops_per_day:
             break
@@ -490,6 +543,33 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 direction = "buy_put"
                 is_flip = True
 
+        # ── Live-parity gate: block new trigger if same-dir position still open ──
+        # Mirrors run_sweet_spot_agent.py:1138 (open_directions same-dir check).
+        # OFF by default for backward compatibility with all prior A/Bs.
+        if block_overlap_same_dir and open_until.get(direction) is not None and ts < open_until[direction]:
+            if debug:
+                bar_time = ts.strftime("%H:%M")
+                logger.info("  [DEBUG] %s  dir=%s → BLOCKED (same-dir position open until %s)",
+                            bar_time, direction, open_until[direction].strftime("%H:%M"))
+            continue
+
+        # ── Cluster brake: block if N same-dir positions are still in-flight ──
+        # Targets stack-into-bleeding-cluster failures (e.g. SPY 2026-05-20
+        # 4 CALL stack, QQQ 2026-05-29 3 PUT stack). Pending_exits already
+        # tracks open positions; we count same-direction ones whose exit_ts
+        # is still in the future (live agent's analog: count of open contracts).
+        if cluster_brake_n > 0:
+            same_dir_open = sum(
+                1 for px in pending_exits
+                if px["exit_ts"] > ts and px.get("direction") == direction
+            )
+            if same_dir_open >= cluster_brake_n:
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s → CLUSTER BRAKE (%d same-dir open >= %d)",
+                                bar_time, direction, same_dir_open, cluster_brake_n)
+                continue
+
         # ── Post-flip trade cap: skip non-flip trades if at regular cap ──
         if at_regular_cap and not is_flip:
             continue
@@ -535,6 +615,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             recent_momentum=recent_momentum,
             zlema_trend=indicators.zlema_trend,
             vwap=_vwap_val,
+            vix_continuous=vix_continuous,
         )
         quality = quality_result.score
 
@@ -555,6 +636,24 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                     same_dir_recent += 1
             penalty = min(same_dir_recent, cluster_penalty_cap)
             quality -= penalty
+
+        # ── RSI-extreme penalty (proposed 2026-06-01, diagnostic-validated) ──
+        # Penalty cell: rsi_pressure = sign(dir)*(rsi_14-50) >= threshold means
+        # entry into directional exhaustion (e.g. RSI>=80 for CALL, <=20 for PUT).
+        # 730d diagnostic (n=68 SPY / n=60 QQQ at threshold=30): both symbols and
+        # both directions negative aggregate P&L. Default OFF for A/B isolation.
+        # NOTE: applied as a hard reject rather than a Q discount because Q
+        # discount could pull Q>=8 trades INTO the Q-band [3,7] and net-increase
+        # triggers — observed in initial wiring on 2026-06-01.
+        if rsi_extreme_penalty > 0 and rsi_val != 50.0:
+            _sign = 1.0 if direction == "buy_call" else -1.0
+            _rsi_pressure = _sign * (rsi_val - 50.0)
+            if _rsi_pressure >= rsi_extreme_penalty:
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s rsi=%.1f rsi_p=%.1f → RSI EXTREME REJECT",
+                                bar_time, direction, rsi_val, _rsi_pressure)
+                continue
 
         if not (min_quality <= quality <= max_quality):
             if debug:
@@ -648,6 +747,54 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d C=%d (min=%d) → MIN CHOP REJECT",
                             bar_time, direction, quality, explosion, chop.chop_score, min_chop)
             continue
+
+        # ── Logit-R v1 expected-R reject gate ──
+        # Ridge regression predicting E[realized_R | features]. Reject when
+        # expected R is below threshold (default -inf = disabled). Threshold=0
+        # is the economically natural "don't trade negative-EV bars" rule.
+        if logit_r_model is not None and (
+            logit_r_min_threshold > -1e8 or logit_r_max_threshold < 1e8
+        ):
+            from src.utils.logit_q import featurize as _logit_featurize
+            _feats = _logit_featurize(
+                direction=direction, symbol=symbol,
+                or_direction=or_direction, or_momentum=or_momentum,
+                recent_dir=recent_dir, recent_momentum=recent_momentum,
+                rsi_14=rsi_val, vix=vix, chop=chop.chop_score, atr_14=atr_val,
+                sma_20=indicators.sma_20, sma_50=indicators.sma_50,
+                price=price, zlema_trend=zlema_trend,
+            )
+            exp_r = logit_r_model.predict(_feats)
+            if exp_r <= logit_r_min_threshold or exp_r >= logit_r_max_threshold:
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d exp_R=%+.3f (min=%+.3f, max=%+.3f) → LOGIT-R REJECT",
+                                bar_time, direction, quality, explosion, exp_r,
+                                logit_r_min_threshold, logit_r_max_threshold)
+                continue
+
+        # ── Logit-Q v2 reject gate ──
+        # Calibrated logistic on the 11-criterion lattice + continuous regime
+        # features. 730d training showed top-decile p_cal has WR ~55% (worst
+        # bucket) — the eyeball-confident setups fade. Reject when p_cal >=
+        # threshold. Default 0.0 = disabled.
+        if logit_q_model is not None and logit_q_reject_threshold > 0:
+            from src.utils.logit_q import featurize as _logit_featurize
+            _feats = _logit_featurize(
+                direction=direction, symbol=symbol,
+                or_direction=or_direction, or_momentum=or_momentum,
+                recent_dir=recent_dir, recent_momentum=recent_momentum,
+                rsi_14=rsi_val, vix=vix, chop=chop.chop_score, atr_14=atr_val,
+                sma_20=indicators.sma_20, sma_50=indicators.sma_50,
+                price=price, zlema_trend=zlema_trend,
+            )
+            p_cal = logit_q_model.predict(_feats)
+            if p_cal >= logit_q_reject_threshold:
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d p_cal=%.3f (thr=%.3f) → LOGIT-Q REJECT",
+                                bar_time, direction, quality, explosion, p_cal, logit_q_reject_threshold)
+                continue
 
         # ── PB EMA inside-band gate (symmetric chop reject) ──
         # Reject when price is *between* the two EMAs — the indicator's
@@ -776,21 +923,32 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 target = entry - risk * target_mult
         elif direction == "buy_call":
             entry = price
-            mid = (ar_range_high + ar_range_low) / 2
-            # VIX-conditional stop buffer: widens in turbulent regimes, anchored
-            # to baseline 0.10 at VIX <= vix_stop_anchor.
-            buffer_pct = 0.10 + vix_stop_slope * max(0.0, vix - vix_stop_anchor)
-            stop = mid + buffer_pct * (ar_range_high - ar_range_low)
-            risk = entry - stop
+            if atr_stop_k > 0 and atr_val > 0:
+                # ATR-anchored: stop is k × ATR_14 below entry. Equalizes stop-
+                # out probability across days regardless of OR-range realized
+                # vol. Diagnostic-motivated (GBM ranked atr_14 informative).
+                risk = atr_stop_k * atr_val
+                stop = entry - risk
+            else:
+                mid = (ar_range_high + ar_range_low) / 2
+                # VIX-conditional stop buffer: widens in turbulent regimes,
+                # anchored to baseline stop_buffer_pct (golden 0.10) at VIX <= vix_stop_anchor.
+                buffer_pct = stop_buffer_pct + vix_stop_slope * max(0.0, vix - vix_stop_anchor)
+                stop = mid + buffer_pct * (ar_range_high - ar_range_low)
+                risk = entry - stop
             if risk <= 0:
                 continue
             target = entry + risk * target_mult
         else:
             entry = price
-            mid = (ar_range_high + ar_range_low) / 2
-            buffer_pct = 0.10 + vix_stop_slope * max(0.0, vix - vix_stop_anchor)
-            stop = mid - buffer_pct * (ar_range_high - ar_range_low)
-            risk = stop - entry
+            if atr_stop_k > 0 and atr_val > 0:
+                risk = atr_stop_k * atr_val
+                stop = entry + risk
+            else:
+                mid = (ar_range_high + ar_range_low) / 2
+                buffer_pct = stop_buffer_pct + vix_stop_slope * max(0.0, vix - vix_stop_anchor)
+                stop = mid - buffer_pct * (ar_range_high - ar_range_low)
+                risk = stop - entry
             if risk <= 0:
                 continue
             target = entry - risk * target_mult
@@ -966,10 +1124,10 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 from src.utils.alpaca_options import (
                     fetch_intraday_option_bars,
                     option_close_at,
-                    resolve_atm_0dte,
+                    resolve_atm_dte,
                 )
                 opt_type = "call" if direction == "buy_call" else "put"
-                occ_symbol = resolve_atm_0dte(symbol, trade_date, opt_type, price)
+                occ_symbol = resolve_atm_dte(symbol, trade_date, dte, opt_type, price)
                 if occ_symbol:
                     opt_bars = fetch_intraday_option_bars(occ_symbol, trade_date, "5min")
                     entry_premium = option_close_at(opt_bars, ts)
@@ -989,9 +1147,15 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 logger.debug("Real-options pricing failed for %s %s: %s — falling back to synth",
                              symbol, ts, e)
 
-        # Real-pricing-only mode: skip trades that have no real 0DTE contract
-        # (e.g. symbols without daily expirations) instead of synth-pricing them.
-        if simulate_options and real_options and require_real_options and not priced_real:
+        # Real-pricing-only mode: skip the trigger entirely when real Alpaca
+        # pricing is unavailable rather than fall back to synth. Mirrors the
+        # live 1DTE agent's skip-on-no-chain policy. Used for honest A/B numbers —
+        # see [[feedback_real_options_ab_discipline]] (synth inflates
+        # PF/Sharpe/Calmar 40-65%). Skip happens before state tracking
+        # (pending_exits / open_until / stagnation cooldown), so the trigger is
+        # treated as if it never fired — same semantics as a chop reject.
+        # Both --strict-real-options and --require-real-options trigger this path.
+        if simulate_options and real_options and (strict_real_options or require_real_options) and not priced_real:
             continue
 
         if simulate_options and not priced_real:
@@ -1030,18 +1194,40 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             option_pnl_total = None
             est_premium = None
 
-        if outcome == "stop":
-            stops_today += 1
-
-        # Track stagnation for extended cooldown
+        # Track stagnation for extended cooldown.
+        # NOTE: this fires at ENTRY bar, not exit bar. Stagnation cooldown is a
+        # cooldown on NEXT entry, so timing it from entry is intentional (the
+        # outer loop's cooldown check happens at the next scan iteration which
+        # is already past the entry bar). The "did this entry stagnate?" lookup
+        # is read at the next trigger candidate, before any pending-exit drain
+        # could matter — so this stays where it is for replay/live parity.
         last_was_stagnation = (outcome == "stagnation")
 
-        # ── Update daily risk trackers ──
-        daily_pnl_cumulative += pnl
-        if pnl <= 0:
-            consecutive_losses += 1
+        # Track when this position closes for live-parity same-dir block.
+        # exit_ts is the bar timestamp of the closing bar; a new trigger at a
+        # later bar is unblocked. Always recorded; only consulted when the flag is on.
+        if exit_ts is not None:
+            open_until[direction] = exit_ts
+
+        # ── Register pending exit for look-ahead-free daily-limit accounting ──
+        # The stop/consecutive-loss/daily-PnL trackers used to update inline here
+        # (at entry bar i), which caused replay's max_stops_per_day to halt the
+        # day at i+1 even though the live agent would not learn of the stop until
+        # the bar it actually fires. Fix shipped 2026-05-26: register the exit
+        # in `pending_exits`; the outer loop drains them by ts on each iteration.
+        if exit_ts is not None:
+            pending_exits.append({"exit_ts": exit_ts, "outcome": outcome, "pnl": pnl,
+                                  "direction": direction})
         else:
-            consecutive_losses = 0
+            # Defensive: if exit_ts is missing for any reason, fall back to
+            # immediate (entry-bar) accounting so we don't lose the trade.
+            if outcome == "stop":
+                stops_today += 1
+            if pnl <= 0:
+                consecutive_losses += 1
+            else:
+                consecutive_losses = 0
+            daily_pnl_cumulative += pnl
 
         # Cascade-tiered contracts
         if cascade_sizing:
@@ -1090,7 +1276,10 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             "stop": round(stop, 2),
             "target": round(target, 2),
             "target_mult": target_mult,
+            "risk": round(risk, 4),
+            "realized_r": round(pnl / risk, 4) if risk > 0 else None,
             "exit_price": round(exit_price, 2),
+            "exit_time": exit_ts.strftime("%Y-%m-%d %H:%M") if exit_ts is not None else None,
             "outcome": outcome,
             "pnl": round(pnl, 4),
             "underlying_move": round(underlying_move, 4),
@@ -1112,11 +1301,17 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             "vwap": round(_vwap_val, 4) if _vwap_val is not None else None,
             "price_vs_vwap": (round(price - _vwap_val, 4) if _vwap_val is not None else None),
             "sma_20": round(sma_20, 4),
+            "sma_50": round(indicators.sma_50, 4),
             "zlema_trend": zlema_trend,
             "or_direction": or_direction,
             "recent_dir": recent_dir,
             "atr_14": round(atr_val, 4),
             "was_post_stag": bool(last_was_stagnation),
+            # Added 2026-06-04 for day-archetype diagnostic (Improvement 1).
+            # OR range bounds at trigger time (post-dynamic-OR adjustment if any).
+            "range_high": round(range_high, 4),
+            "range_low": round(range_low, 4),
+            "vix": round(vix, 2),
         })
 
         if is_flip:
@@ -1130,8 +1325,8 @@ def main():
     # Defaults match GOLDEN parameters (see README) — produces validated 2-yr SPY
     # results (real Alpaca options): 608 trades, +$5,053/contract, +$15,159 cascade-sized.
     # Tighter stops (60% of range), decay floor 0.4, mid-tier target 1.5R.
-    # Stagnation: tiered (bar 8 early exit + bar 12 standard), MFE skip at 0.5R.
-    # Tiered stagnation: exits flat trades (-0.1R to +0.2R) at bar 8 (40 min);
+    # Stagnation: tiered (bar 6 early exit + bar 12 standard), MFE skip at 0.5R.
+    # Tiered stagnation: exits flat trades (-0.1R to +0.2R) at bar 6 (30 min, promoted 8→6 on 2026-06-19);
     #   extends cooldown to 6 bars (30 min) after stagnation exits.
     #   Validated 730d SPY: PF 1.51→1.60, Sharpe 2.31→2.63, MDD −33%, Calmar +60%.
     # Stagnation threshold: 0.3R (was 0.5R — keeps trades with some momentum alive).
@@ -1146,6 +1341,11 @@ def main():
     # loose pre-golden defaults (chop 10, no caps, 10:35 scan, no Gainz, no decay).
     parser.add_argument("--symbol", "-s", default="SPY")
     parser.add_argument("--days", type=int, default=30, help="Number of recent trading days")
+    parser.add_argument("--start-date", type=str, default=None,
+                        help="Filter trading days to start on or after this date (YYYY-MM-DD). "
+                             "Applied after --days fetches the bar window.")
+    parser.add_argument("--end-date", type=str, default=None,
+                        help="Filter trading days to end on or before this date (YYYY-MM-DD).")
     parser.add_argument("--max-chop", type=int, default=5, help="Max choppiness (golden: 5)")
     parser.add_argument("--min-chop", type=int, default=2,
                         help="Min choppiness floor (golden: 2). C=0-1 trades are ~50%% WR over 2yr. "
@@ -1154,18 +1354,30 @@ def main():
     parser.add_argument("--min-quality", type=int, default=3, help="Minimum quality score (golden: 3)")
     parser.add_argument("--max-quality", type=int, default=7, help="Maximum quality score (golden: 7)")
     parser.add_argument("--min-cascade", type=int, default=2, help="Minimum cascade proxy (golden: 2, was 4)")
-    parser.add_argument("--cluster-penalty", action="store_true", default=True,
+    parser.add_argument("--cluster-penalty", action="store_true", default=False,
                         help="Within-day clustering penalty: subtract 1 from quality per prior "
-                             "same-direction trade in the window, capped. GOLDEN (2026-05-21): "
-                             "Promoted after 12-cell sensitivity grid showed no failing parameter "
-                             "combination; SPY 730d Sharpe 3.92→4.38, Calmar 25.76→34.85, MDD%% 3.8→2.8.")
+                             "same-direction trade in the window, capped. DEMOTED 2026-05-27: "
+                             "drop-one ablation under the look-ahead-fixed replay showed removal "
+                             "improves SPY Sharpe 2.10→2.27, Calmar 7.71→9.16, MDD%% 12.3→10.5 "
+                             "with zero downside; QQQ-neutral. Original promotion was on biased data.")
     parser.add_argument("--no-cluster-penalty", dest="cluster_penalty", action="store_false",
-                        help="Disable the cluster penalty (golden default is ON).")
+                        help="Disable the cluster penalty (golden default is OFF as of 2026-05-27).")
     parser.add_argument("--cluster-penalty-window-min", type=int, default=30,
                         help="Cluster penalty: lookback window in minutes (golden: 30).")
     parser.add_argument("--cluster-penalty-cap", type=int, default=2,
                         help="Cluster penalty: maximum quality reduction per trade (golden: 2). "
                              "Sensitivity grid showed cap=2 best across all windows.")
+    parser.add_argument("--rsi-extreme-penalty", type=float, default=30.0,
+                        help="RSI-pressure threshold (sign(dir)*(rsi-50)) above which to "
+                             "REJECT the trigger. 30 = RSI>=80 for CALL, RSI<=20 for PUT. "
+                             "GOLDEN (promoted 2026-06-02): 730d SPY Sharpe 2.73→3.04 / "
+                             "Calmar 12.46→16.70 / MDD%% 7.7→5.8; QQQ 365d MDD%% 68.2→38.0. "
+                             "Set to 0 to disable.")
+    parser.add_argument("--no-rsi-extreme-penalty", dest="rsi_extreme_penalty",
+                        action="store_const", const=0.0,
+                        help="Disable the RSI-extreme reject (golden default is 30).")
+    parser.add_argument("--rsi-extreme-cost", type=int, default=0,
+                        help="DEPRECATED: superseded by hard reject. Kept for arg compatibility.")
     parser.add_argument("--min-cascade-call", type=int, default=None,
                         help="Side-asymmetric: separate min cascade for CALLs only "
                              "(corrects cascade bull-bias). Default: None (use --min-cascade for both).")
@@ -1195,6 +1407,10 @@ def main():
                         help="OR momentum threshold for direction decision (golden: 25, test: 30/35)")
     parser.add_argument("--max-trades-per-day", type=int, default=4, help="Max trades per day (0=unlimited, golden: 4)")
     parser.add_argument("--max-stops-per-day", type=int, default=1, help="Stop trading after N stop-outs (0=unlimited, golden: 1)")
+    parser.add_argument("--cluster-brake-n", type=int, default=0,
+                        help="Block new entry if N same-direction positions are still in-flight "
+                             "(0=disabled). Targets stack-into-cluster bleed without throttling "
+                             "single-position trend days.")
     parser.add_argument("--max-consecutive-losses", type=int, default=2,
                         help="Stop trading after N consecutive losses in a day (0=disabled, golden: 2)")
     parser.add_argument("--daily-loss-limit", type=float, default=0.0,
@@ -1224,6 +1440,18 @@ def main():
                         help="Contracts for E 6-7 tier (default: 3)")
     parser.add_argument("--cascade-size-high", type=int, default=3,
                         help="Contracts for E 8+ tier (default: 3)")
+    parser.add_argument("--skip-gap-up-pct", type=float, default=0.0,
+                        help="Skip days where overnight gap (open vs prior close) exceeds N%% upward. "
+                             "REJECTED 2026-06-04 (kept as CLI for diagnostic reuse): A/B at 0.50 failed "
+                             "walk-forward (QQQ 365d Sharpe −0.47, MDD% +26.3pp); P&L dropped on every cell. "
+                             "Don't promote without addressing memory's strategy_gap_up_skip_negative.")
+    parser.add_argument("--skip-fomc", dest="skip_fomc", action="store_true", default=True,
+                        help="Skip FOMC meeting end-dates (rate decision days). GOLDEN 2026-06-04. "
+                             "A/B 730d/365d clean sweep both symbols: SPY Sharpe +0.12, Calmar +0.57/0.36, "
+                             "PnL +$1,017/+$474; QQQ Sharpe +0.10/+0.18, PF +0.03/+0.05, PnL +$942/+$843. "
+                             "Trades drop ~3%. Diagnostic source: FOMC-day stop-rate ~3x baseline, both symbols.")
+    parser.add_argument("--allow-fomc-days", dest="skip_fomc", action="store_false",
+                        help="Disable FOMC sit-out (golden default is ON).")
     parser.add_argument("--dynamic-or", action="store_true", default=True,
                         help="Enable dynamic opening range (30-min quick OR + 10:00 scan-start when "
                              "the 10:00 bar already broke >50% of the 30-min range beyond the boundary). "
@@ -1294,12 +1522,16 @@ def main():
                         help="Skip days where VIX spiked >N%% day-over-day (0=disabled, default: 20)")
     # ── Tiered Stagnation (golden default: ON) ──
     parser.add_argument("--tiered-stagnation", action="store_true", default=True,
-                        help="Enable tiered stagnation: early exit at bar 8 if trade is flat (-0.1R to +0.2R),"
-                             " plus extended 6-bar cooldown after stagnation exits (golden: ON)")
+                        help="Enable tiered stagnation: early exit at bar 6 if trade is flat (-0.1R to +0.2R),"
+                             " plus standard cooldown after stagnation exits (golden: ON)")
     parser.add_argument("--no-tiered-stagnation", action="store_true",
                         help="Disable tiered stagnation (revert to bar-12-only stagnation)")
-    parser.add_argument("--tiered-stag-early-bar", type=int, default=8,
-                        help="Bar at which tiered stagnation checks for flat trades (default: 8 = 40 min)")
+    parser.add_argument("--tiered-stag-early-bar", type=int, default=6,
+                        help="Bar at which tiered stagnation checks for flat trades (golden 2026-06-19: "
+                             "8→6 promoted after Phase 3b grid passed strict gate on SPY+QQQ × 0DTE+1DTE, "
+                             "4/4 quartiles all cells. SPY 0DTE PF 1.91→2.02 Sharpe 3.20→3.45, "
+                             "QQQ 0DTE PF 1.41→1.47 Sharpe 1.84→2.02. CALL PF improves on every cell. "
+                             "6 bars = 30 min after entry.)")
     parser.add_argument("--tiered-stag-pnl-lo", type=float, default=-0.1,
                         help="Min P&L as fraction of R for early stag exit (default: -0.1)")
     parser.add_argument("--tiered-stag-pnl-hi", type=float, default=0.2,
@@ -1340,15 +1572,103 @@ def main():
                         help="Recent momentum score threshold to trigger direction flip (default: 40)")
     parser.add_argument("--max-flip-trades", type=int, default=1,
                         help="Max additional flip trades per day beyond max-trades-per-day (default: 1)")
-    parser.add_argument("--vwap-slope-override-t", type=float, default=0.7,
-                        help="VWAP-slope chop override: (price-vwap)/atr threshold (golden: 0.7, 0=disabled)")
-    parser.add_argument("--vwap-slope-override-k", type=int, default=3,
-                        help="VWAP-slope chop override: consecutive bars on correct side of VWAP (golden: 3, 0=disabled)")
-    parser.add_argument("--vwap-slope-override-cmax", type=float, default=0.65,
-                        help="VWAP-slope chop override: max raw CI allowed for override (golden: 0.65, 0=disabled, 1.0=unconditional)")
+    parser.add_argument("--vwap-slope-override-t", type=float, default=0.0,
+                        help="VWAP-slope chop override: (price-vwap)/atr threshold (golden: OFF as of 2026-06-20; "
+                             "0=disabled). DEMOTED after look-ahead-fix re-validation showed neutral effect with "
+                             "per-symbol arb pattern — original 2026-05-22 'clean sweep' promotion was look-ahead "
+                             "artifact (PnL impact $183-$762 across cells, Calmar swings opposite signs 730d vs 365d).")
+    parser.add_argument("--vwap-slope-override-k", type=int, default=0,
+                        help="VWAP-slope chop override: consecutive bars on correct side of VWAP (golden: OFF as of 2026-06-20; 0=disabled)")
+    parser.add_argument("--vwap-slope-override-cmax", type=float, default=0.0,
+                        help="VWAP-slope chop override: max raw CI allowed for override (golden: OFF as of 2026-06-20; "
+                             "0=disabled, 1.0=unconditional)")
+    parser.add_argument("--block-overlap-same-dir", action="store_true", default=False,
+                        help="Live-parity gate: block new trigger if same-direction position still open. "
+                             "Mirrors run_sweet_spot_agent.py open_directions check. OFF by default for "
+                             "backward compatibility with prior A/B baselines.")
     parser.add_argument("--export-triggers", default=None,
                         help="If set, write all triggers as JSON to this path (audit/analysis).")
+    parser.add_argument("--logit-q-v2", type=str, default=None,
+                        help="Path to a logit-Q v2 coefficients JSON (see scripts/train_logit_q.py). "
+                             "When set with --logit-q-reject-threshold > 0, rejects triggers whose "
+                             "calibrated probability p_cal >= threshold. Empirically the model is "
+                             "anti-calibrated against win-rate at the top end, so this rejects the "
+                             "eyeball-confident fade setups.")
+    parser.add_argument("--logit-q-reject-threshold", type=float, default=0.0,
+                        help="Reject when p_cal >= threshold. 0 = disabled. Top-decile on 730d train "
+                             "is ~0.682; top-25%% is ~0.666.")
+    parser.add_argument("--logit-r-v1", type=str, default=None,
+                        help="Path to a logit-R v1 coefficients JSON (see scripts/train_logit_r.py). "
+                             "Ridge model predicting expected R-multiple per trigger.")
+    parser.add_argument("--logit-r-min-threshold", type=float, default=-1e9,
+                        help="Reject when predicted E[R] <= threshold. -inf = disabled. "
+                             "0.0 is the 'don't trade negative-EV bars' rule.")
+    parser.add_argument("--logit-r-max-threshold", type=float, default=1e9,
+                        help="Reject when predicted E[R] >= threshold (fade-reject). "
+                             "+inf = disabled. ~0.138 = top-decile on 730d train.")
+    parser.add_argument("--continuous-vix", dest="vix_continuous", action="store_true",
+                        default=False,
+                        help="Replace binary criterion #5 (VIX≥18.5 → +1) with a graded "
+                             "contribution clamp((vix-15)/10, 0, 2) snapped to 0.5-grid. "
+                             "Diagnostic-motivated: GBM ranked raw VIX as the dominant "
+                             "feature, suggesting the threshold throws away information.")
+    parser.add_argument("--atr-stop", dest="atr_stop_k", type=float, default=0.0,
+                        help="ATR-anchored stop: stop = entry ± k × ATR_14, replacing the "
+                             "range-anchored 'mid ± 0.10 × OR_width' default. 0 = disabled "
+                             "(use range-anchored). Try k ∈ {0.4, 0.5, 0.6, 0.8, 1.0}.")
+    parser.add_argument("--stop-buffer-pct", type=float, default=0.10,
+                        help="Range-anchored stop buffer: stop = mid ± buffer_pct × OR_width. "
+                             "Golden 0.10. Tested 2026-06-19 for 1DTE retune (theta drag is "
+                             "lower on 1DTE, so wider stops may give more breathing room "
+                             "without per-bar theta penalty). VIX-conditional widening adds "
+                             "on top via --vix-stop-slope.")
+    parser.add_argument("--dte", type=int, default=0,
+                        help="Days-to-expiry of the option contract bought at entry. "
+                             "0 (default) = 0DTE same-day expiry (legacy). 1 = expiry next "
+                             "business day, 2 = two business days out, etc. Same-day exit "
+                             "regardless. Real-options pricing required; falls back to synth "
+                             "if Alpaca chain unavailable for the longer expiry.")
+    parser.add_argument("--strict-real-options", action="store_true", default=False,
+                        help="Skip trade entirely when real Alpaca pricing is unavailable "
+                             "(no synth fallback). Matches the live 1DTE agent's "
+                             "skip-on-no-chain policy. Use for honest A/B numbers since synth "
+                             "pricing inflates PF/Sharpe/Calmar 40-65%% per "
+                             "feedback_real_options_ab_discipline. Skipped triggers do not "
+                             "register in pending_exits / stagnation cooldown / open_until "
+                             "state — treated as if the trigger never fired.")
+    parser.add_argument("--skip-failed-bounce", dest="skip_failed_bounce",
+                        action="store_true", default=True,
+                        help="Day-regime sit-out: skip days where gap_pct ∈ (0, X] AND prior-day "
+                             "close-position ≤ Y (failed-bounce archetype). RE-PROMOTED 2026-06-20 "
+                             "after look-ahead-fix re-validation reversed the 2026-06-13 demotion: "
+                             "turning the filter ON improves 7/8 cells (SPY+QQQ × 730d+365d) on "
+                             "PF/Sharpe/Calmar/MDD%%. Clean Sharpe sweep +0.15-0.26, clean MDD%% "
+                             "sweep -0.1pp to -7.1pp. The 2026-06-13 demotion was a look-ahead "
+                             "artifact (replay was using forming bar; fix landed in 2ce21d4b).")
+    parser.add_argument("--allow-failed-bounce", dest="skip_failed_bounce",
+                        action="store_false",
+                        help="Disable the failed-bounce sit-out filter (default ON as of 2026-06-20).")
+    parser.add_argument("--failed-bounce-gap-max", type=float, default=0.50,
+                        help="Upper bound (%%) for the small-gap-up condition (default 0.50).")
+    parser.add_argument("--failed-bounce-close-pos-max", type=float, default=0.20,
+                        help="Upper bound (0-1) on prior-day close position within range (default 0.20).")
     args = parser.parse_args()
+
+    # Load logit-Q v2 model if requested
+    _logit_q_model = None
+    if args.logit_q_v2:
+        from src.utils.logit_q import LogitQModel
+        _logit_q_model = LogitQModel(args.logit_q_v2)
+        logger.info("Loaded logit-Q v2 model: %s (lambda=%.2f, n_train=%d)",
+                    args.logit_q_v2, _logit_q_model.__dict__.get("lambda", 0),
+                    _logit_q_model.__dict__.get("n_train", 0))
+
+    # Load logit-R v1 (E[R] regression) if requested
+    _logit_r_model = None
+    if args.logit_r_v1:
+        from src.utils.logit_q import LogitRModel
+        _logit_r_model = LogitRModel(args.logit_r_v1)
+        logger.info("Loaded logit-R v1 model: %s", args.logit_r_v1)
 
     if args.research_mode:
         args.max_chop = 10
@@ -1388,6 +1708,12 @@ def main():
         return
 
     trading_days = sorted(set(df.index.date))
+    if args.start_date:
+        _sd = date.fromisoformat(args.start_date)
+        trading_days = [d for d in trading_days if d >= _sd]
+    if args.end_date:
+        _ed = date.fromisoformat(args.end_date)
+        trading_days = [d for d in trading_days if d <= _ed]
     logger.info("Replaying %d trading days...", len(trading_days))
 
     # ── Fetch historical VIX for realistic quality scoring ──
@@ -1433,6 +1759,50 @@ def main():
                     day_vix = vix_map[prev_day]
                     break
 
+        # ── FOMC sit-out filter (golden 2026-06-04) ──
+        if args.skip_fomc and day.isoformat() in FOMC_DATES:
+            continue
+
+        # ── Gap-up sit-out filter ──
+        if args.skip_gap_up_pct > 0 and prior_bars is not None and len(prior_bars) > 0:
+            try:
+                prior_close = float(prior_bars["Close"].iloc[-1])
+                today_open = float(day_bars["Open"].iloc[0])
+                if prior_close > 0:
+                    gap_pct = (today_open - prior_close) / prior_close * 100
+                    if gap_pct > args.skip_gap_up_pct:
+                        continue
+            except (IndexError, KeyError):
+                pass
+
+        # ── Failed-bounce day-regime filter ──
+        # Diagnostic-grounded (2026-06-06): days where a small gap-up (0% to
+        # +0.50%) follows a prior session that closed in the lower 20% of its
+        # range are net-negative on both SPY and QQQ.
+        #
+        # Mechanism: prior bearish capitulation close + weak overnight bid =
+        # rally fails as underlying bearish flow returns. Aggregate cohort
+        # over 730d: SPY 19 days mean -0.16R, QQQ 10 days mean -0.33R.
+        if (args.skip_failed_bounce and prior_bars is not None and len(prior_bars) > 0):
+            try:
+                # Find yesterday's bars (last date in prior_bars)
+                yest_date = sorted(set(prior_bars.index.date))[-1]
+                yest = prior_bars[prior_bars.index.date == yest_date]
+                if len(yest) > 0:
+                    p_close = float(yest["Close"].iloc[-1])
+                    p_high = float(yest["High"].max())
+                    p_low = float(yest["Low"].min())
+                    p_range = p_high - p_low
+                    t_open = float(day_bars["Open"].iloc[0])
+                    if p_close > 0 and p_range > 0:
+                        gap_pct = (t_open - p_close) / p_close * 100
+                        close_pos = (p_close - p_low) / p_range
+                        if (0 < gap_pct <= args.failed_bounce_gap_max
+                                and close_pos <= args.failed_bounce_close_pos_max):
+                            continue
+            except (IndexError, KeyError):
+                pass
+
         # ── VIX sit-out filter: skip days with extreme volatility ──
         if args.vix_max > 0 and day_vix > args.vix_max:
             continue
@@ -1454,6 +1824,8 @@ def main():
                               cluster_penalty=args.cluster_penalty,
                               cluster_penalty_window_min=args.cluster_penalty_window_min,
                               cluster_penalty_cap=args.cluster_penalty_cap,
+                              rsi_extreme_penalty=args.rsi_extreme_penalty,
+                              rsi_extreme_cost=args.rsi_extreme_cost,
                               vix_stop_slope=args.vix_stop_slope, vix_stop_anchor=args.vix_stop_anchor,
                               breakout_pct=args.breakout_pct,
                               cooldown_bars=args.cooldown_bars, scan_end=args.scan_end,
@@ -1465,6 +1837,7 @@ def main():
                               symbol=args.symbol,
                               max_trades_per_day=args.max_trades_per_day,
                               max_stops_per_day=args.max_stops_per_day,
+                              cluster_brake_n=args.cluster_brake_n,
                               max_consecutive_losses=args.max_consecutive_losses,
                               daily_loss_limit=args.daily_loss_limit,
                               confirmation_bar=args.confirmation_bar,
@@ -1516,6 +1889,17 @@ def main():
                               vwap_slope_override_cmax=args.vwap_slope_override_cmax,
                               chop_formula_v2b=args.chop_formula_v2b,
                               chop_formula_2xci=args.chop_formula_2xci,
+                              block_overlap_same_dir=args.block_overlap_same_dir,
+                              logit_q_model=_logit_q_model,
+                              logit_q_reject_threshold=args.logit_q_reject_threshold,
+                              logit_r_model=_logit_r_model,
+                              logit_r_min_threshold=args.logit_r_min_threshold,
+                              logit_r_max_threshold=args.logit_r_max_threshold,
+                              vix_continuous=args.vix_continuous,
+                              atr_stop_k=args.atr_stop_k,
+                              stop_buffer_pct=args.stop_buffer_pct,
+                              dte=args.dte,
+                              strict_real_options=args.strict_real_options,
                               debug=(debug_date is not None and day == debug_date))
         all_triggers.extend(triggers)
 
@@ -1525,7 +1909,10 @@ def main():
     if args.shares:
         mode_label = "SHARES"
     elif args.real_options and not args.no_real_options:
-        mode_label = "0DTE OPTIONS (Alpaca historical bars; synth fallback)"
+        if args.strict_real_options:
+            mode_label = f"{args.dte}DTE OPTIONS (Alpaca historical bars; STRICT — no synth fallback)"
+        else:
+            mode_label = f"{args.dte}DTE OPTIONS (Alpaca historical bars; synth fallback)"
     else:
         mode_label = f"0DTE OPTIONS (synth Δ={args.option_delta}, γ={args.option_gamma})"
     print(f"  Mode: {mode_label}")

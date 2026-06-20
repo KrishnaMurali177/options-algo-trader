@@ -27,11 +27,6 @@ apscheduler>=3.10.0
 # Logging
 structlog>=24.4.0
 
-# Gmail API (OAuth2 trade alerts) — optional, app works without these
-google-api-python-client>=2.100.0
-google-auth-httplib2>=0.1.0
-google-auth-oauthlib>=1.0.0
-
 # Web / Dashboard
 fastapi>=0.115.0
 uvicorn>=0.30.0

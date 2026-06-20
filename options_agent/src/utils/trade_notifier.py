@@ -1,27 +1,17 @@
-"""Unified trade notifier — dispatches to all configured channels (Gmail, Discord)."""
+"""Unified trade notifier — dispatches to all configured channels (Discord)."""
 
 from __future__ import annotations
 
 import logging
 
-from src.utils.email_notifier import TradeEmailNotifier
 from src.utils.discord_notifier import DiscordNotifier
 
 logger = logging.getLogger(__name__)
 
 
 class TradeNotifier:
-    def __init__(self, gmail_recipient: str = "", discord_webhook_url: str = "",
-                 gmail_credentials_file: str = "", gmail_token_file: str = ""):
+    def __init__(self, discord_webhook_url: str = ""):
         self._channels = []
-
-        email = TradeEmailNotifier(
-            recipient=gmail_recipient,
-            credentials_file=gmail_credentials_file,
-            token_file=gmail_token_file,
-        )
-        if email.enabled:
-            self._channels.append(email)
 
         discord = DiscordNotifier(webhook_url=discord_webhook_url)
         if discord.enabled:

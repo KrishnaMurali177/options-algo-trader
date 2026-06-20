@@ -181,7 +181,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                regime_guard: bool = True,
                or_threshold: int = 25,
                symbol: str = "SPY",
-               max_trades_per_day: int = 4,
+               max_trades_per_day: int = 3,
                max_stops_per_day: int = 1,
                max_consecutive_losses: int = 2,
                daily_loss_limit: float = 0.0,
@@ -208,6 +208,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                dynamic_or: bool = True,
                dynamic_or_threshold: float = 0.6,
                real_options: bool = False,
+               require_real_options: bool = False,
                decay_aware_targets: bool = False,
                 decay_target_floor: float = 0.4,
                 decay_halflife_bars: int = 8,
@@ -431,8 +432,11 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         if i - last_trigger_idx < effective_cooldown:
             continue
 
-        # Use all bars up to current time for indicators
-        bars_to_now = day_bars[day_bars.index <= ts]
+        # Use bars BEFORE current time — the bar at ts is still forming in
+        # real-time (Alpaca timestamps bars at open). The live agent drops
+        # this partial bar via _drop_partial_trailing_bar, so replay must
+        # match by using strictly-prior bars.
+        bars_to_now = day_bars[day_bars.index < ts]
         n = len(bars_to_now)
         price = float(day_close.iloc[:n].iloc[-1])
 
@@ -1143,14 +1147,15 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 logger.debug("Real-options pricing failed for %s %s: %s — falling back to synth",
                              symbol, ts, e)
 
-        # Strict-real-options mode: when real pricing is unavailable, skip the trigger
-        # entirely rather than fall back to synth. Mirrors the live 1DTE agent's
-        # skip-on-no-chain policy. Used for honest A/B numbers — see
-        # [[feedback_real_options_ab_discipline]] (synth inflates PF/Sharpe/Calmar 40-65%).
-        # Skip happens before state tracking (pending_exits / open_until / stagnation
-        # cooldown), so the trigger is treated as if it never fired — same semantics as
-        # a chop reject.
-        if simulate_options and real_options and strict_real_options and not priced_real:
+        # Real-pricing-only mode: skip the trigger entirely when real Alpaca
+        # pricing is unavailable rather than fall back to synth. Mirrors the
+        # live 1DTE agent's skip-on-no-chain policy. Used for honest A/B numbers —
+        # see [[feedback_real_options_ab_discipline]] (synth inflates
+        # PF/Sharpe/Calmar 40-65%). Skip happens before state tracking
+        # (pending_exits / open_until / stagnation cooldown), so the trigger is
+        # treated as if it never fired — same semantics as a chop reject.
+        # Both --strict-real-options and --require-real-options trigger this path.
+        if simulate_options and real_options and (strict_real_options or require_real_options) and not priced_real:
             continue
 
         if simulate_options and not priced_real:
@@ -1479,6 +1484,10 @@ def main():
                              "Note: Alpaca options data starts ~Feb 2024.")
     parser.add_argument("--no-real-options", action="store_true",
                         help="Disable real Alpaca options pricing; use synthesized delta-gamma model instead.")
+    parser.add_argument("--require-real-options", action="store_true",
+                        help="Real-pricing-only: skip any trigger that lacks a real 0DTE contract/bars "
+                             "instead of synth-pricing it. Use for symbols without daily expirations "
+                             "(e.g. GOOGL) to see the tradeable-only subset.")
     parser.add_argument("--no-decay-aware-targets", action="store_true",
                         help="Disable time-decay-aware targets (golden: enabled). "
                              "When enabled, take-profit shrinks as theta erodes "
@@ -1850,6 +1859,7 @@ def main():
                               dynamic_or=args.dynamic_or,
                               dynamic_or_threshold=args.dynamic_or_threshold,
                               real_options=args.real_options and not args.no_real_options,
+                              require_real_options=args.require_real_options,
                               decay_aware_targets=not args.no_decay_aware_targets,
                               decay_target_floor=args.decay_target_floor,
                               decay_halflife_bars=args.decay_halflife_bars,

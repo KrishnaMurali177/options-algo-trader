@@ -12,6 +12,12 @@ services:
       - ./options_agent/sweet_spot_journal:/app/sweet_spot_journal
       - ./options_agent/backtest_results:/app/backtest_results
       - ./options_agent/data_cache:/app/data_cache
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8501/_stcore/health')"]
+      interval: 120s
+      timeout: 10s
+      start_period: 60s
+      retries: 3
     restart: unless-stopped
 
   agent-spy:

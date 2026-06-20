@@ -1,5 +1,18 @@
 # Changelog
 
+- [2026-06-17] Modified: options_agent/scripts/ensure_agents.sh — Export Homebrew PATH so cron can find limactl/colima/docker (fixes "limactl not found" failure)
+- [2026-06-17] Modified: options_agent/scripts/check_agents_health.sh — Export Homebrew PATH so cron can resolve docker
+- [2026-06-17] Created: options_agent/scripts/check_agents_health.sh — Host cron health check that pings Discord when any agent container goes down/unhealthy (transition-deduped)
+- [2026-05-27] Deleted: options_agent/src/utils/email_notifier.py, scripts/setup_gmail_auth.py, scripts/monitor_agent.py, tests/test_email_notifier.py — Removed Gmail/email notification system entirely
+- [2026-05-27] Modified: options_agent/src/utils/trade_notifier.py — Removed Gmail channel, Discord-only now
+- [2026-05-27] Modified: options_agent/requirements.txt — Removed google-api-python-client, google-auth-httplib2, google-auth-oauthlib
+- [2026-05-27] Created: options_agent/scripts/ensure_agents.sh — Cron script that checks Colima/Docker before starting containers
+- [2026-05-27] Modified: docker-compose.yml — Added proper Streamlit healthcheck for dashboard service
+- [2026-05-27] Modified: options_agent/scripts/run_sweet_spot_agent.py — Reverted cooldown to 600s (10 min) and max_trades_per_day to 3
+- [2026-05-27] Modified: options_agent/scripts/replay_sweet_spot.py — Reverted max_trades_per_day default to 3
+- [2026-05-27] Modified: options_agent/src/utils/alpaca_data.py — Added is_trading_day() using Alpaca calendar API to detect market holidays
+- [2026-05-27] Modified: options_agent/scripts/run_sweet_spot_agent.py — Daemon loop now skips market holidays (not just weekends) using Alpaca calendar
+- [2026-05-22] Created: options_agent/dashboard/pages/1_Backtest.py — Added /backtest page for screenshot-friendly backtest results
 - [2026-05-17] Modified: options_agent/scripts/verify_live_vs_replay.py — Layer 3: fix prior_bars to 5-day window, prefer bar snapshots from journal
 - [2026-05-16] Modified: options_agent/scripts/run_sweet_spot_agent.py — Layer 2: snapshot extended_bars to parquet at trigger time for perfect reproducibility
 - [2026-05-16] Modified: options_agent/scripts/run_sweet_spot_agent.py — Layer 1: store indicator snapshot (SMA, EMA, RSI, VIX, bar counts) in trigger journal entries
@@ -73,3 +86,8 @@
 - [2026-05-13] Modified: options_agent/scripts/run_sweet_spot_agent.py — Added heartbeat writes to all sleep points in run_day() to fix false unhealthy status
 - [2026-05-13] Modified: run.sh — Added caffeinate to prevent macOS sleep while agents are running; auto-starts on agents/all/restart, stops on stop-agents/down
 - [2026-05-13] Modified: run.sh — Changed caffeinate from -s to -i (prevents idle sleep on AC or battery)
+- [2026-05-28] Modified: options_agent/sweet_spot_journal/2026-05-28_QQQ.json — Marked QQQ 12:00 trade as forced_closure (manual close, exclude from perf analysis)
+- [2026-05-28] Modified: options_agent/sweet_spot_journal/2026-05-28_SPY.json — Marked SPY 12:00 trade as forced_closure (manual close, exclude from perf analysis)
+- [2026-05-29] Modified: options_agent/scripts/run_sweet_spot_agent.py — Fixed _safe_sleep to use wall clock (time.time) instead of monotonic clock so agents wake up after laptop lid suspend
+- [2026-06-12] Modified: options_agent/scripts/replay_sweet_spot.py — Added --require-real-options flag for real-pricing-only replay (skips synth fallback)
+- [2026-06-13] Created: LICENSE — Proprietary all-rights-reserved license with not-financial-advice disclaimer

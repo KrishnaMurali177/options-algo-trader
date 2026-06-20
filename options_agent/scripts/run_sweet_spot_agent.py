@@ -336,9 +336,9 @@ def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
                      cluster_penalty_window_min: int = 30,
                      cluster_penalty_cap: int = 2,
                      rsi_extreme_penalty: float = 30.0,
-                     vwap_slope_override_t: float = 0.7,
-                     vwap_slope_override_k: int = 3,
-                     vwap_slope_override_cmax: float = 0.65,
+                     vwap_slope_override_t: float = 0.0,
+                     vwap_slope_override_k: int = 0,
+                     vwap_slope_override_cmax: float = 0.0,
                      dynamic_or: bool = True,
                      dynamic_or_threshold: float = 0.6) -> dict:
     """Evaluate sweet spot conditions. Always returns a verdict dict.
@@ -1671,15 +1671,14 @@ def main():
                              "Promoted 2026-06-04: SPY Sharpe +0.12 / QQQ Sharpe +0.10-0.18 / "
                              "clean sweep both symbols both windows.")
     parser.add_argument("--skip-failed-bounce", dest="skip_failed_bounce", action="store_true",
-                        default=False,
-                        help="Failed-bounce sit-out (default: OFF as of 2026-06-13). "
-                             "DEMOTED: 90d A/B showed SPY clean regression (PF 1.67→2.02, "
-                             "Sharpe 2.34→2.85, Calmar 1.92→3.17, MDD%% 39.7→31.0, +$1,692) "
-                             "with QQQ unaffected. 6/9 SPY trend day was the most expensive "
-                             "single veto ($2,034). Pass this flag to re-enable.")
+                        default=True,
+                        help="Failed-bounce sit-out (default: ON as of 2026-06-20). "
+                             "RE-PROMOTED after look-ahead-fix re-validation reversed the 2026-06-13 "
+                             "demotion: turning the filter ON improves 7/8 cells (SPY+QQQ × 730d+365d) "
+                             "on PF/Sharpe/Calmar/MDD%%. Clean Sharpe sweep +0.15-0.26, clean MDD%% "
+                             "sweep -0.1pp to -7.1pp. The 2026-06-13 demotion was a look-ahead artifact.")
     parser.add_argument("--allow-failed-bounce", dest="skip_failed_bounce", action="store_false",
-                        help="Disable failed-bounce sit-out (already default OFF as of 2026-06-13; "
-                             "kept for back-compat with run_daily.bat).")
+                        help="Disable failed-bounce sit-out (default is ON as of 2026-06-20).")
     parser.add_argument("--failed-bounce-gap-max", type=float, default=0.50)
     parser.add_argument("--failed-bounce-close-pos-max", type=float, default=0.20)
     parser.add_argument("--no-dynamic-or", action="store_true",

@@ -230,9 +230,9 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                     momentum_flip: bool = False,
                     momentum_flip_threshold: float = 40.0,
                     max_flip_trades: int = 1,
-                    vwap_slope_override_t: float = 0.7,
-                    vwap_slope_override_k: int = 3,
-                    vwap_slope_override_cmax: float = 0.65,
+                    vwap_slope_override_t: float = 0.0,
+                    vwap_slope_override_k: int = 0,
+                    vwap_slope_override_cmax: float = 0.0,
                     chop_formula_v2b: bool = False,
                     chop_formula_2xci: bool = False,
                     block_overlap_same_dir: bool = False,
@@ -1572,12 +1572,16 @@ def main():
                         help="Recent momentum score threshold to trigger direction flip (default: 40)")
     parser.add_argument("--max-flip-trades", type=int, default=1,
                         help="Max additional flip trades per day beyond max-trades-per-day (default: 1)")
-    parser.add_argument("--vwap-slope-override-t", type=float, default=0.7,
-                        help="VWAP-slope chop override: (price-vwap)/atr threshold (golden: 0.7, 0=disabled)")
-    parser.add_argument("--vwap-slope-override-k", type=int, default=3,
-                        help="VWAP-slope chop override: consecutive bars on correct side of VWAP (golden: 3, 0=disabled)")
-    parser.add_argument("--vwap-slope-override-cmax", type=float, default=0.65,
-                        help="VWAP-slope chop override: max raw CI allowed for override (golden: 0.65, 0=disabled, 1.0=unconditional)")
+    parser.add_argument("--vwap-slope-override-t", type=float, default=0.0,
+                        help="VWAP-slope chop override: (price-vwap)/atr threshold (golden: OFF as of 2026-06-20; "
+                             "0=disabled). DEMOTED after look-ahead-fix re-validation showed neutral effect with "
+                             "per-symbol arb pattern — original 2026-05-22 'clean sweep' promotion was look-ahead "
+                             "artifact (PnL impact $183-$762 across cells, Calmar swings opposite signs 730d vs 365d).")
+    parser.add_argument("--vwap-slope-override-k", type=int, default=0,
+                        help="VWAP-slope chop override: consecutive bars on correct side of VWAP (golden: OFF as of 2026-06-20; 0=disabled)")
+    parser.add_argument("--vwap-slope-override-cmax", type=float, default=0.0,
+                        help="VWAP-slope chop override: max raw CI allowed for override (golden: OFF as of 2026-06-20; "
+                             "0=disabled, 1.0=unconditional)")
     parser.add_argument("--block-overlap-same-dir", action="store_true", default=False,
                         help="Live-parity gate: block new trigger if same-direction position still open. "
                              "Mirrors run_sweet_spot_agent.py open_directions check. OFF by default for "
@@ -1633,18 +1637,17 @@ def main():
                              "register in pending_exits / stagnation cooldown / open_until "
                              "state — treated as if the trigger never fired.")
     parser.add_argument("--skip-failed-bounce", dest="skip_failed_bounce",
-                        action="store_true", default=False,
+                        action="store_true", default=True,
                         help="Day-regime sit-out: skip days where gap_pct ∈ (0, X] AND prior-day "
-                             "close-position ≤ Y (failed-bounce archetype). DEMOTED 2026-06-13: "
-                             "90d A/B (real options) showed SPY clean regression "
-                             "(PF 1.67→2.02, Sharpe 2.34→2.85, Calmar 1.92→3.17, MDD%% 39.7→31.0, "
-                             "PnL +$1,692) with QQQ unaffected (0 QQQ days matched filter). "
-                             "Original 2026-06-06 promotion was on 730d/365d aggregates; recent "
-                             "regime no longer rewards the veto. 6/9 SPY trend day was the most "
-                             "expensive single veto ($2,034).")
+                             "close-position ≤ Y (failed-bounce archetype). RE-PROMOTED 2026-06-20 "
+                             "after look-ahead-fix re-validation reversed the 2026-06-13 demotion: "
+                             "turning the filter ON improves 7/8 cells (SPY+QQQ × 730d+365d) on "
+                             "PF/Sharpe/Calmar/MDD%%. Clean Sharpe sweep +0.15-0.26, clean MDD%% "
+                             "sweep -0.1pp to -7.1pp. The 2026-06-13 demotion was a look-ahead "
+                             "artifact (replay was using forming bar; fix landed in 2ce21d4b).")
     parser.add_argument("--allow-failed-bounce", dest="skip_failed_bounce",
                         action="store_false",
-                        help="Disable the failed-bounce sit-out filter (default OFF as of 2026-06-13).")
+                        help="Disable the failed-bounce sit-out filter (default ON as of 2026-06-20).")
     parser.add_argument("--failed-bounce-gap-max", type=float, default=0.50,
                         help="Upper bound (%%) for the small-gap-up condition (default 0.50).")
     parser.add_argument("--failed-bounce-close-pos-max", type=float, default=0.20,

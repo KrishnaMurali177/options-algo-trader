@@ -29,6 +29,17 @@ import pandas as pd
 
 logger = logging.getLogger(__name__)
 
+
+def alpaca_is_paper() -> bool:
+    """Whether to hit the Alpaca PAPER endpoint (default) or the LIVE real-money endpoint.
+
+    Controlled by the ALPACA_PAPER env var. Defaults to True (paper) so nothing trades
+    real money unless a container/process is explicitly given ALPACA_PAPER=false along
+    with live account keys (see options_agent/.env.live).
+    """
+    return os.environ.get("ALPACA_PAPER", "true").strip().lower() not in ("false", "0", "no")
+
+
 # ── Cache directory ──
 _CACHE_DIR = Path(__file__).resolve().parent.parent.parent / "data_cache"
 _CACHE_DIR.mkdir(exist_ok=True)
@@ -68,7 +79,7 @@ def is_trading_day(date: datetime | None = None) -> bool:
         d = date or datetime.now(timezone.utc)
         return d.weekday() < 5
 
-    client = TradingClient(api_key=api_key, secret_key=secret_key, paper=True)
+    client = TradingClient(api_key=api_key, secret_key=secret_key, paper=alpaca_is_paper())
     d = (date or datetime.now(timezone.utc)).date()
     from alpaca.trading.requests import GetCalendarRequest
     cal = client.get_calendar(GetCalendarRequest(start=str(d), end=str(d)))
@@ -292,7 +303,7 @@ def get_0dte_chain(
     if not api_key or not secret_key:
         raise RuntimeError("ALPACA_API_KEY / ALPACA_SECRET_KEY not set")
 
-    trading_client = TradingClient(api_key=api_key, secret_key=secret_key, paper=True)
+    trading_client = TradingClient(api_key=api_key, secret_key=secret_key, paper=alpaca_is_paper())
     today = date.today()
 
     # Fetch 0DTE contracts expiring today. Alpaca paginates at 100 contracts/page;

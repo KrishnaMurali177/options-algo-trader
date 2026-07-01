@@ -1,0 +1,200 @@
+###############################################################################
+# GOLDEN-PARAM A/B STUDY  —  AAPL All-NEW package, STRICT real options (single-name)
+#
+# Symbol      : AAPL  (Mag-7 single name; M/W/Th/F expiries, NOT daily 0DTE)
+# Window      : --days 365   (251 trading days)
+# Backtests run: 2026-06-27  |  Persisted: 2026-06-27
+# Code basis  : main @ e9ecf8c  —  look-ahead-FIXED replay code. Param-isolated.
+#
+# *** STRICT REAL OPTIONS *** (--strict-real-options): trades are taken ONLY on days
+# with a real Alpaca 0DTE chain; no synthetic fallback. REQUIRED for single names —
+# a plain --real-options MSFT run was ~66% synthetic (real=149/438) and is NOT valid.
+# Both sides of this A/B are 100% real-priced (synth_fallback=0), apples-to-apples.
+#
+# Command:
+#   python scripts/replay_sweet_spot.py -s AAPL --days 365 --real-options --strict-real-options 
+#
+# Golden parameters used in THIS run (the 5 flags that changed in PR #4):
+#   cluster_penalty       : OFF              [NEW golden]
+#   rsi_extreme_penalty   : 30  (ON)         [NEW golden]
+#   tiered_stag_early_bar : 6   (30 min)     [NEW golden]
+#   vwap_slope_override   : 0 / 0 / 0 (OFF)  [NEW golden]
+#   skip_failed_bounce    : ON               [NEW golden]
+###############################################################################
+
+time="2026-06-27T10:52:08-07:00" level=warning msg="Found orphan containers ([options-agent-msft options-agent-aapl]) for this project. If you removed or renamed this service in your compose file, you can run this command with the --remove-orphans flag to clean it up."
+ Container options-algo-trader-agent-spy-run-6a5f69660f63 Creating 
+ Container options-algo-trader-agent-spy-run-6a5f69660f63 Created 
+2026-06-27 13:52:09,515 [INFO] Fetching 365 days of 5-min data from Alpaca for AAPL...
+2026-06-27 13:52:09,646 [INFO] Fetching AAPL 5min bars from Alpaca: 2025-06-27 → 2026-06-27 …
+2026-06-27 13:52:12,366 [INFO] Cached 20080 5min bars for AAPL (2025-06-27 → 2026-06-26) at /app/data_cache/AAPL_5min_365d.parquet
+2026-06-27 13:52:12,372 [INFO] Replaying 251 trading days...
+2026-06-27 13:52:12,474 [INFO] Fetching historical ^VIX data...
+2026-06-27 13:52:12,979 [INFO]   VIX data: 255 days loaded
+
+══════════════════════════════════════════════════════════════════════
+  SWEET SPOT REPLAY: AAPL — 251 days
+  Mode: 0DTE OPTIONS (Alpaca historical bars; STRICT — no synth fallback)
+  Filter: Quality 3-7, Cascade ≥ 2, Chop 2–5, Regime Guard: OFF
+  Analyzers: OpeningRange + RecentMomentum + MomentumCascade (exact replica)
+  Decay-Aware Targets: ON (floor=0.4, halflife=8 bars / 40 min)
+══════════════════════════════════════════════════════════════════════
+
+  Triggers:        115 (0.5/day)
+  Win Rate:        53.9% (62/115)
+  Profit Factor:   1.93
+  Total P&L (cascade-sized): $+34.59
+  Avg P&L/Trade:   $+0.3008
+  Avg Winner:      $+1.1569
+  Avg Loser:       $-0.7008
+  R:R Ratio:       1.65
+
+  Risk-Adjusted Metrics (annualized via 252 trading days):
+    Sharpe Ratio:         1.74   (>1.0 good, >2.0 excellent)
+    Sortino Ratio:        1.23   (downside-only volatility)
+    Max Drawdown:         $11.16 (30.3% of peak)
+    Calmar Ratio:         3.10   (annual return / max DD)
+    Longest Underwater:   78 days
+    DD Window:            2026-04-17 → 2026-05-26
+
+  Cascade Tier Breakdown:
+    Tier              N    WR%    PF    TotPnL   AvgPnL
+    E 2-3 (3ct)      30  56.7%  2.37 $  +4.05 $+0.135
+    E 4-5 (3ct)      56  50.0%  1.50 $  +2.88 $+0.051
+    E 6-7 (3ct)      29  58.6%  2.24 $  +4.60 $+0.159
+    E 8+  (3ct)       0      —     —         —        —
+
+  Exit Breakdown:
+    decay_target  59 (51%)
+    stagnation    36 (31%)
+    stop          17 (15%)
+    theta_exit     1 (1%)
+    gainz_exit     1 (1%)
+    time_stop      1 (1%)
+
+  Call vs Put Aggregation (cascade-sized):
+    Side      N  %Tot    WR%    PF     TotPnL    AvgPnL
+    CALL     72 62.6%  54.2%  1.85 $  +20.67 $ +0.287
+    PUT      43 37.4%  53.5%  2.08 $  +13.92 $ +0.324
+
+  Date         Time   Dir    Q  E  C  Ct    Entry     Exit      Δ$  Opt$/ct     Tot$ Outcome 
+  ──────────── ────── ───── ── ── ── ─── ──────── ──────── ─────── ──────── ──────── ────────
+  2025-07-03   10:30  CALL   5  4  4   3 $ 213.72 $ 214.20 $+0.49 $     +6 $    +18 decay_target ✅
+  2025-07-03   10:35  CALL   7  5  4   3 $ 214.22 $ 213.26 $-0.96 $    -14 $    -42 stop     ❌
+  2025-07-03   10:40  CALL   7  6  4   3 $ 214.19 $ 213.27 $-0.92 $     -8 $    -24 stop     ❌
+  2025-07-03   10:45  CALL   7  6  4   3 $ 214.01 $ 213.27 $-0.74 $     -1 $     -3 stop     ❌
+  2025-07-11   10:30  CALL   4  2  4   3 $ 211.77 $ 211.32 $-0.45 $    -10 $    -30 stop     ❌
+  2025-07-18   10:30  PUT    5  4  5   3 $ 209.93 $ 210.19 $-0.27 $     -8 $    -24 stop     ❌
+  2025-08-08   10:30  CALL   5  3  4   3 $ 222.72 $ 223.48 $+0.76 $    +17 $    +51 decay_target ✅
+  2025-08-08   10:35  CALL   7  6  4   3 $ 223.31 $ 224.29 $+0.99 $    +71 $   +213 decay_target ✅
+  2025-08-08   10:40  CALL   7  6  3   3 $ 223.39 $ 223.67 $+0.28 $    +18 $    +54 stagnation ✅
+  2025-08-08   10:50  CALL   7  5  3   3 $ 222.96 $ 223.78 $+0.82 $    +48 $   +144 decay_target ✅
+  2025-08-15   10:35  PUT    5  4  4   3 $ 231.93 $ 231.45 $+0.48 $    +53 $   +159 decay_target ✅
+  2025-08-15   10:40  PUT    5  4  4   3 $ 231.80 $ 231.19 $+0.61 $    +32 $    +96 decay_target ✅
+  2025-08-15   10:45  PUT    7  6  4   3 $ 231.65 $ 230.69 $+0.95 $    +16 $    +48 decay_target ✅
+  2025-08-15   10:50  PUT    7  6  3   3 $ 231.16 $ 230.40 $+0.76 $     +4 $    +12 decay_target ✅
+  2025-08-22   10:35  CALL   7  7  4   3 $ 228.64 $ 228.59 $-0.04 $    +26 $    +78 stagnation ✅
+  2025-08-22   10:50  CALL   7  7  5   3 $ 228.50 $ 227.54 $-0.96 $    -54 $   -162 stagnation ❌
+  2025-08-22   13:40  CALL   7  6  5   3 $ 228.18 $ 228.24 $+0.06 $     +1 $     +3 stagnation ✅
+  2025-08-22   13:45  CALL   4  4  5   3 $ 228.12 $ 228.19 $+0.07 $    +11 $    +33 stagnation ✅
+  2025-09-12   11:10  CALL   4  4  4   3 $ 233.74 $ 233.75 $+0.01 $    -15 $    -45 theta_exit ❌
+  2025-09-12   11:15  CALL   5  3  4   3 $ 233.88 $ 234.07 $+0.19 $     -3 $     -9 stagnation ❌
+  2025-09-12   11:20  CALL   4  5  4   3 $ 233.56 $ 234.23 $+0.67 $    +15 $    +45 decay_target ✅
+  2025-09-12   11:35  CALL   7  5  4   3 $ 234.14 $ 234.08 $-0.06 $     -1 $     -3 stagnation ❌
+  2025-09-19   10:50  CALL   7  6  5   3 $ 242.20 $ 242.95 $+0.75 $    -20 $    -60 decay_target ❌
+  2025-09-19   10:55  CALL   7  7  4   3 $ 243.10 $ 241.83 $-1.28 $    -50 $   -150 stop     ❌
+  2025-09-19   11:00  CALL   7  6  5   3 $ 242.87 $ 241.86 $-1.01 $    -37 $   -111 stop     ❌
+  2025-10-03   10:30  CALL   3  2  2   3 $ 257.86 $ 258.33 $+0.47 $    +11 $    +33 decay_target ✅
+  2025-10-03   10:35  CALL   4  4  3   3 $ 257.94 $ 258.52 $+0.57 $     -2 $     -6 decay_target ❌
+  2025-10-03   10:40  CALL   6  3  2   3 $ 258.20 $ 258.64 $+0.44 $    +19 $    +57 decay_target ✅
+  2025-10-03   10:50  CALL   3  3  2   3 $ 258.10 $ 258.57 $+0.47 $    +12 $    +36 decay_target ✅
+  2025-10-17   13:20  CALL   6  3  4   3 $ 250.75 $ 251.34 $+0.59 $    +48 $   +144 decay_target ✅
+  2025-10-17   13:30  CALL   6  3  4   3 $ 250.84 $ 251.60 $+0.76 $    +42 $   +126 decay_target ✅
+  2025-10-17   13:40  CALL   6  4  3   3 $ 250.71 $ 251.52 $+0.81 $    +74 $   +222 decay_target ✅
+  2025-10-17   13:50  CALL   6  3  4   3 $ 250.73 $ 251.67 $+0.94 $    +57 $   +171 decay_target ✅
+  2025-10-24   11:55  CALL   7  5  4   3 $ 263.23 $ 263.57 $+0.34 $    +21 $    +63 stagnation ✅
+  2025-10-24   12:00  CALL   7  4  4   3 $ 263.33 $ 263.24 $-0.10 $    -26 $    -78 stagnation ❌
+  2025-10-24   12:05  CALL   5  4  3   3 $ 263.48 $ 263.40 $-0.08 $    -14 $    -42 stagnation ❌
+  2025-10-31   10:30  PUT    6  4  5   3 $ 270.43 $ 271.13 $-0.70 $    -45 $   -135 stagnation ❌
+  2025-10-31   10:35  PUT    4  3  5   3 $ 270.48 $ 270.39 $+0.09 $     +8 $    +24 stagnation ✅
+  2025-10-31   10:45  PUT    5  4  5   3 $ 270.62 $ 270.66 $-0.04 $    -11 $    -33 stagnation ❌
+  2025-11-21   11:25  CALL   6  3  4   3 $ 270.90 $ 270.81 $-0.09 $    -15 $    -45 stagnation ❌
+  2025-11-28   10:30  PUT    3  4  5   3 $ 276.26 $ 276.78 $-0.52 $    -21 $    -63 stop     ❌
+  2025-12-05   12:40  PUT    7  5  5   3 $ 278.61 $ 279.18 $-0.57 $     -7 $    -21 stagnation ❌
+  2026-01-09   12:50  CALL   7  5  5   3 $ 259.04 $ 258.54 $-0.50 $     -8 $    -24 stop     ❌
+  2026-01-16   10:30  PUT    3  2  3   3 $ 256.82 $ 256.40 $+0.42 $    +26 $    +78 decay_target ✅
+  2026-01-16   10:35  PUT    5  4  2   3 $ 256.63 $ 256.33 $+0.30 $     +1 $     +3 decay_target ✅
+  2026-01-16   10:40  PUT    7  7  2   3 $ 256.32 $ 256.56 $-0.23 $    -23 $    -69 stagnation ❌
+  2026-01-16   11:55  PUT    7  5  2   3 $ 256.27 $ 255.78 $+0.49 $    +43 $   +129 decay_target ✅
+  2026-02-02   10:45  CALL   4  3  2   3 $ 263.91 $ 263.32 $-0.59 $     -3 $     -9 stop     ❌
+  2026-02-09   10:30  PUT    5  4  5   3 $ 273.11 $ 273.59 $-0.48 $    -17 $    -51 stagnation ❌
+  2026-02-09   10:35  PUT    7  5  5   3 $ 273.49 $ 272.94 $+0.55 $    -11 $    -33 decay_target ❌
+  2026-02-09   10:40  PUT    7  5  5   3 $ 273.14 $ 273.39 $-0.25 $    -16 $    -48 stagnation ❌
+  2026-02-09   10:45  PUT    7  5  5   3 $ 273.43 $ 272.93 $+0.50 $     +2 $     +6 decay_target ✅
+  2026-02-11   10:35  CALL   7  7  4   3 $ 278.88 $ 278.79 $-0.09 $     -5 $    -15 stagnation ❌
+  2026-02-11   10:40  CALL   7  6  5   3 $ 278.40 $ 279.90 $+1.50 $    +63 $   +189 decay_target ✅
+  2026-02-11   10:45  CALL   7  6  5   3 $ 278.13 $ 279.79 $+1.66 $    +99 $   +297 decay_target ✅
+  2026-02-11   10:50  CALL   7  6  4   3 $ 278.51 $ 279.65 $+1.14 $    -24 $    -72 decay_target ❌
+  2026-02-18   12:05  PUT    3  2  5   3 $ 265.63 $ 265.15 $+0.48 $    +15 $    +45 decay_target ✅
+  2026-02-18   12:10  CALL   5  3  5   3 $ 265.76 $ 265.71 $-0.06 $     +9 $    +27 stagnation ✅
+  2026-02-27   10:30  PUT    6  4  5   3 $ 268.50 $ 269.32 $-0.82 $    -55 $   -165 stagnation ❌
+  2026-02-27   10:35  PUT    6  4  4   3 $ 268.31 $ 269.10 $-0.79 $    -33 $    -99 stagnation ❌
+  2026-02-27   10:45  PUT    6  3  5   3 $ 268.70 $ 268.54 $+0.17 $     -1 $     -3 stagnation ❌
+  2026-03-13   12:25  PUT    6  2  4   3 $ 252.50 $ 251.47 $+1.03 $    +71 $   +213 decay_target ✅
+  2026-03-13   12:30  PUT    6  4  5   3 $ 252.60 $ 251.52 $+1.09 $    +59 $   +177 decay_target ✅
+  2026-03-16   10:30  CALL   7  5  5   3 $ 253.31 $ 253.79 $+0.48 $    +15 $    +45 decay_target ✅
+  2026-03-16   11:50  CALL   7  4  5   3 $ 253.51 $ 252.42 $-1.09 $    -58 $   -174 stop     ❌
+  2026-04-01   10:55  PUT    7  6  5   3 $ 254.29 $ 254.06 $+0.23 $    -18 $    -54 decay_target ❌
+  2026-04-15   10:35  CALL   5  2  4   3 $ 260.74 $ 261.44 $+0.71 $   +118 $   +354 decay_target ✅
+  2026-04-15   10:40  CALL   7  4  4   3 $ 260.48 $ 260.98 $+0.51 $    +59 $   +177 decay_target ✅
+  2026-04-15   10:45  CALL   7  5  5   3 $ 261.30 $ 262.46 $+1.16 $    +39 $   +117 decay_target ✅
+  2026-04-15   10:50  CALL   7  6  3   3 $ 262.01 $ 262.88 $+0.87 $     +5 $    +15 gainz_exit ✅
+  2026-04-17   10:45  CALL   7  6  5   3 $ 269.75 $ 270.90 $+1.15 $    +72 $   +216 decay_target ✅
+  2026-04-17   10:50  CALL   7  7  4   3 $ 270.37 $ 271.86 $+1.49 $    +81 $   +243 decay_target ✅
+  2026-04-17   10:55  CALL   7  6  4   3 $ 270.23 $ 271.70 $+1.47 $    +78 $   +234 decay_target ✅
+  2026-04-17   11:45  CALL   5  4  4   3 $ 271.43 $ 271.58 $+0.15 $     -5 $    -15 stagnation ❌
+  2026-04-24   13:40  PUT    5  3  5   3 $ 270.14 $ 270.12 $+0.02 $    -33 $    -99 time_stop ❌
+  2026-04-24   13:45  PUT    6  3  5   3 $ 270.03 $ 270.08 $-0.05 $     -9 $    -27 stagnation ❌
+  2026-04-24   13:50  PUT    6  4  5   3 $ 270.00 $ 270.04 $-0.04 $    -13 $    -39 stagnation ❌
+  2026-05-01   10:30  CALL   5  3  2   3 $ 285.34 $ 284.23 $-1.11 $    -39 $   -117 stop     ❌
+  2026-05-06   10:35  CALL   5  4  4   3 $ 285.50 $ 284.89 $-0.61 $    -28 $    -84 stop     ❌
+  2026-05-11   10:45  CALL   7  5  5   3 $ 292.58 $ 292.99 $+0.41 $    -20 $    -60 decay_target ❌
+  2026-05-11   10:50  CALL   7  6  5   3 $ 292.88 $ 293.49 $+0.61 $    +35 $   +105 decay_target ✅
+  2026-05-11   10:55  CALL   4  3  5   3 $ 292.62 $ 293.03 $+0.41 $    +26 $    +78 decay_target ✅
+  2026-05-11   11:05  CALL   7  5  5   3 $ 292.63 $ 293.06 $+0.43 $     -8 $    -24 decay_target ❌
+  2026-05-15   11:45  CALL   5  4  2   3 $ 301.42 $ 302.20 $+0.79 $    +18 $    +54 decay_target ✅
+  2026-05-15   12:30  CALL   6  4  2   3 $ 301.81 $ 302.30 $+0.49 $     +2 $     +6 stagnation ✅
+  2026-05-15   12:55  CALL   7  4  4   3 $ 301.79 $ 303.08 $+1.30 $    +24 $    +72 decay_target ✅
+  2026-05-15   13:45  CALL   5  3  5   3 $ 302.49 $ 301.37 $-1.11 $    -38 $   -114 stagnation ❌
+  2026-05-18   13:15  PUT    5  4  5   3 $ 295.70 $ 295.67 $+0.03 $     -5 $    -15 stagnation ❌
+  2026-05-22   11:40  CALL   7  6  3   3 $ 310.67 $ 309.23 $-1.44 $    -82 $   -246 stagnation ❌
+  2026-05-22   11:45  CALL   5  3  3   3 $ 310.67 $ 308.85 $-1.81 $    -51 $   -153 stagnation ❌
+  2026-05-22   12:10  CALL   5  3  3   3 $ 310.38 $ 309.57 $-0.81 $    -53 $   -159 stagnation ❌
+  2026-05-22   12:15  CALL   7  5  3   3 $ 310.42 $ 309.34 $-1.07 $    -44 $   -132 stagnation ❌
+  2026-05-26   13:50  PUT    7  4  3   3 $ 309.24 $ 310.08 $-0.84 $    -40 $   -120 stop     ❌
+  2026-05-26   13:55  PUT    5  4  3   3 $ 309.47 $ 310.08 $-0.61 $    -14 $    -42 stop     ❌
+  2026-05-29   10:55  PUT    4  4  5   3 $ 311.95 $ 310.96 $+0.99 $    +54 $   +162 decay_target ✅
+  2026-05-29   11:00  PUT    7  6  5   3 $ 311.42 $ 310.52 $+0.90 $    -49 $   -147 decay_target ❌
+  2026-05-29   11:50  PUT    7  6  5   3 $ 311.23 $ 310.35 $+0.88 $     +8 $    +24 decay_target ✅
+  2026-05-29   12:55  PUT    7  5  5   3 $ 311.09 $ 310.24 $+0.85 $    +22 $    +66 decay_target ✅
+  2026-06-01   10:40  PUT    7  6  5   3 $ 307.61 $ 306.41 $+1.19 $    +61 $   +183 decay_target ✅
+  2026-06-01   11:55  PUT    7  4  4   3 $ 306.76 $ 305.73 $+1.03 $    +78 $   +234 decay_target ✅
+  2026-06-01   12:00  PUT    5  3  4   3 $ 306.83 $ 305.75 $+1.08 $    +81 $   +243 decay_target ✅
+  2026-06-03   10:40  PUT    7  6  5   3 $ 313.39 $ 311.48 $+1.91 $    +78 $   +234 decay_target ✅
+  2026-06-03   10:45  PUT    7  6  5   3 $ 313.03 $ 311.12 $+1.91 $   +115 $   +345 decay_target ✅
+  2026-06-03   11:35  PUT    7  4  5   3 $ 311.50 $ 311.12 $+0.38 $    +17 $    +51 stagnation ✅
+  2026-06-03   11:40  PUT    7  5  5   3 $ 311.45 $ 311.30 $+0.15 $     +7 $    +21 stagnation ✅
+  2026-06-10   13:10  CALL   5  3  5   3 $ 292.19 $ 293.20 $+1.01 $    +70 $   +210 decay_target ✅
+  2026-06-10   13:15  CALL   5  3  5   3 $ 292.12 $ 293.18 $+1.06 $    +71 $   +213 decay_target ✅
+  2026-06-12   10:30  PUT    5  5  2   3 $ 291.95 $ 291.23 $+0.73 $    +42 $   +126 decay_target ✅
+  2026-06-15   11:20  CALL   7  4  4   3 $ 296.35 $ 297.21 $+0.86 $    +35 $   +105 decay_target ✅
+  2026-06-15   11:25  CALL   7  5  4   3 $ 296.50 $ 297.46 $+0.96 $    +23 $    +69 decay_target ✅
+  2026-06-15   11:30  CALL   7  5  4   3 $ 296.55 $ 297.53 $+0.99 $    +32 $    +96 decay_target ✅
+  2026-06-15   11:35  CALL   7  4  3   3 $ 296.50 $ 297.54 $+1.05 $    +27 $    +81 decay_target ✅
+  2026-06-18   11:00  CALL   3  3  5   3 $ 299.21 $ 298.81 $-0.40 $     -3 $     -9 stop     ❌
+  2026-06-22   10:30  CALL   5  5  3   3 $ 301.25 $ 300.74 $-0.51 $    -32 $    -96 stop     ❌
+  2026-06-24   12:05  CALL   6  3  5   3 $ 298.91 $ 296.45 $-2.46 $    -38 $   -114 stagnation ❌
+
+  Total Option P&L (per contract, ×100 multiplier): $+1,153
+  Total Option P&L (cascade-sized, ×100 multiplier): $+3,459
+  Pricing source:  real=115  synth_fallback=0

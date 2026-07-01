@@ -100,3 +100,22 @@
 - [2026-06-14] Evaluated MSFT --min-chop 1 sweep tweak; kept default min-chop 2 (chop=1 gain was 6 in-sample trades only, holdout identical — no out-of-sample support). docker-compose.yml unchanged.
 - [2026-06-15] Created: options_agent/docs/2026-06-15_experimental_etf_universe_analysis.md — Experimental 0DTE sweep over 12 ETFs (breadth + walk-forward deep-dive)
 - [2026-06-18] Modified: options_agent/docs/2026-06-15_experimental_etf_universe_analysis.md — Added 2026-06-18 recheck (IWM robust + SLV overfit confirmed on fresh data)
+- [2026-06-25] Created: options_agent/docs/2026-06-22_golden_ab_study/README.md — Detailed PR #4 golden-param A/B study (SPY/QQQ): 365d package +32% P&L, per-flag leave-one-out decomposition, June-9 failed-bounce small-sample finding, MSFT/AAPL untested caveat
+- [2026-06-25] Created: options_agent/docs/2026-06-22_golden_ab_study/runs/ — 24 annotated raw replay outputs (each headed with exact golden params + code basis); backtests run 2026-06-22
+- [2026-06-27] Modified: options_agent/docs/2026-06-22_golden_ab_study/README.md — Added MSFT/AAPL strict-real package A/B: new goldens do NOT transfer to single names (MSFT −$6.8k/yr clear loss; AAPL risk-adjusted win). Added §7 result, §8 rebase recommendation, updated TL;DR + file index
+- [2026-06-27] Created: options_agent/docs/2026-06-22_golden_ab_study/runs/strict_{allnew,allold}_{MSFT,AAPL}.txt — 4 annotated strict-real-options single-name runs
+- [2026-06-28] Queried Alpaca: last-week live fills MSFT/AAPL/SPY/QQQ — verified live options-vs-shares-fallback split (no files changed; temp script removed)
+- [2026-06-28] Modified: options_agent/scripts/run_sweet_spot_agent.py — Removed shares-fallback on no-0DTE days (live: no shares, no shorting); skip trigger instead, guard order-placed log/notify
+- [2026-06-28] Modified: .gitignore — Ignore .env.live (real-money Alpaca keys)
+- [2026-06-28] Created: options_agent/.env.live.example — Template for LIVE Alpaca creds + ALPACA_PAPER=false
+- [2026-06-28] Modified: options_agent/src/utils/alpaca_data.py — Added alpaca_is_paper() flag helper; chain/calendar clients honor ALPACA_PAPER (default paper)
+- [2026-06-28] Modified: options_agent/src/utils/alpaca_paper.py — Trader endpoint selectable via ALPACA_PAPER; logs PAPER vs LIVE real-money
+- [2026-06-28] Modified: options_agent/src/utils/alpaca_options.py — _trading_client honors ALPACA_PAPER flag
+- [2026-06-28] Modified: options_agent/scripts/run_sweet_spot_agent.py — JOURNAL_DIR env-overridable (SWEET_SPOT_JOURNAL_DIR) for live isolation
+- [2026-06-28] Modified: docker-compose.yml — Added agent-live-spy/agent-live-qqq (realmoney profile, 1 contract, .env.live, live journal)
+- [2026-06-29] Modified: options_agent/scripts/run_sweet_spot_agent.py — Added --max-contracts hard cap (per-trade ceiling) and per-symbol EOD report file (eod_report_<date>_<symbol>.md) for after-hours review
+- [2026-06-29] Modified: docker-compose.yml — agent-live-spy/qqq now pass --max-contracts 1 (hard 1-contract cap)
+- [2026-06-30] Modified: .gitignore — Ignore .env.shadow and .worktree-main/ (new-golden shadow paper agents)
+- [2026-06-30] Created: options_agent/.env.shadow.example — Template for 2nd paper account (shadow new-golden agents)
+- [2026-06-30] Modified: docker-compose.yml — Added agent-shadow-spy/qqq (shadow profile): main NEW-golden code via .worktree-main, 2nd paper acct, --skip-failed-bounce, separate journal
+- [2026-06-30] Added: git worktree .worktree-main pinned to origin/main (e9ecf8c) as NEW-golden code source for shadow agents

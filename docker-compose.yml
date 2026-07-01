@@ -99,3 +99,108 @@ services:
     restart: unless-stopped
     profiles:
       - live
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # REAL-MONEY agents (profile: realmoney). Started explicitly & separately
+  # from the paper agents. Use the LIVE Alpaca keys from options_agent/.env.live
+  # (ALPACA_PAPER=false), trade exactly 1 contract per trigger, and write to a
+  # separate live journal dir so they never mix with paper P&L.
+  #   Start:  docker-compose --profile realmoney up -d agent-live-spy agent-live-qqq
+  # ─────────────────────────────────────────────────────────────────────────
+  agent-live-spy:
+    image: options-algo-trader
+    container_name: options-agent-live-spy
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol SPY --verbose-rejects --contracts 1 --cascade-size-low 1 --cascade-size-mid 1 --cascade-size-high 1 --max-contracts 1
+    env_file:
+      - options_agent/.env          # shared config (Discord, etc.) + paper keys
+      - options_agent/.env.live      # LIVE keys + ALPACA_PAPER=false (overrides the above)
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AGENT_SYMBOL=SPY
+      - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal_live
+    volumes:
+      - ./options_agent/logs:/app/logs
+      - ./options_agent/sweet_spot_journal_live:/app/sweet_spot_journal_live
+      - ./options_agent/data_cache:/app/data_cache
+      - ./options_agent/config:/app/config
+      - ./options_agent/scripts:/app/scripts:ro
+      - ./options_agent/src:/app/src:ro
+    restart: unless-stopped
+    profiles:
+      - realmoney
+
+  agent-live-qqq:
+    image: options-algo-trader
+    container_name: options-agent-live-qqq
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol QQQ --verbose-rejects --contracts 1 --cascade-size-low 1 --cascade-size-mid 1 --cascade-size-high 1 --max-contracts 1
+    env_file:
+      - options_agent/.env
+      - options_agent/.env.live
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AGENT_SYMBOL=QQQ
+      - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal_live
+    volumes:
+      - ./options_agent/logs:/app/logs
+      - ./options_agent/sweet_spot_journal_live:/app/sweet_spot_journal_live
+      - ./options_agent/data_cache:/app/data_cache
+      - ./options_agent/config:/app/config
+      - ./options_agent/scripts:/app/scripts:ro
+      - ./options_agent/src:/app/src:ro
+    restart: unless-stopped
+    profiles:
+      - realmoney
+
+  # ─────────────────────────────────────────────────────────────────────────
+  # SHADOW agents (profile: shadow). PAPER-only de-risking of the NEW goldens.
+  # Run main's NEW-golden code (mounted from the .worktree-main checkout) on a
+  # SEPARATE 2nd paper account (.env.shadow), writing to their own journal so
+  # they never touch the old-golden agents or the live account. 3-contract
+  # sizing (cascade default) to match the old-golden paper agents for a fair A/B.
+  # --skip-failed-bounce completes the NEW-golden package (main defaults the
+  # other 4 goldens; this flag is the 5th).
+  #   Start:  docker-compose --profile shadow up -d agent-shadow-spy agent-shadow-qqq
+  # ─────────────────────────────────────────────────────────────────────────
+  agent-shadow-spy:
+    image: options-algo-trader
+    container_name: options-agent-shadow-spy
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol SPY --verbose-rejects --skip-failed-bounce
+    env_file:
+      - options_agent/.env          # shared config (Discord, etc.)
+      - options_agent/.env.shadow    # 2nd PAPER account keys + ALPACA_PAPER=true
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AGENT_SYMBOL=SPY
+      - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal_shadow
+    volumes:
+      - ./options_agent/logs:/app/logs
+      - ./options_agent/sweet_spot_journal_shadow:/app/sweet_spot_journal_shadow
+      - ./options_agent/data_cache:/app/data_cache
+      - ./options_agent/config:/app/config
+      - ./.worktree-main/options_agent/scripts:/app/scripts:ro   # main = NEW-golden code
+      - ./.worktree-main/options_agent/src:/app/src:ro
+    restart: unless-stopped
+    profiles:
+      - shadow
+
+  agent-shadow-qqq:
+    image: options-algo-trader
+    container_name: options-agent-shadow-qqq
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol QQQ --verbose-rejects --skip-failed-bounce
+    env_file:
+      - options_agent/.env
+      - options_agent/.env.shadow
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AGENT_SYMBOL=QQQ
+      - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal_shadow
+    volumes:
+      - ./options_agent/logs:/app/logs
+      - ./options_agent/sweet_spot_journal_shadow:/app/sweet_spot_journal_shadow
+      - ./options_agent/data_cache:/app/data_cache
+      - ./options_agent/config:/app/config
+      - ./.worktree-main/options_agent/scripts:/app/scripts:ro
+      - ./.worktree-main/options_agent/src:/app/src:ro
+    restart: unless-stopped
+    profiles:
+      - shadow

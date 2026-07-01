@@ -48,8 +48,9 @@ def _get_keys() -> tuple[str, str]:
 
 def _trading_client():
     from alpaca.trading.client import TradingClient
+    from src.utils.alpaca_data import alpaca_is_paper
     api_key, secret_key = _get_keys()
-    return TradingClient(api_key=api_key, secret_key=secret_key, paper=True)
+    return TradingClient(api_key=api_key, secret_key=secret_key, paper=alpaca_is_paper())
 
 
 def _option_data_client():

@@ -1,0 +1,91 @@
+###############################################################################
+# GOLDEN-PARAM A/B STUDY  —  All-OLD package, 14-day window
+#
+# Symbol      : SPY
+# Window      : --days 14   (real Alpaca 0DTE option pricing, cascade-sized x100)
+# Backtests run: 2026-06-22  |  Persisted: 2026-06-25
+# Code basis  : feature/mag7-single-name-agents @ f83ab2a  —  OLD replay code (PRE look-ahead-fix). NOTE: conflates the look-ahead fix WITH the param flips; not param-isolated.
+#
+# Command:
+#   python scripts/replay_sweet_spot.py -s SPY --days 14 --real-options    # (branch defaults = old goldens; no flags)
+#
+# Golden parameters used in THIS run (the 5 flags that changed in PR #4):
+#   cluster_penalty       : ON               [OLD]
+#   rsi_extreme_penalty   : 0  (absent/OFF)  [OLD]
+#   tiered_stag_early_bar : 8   (40 min)     [OLD]
+#   vwap_slope_override   : 0.7 / 3 / 0.65   [OLD — ON]
+#   skip_failed_bounce    : OFF              [OLD]
+#
+# Shared goldens (unchanged across every run; see options_agent/README.md):
+#   max_chop=5  min_chop=2  FOMC-sit-out=ON  tiered_stagnation=ON
+#   stagnation_bars=12  min_move=0.3R  mfe_skip=0.5R  decay_floor=0.4  mid_target=1.5R
+###############################################################################
+
+ Container options-algo-trader-agent-spy-run-bd7acfe60b5f Creating 
+ Container options-algo-trader-agent-spy-run-bd7acfe60b5f Created 
+2026-06-22 16:23:09,448 [INFO] Fetching 14 days of 5-min data from Alpaca for SPY...
+2026-06-22 16:23:09,581 [INFO] Fetching SPY 5min bars from Alpaca: 2026-06-08 → 2026-06-22 …
+2026-06-22 16:23:10,044 [INFO] Cached 757 5min bars for SPY (2026-06-09 → 2026-06-22) at /app/data_cache/SPY_5min_14d.parquet
+2026-06-22 16:23:10,045 [INFO] Replaying 9 trading days...
+2026-06-22 16:23:10,157 [INFO] Fetching historical ^VIX data...
+2026-06-22 16:23:10,843 [INFO]   VIX data: 12 days loaded
+2026-06-22 16:23:16,098 [WARNING] Option bars fetch failed for SPY260622P00745000: {"message":"OPRA agreement is not signed"}
+
+
+══════════════════════════════════════════════════════════════════════
+  SWEET SPOT REPLAY: SPY — 9 days
+  Mode: 0DTE OPTIONS (Alpaca historical bars; synth fallback)
+  Filter: Quality 3-7, Cascade ≥ 2, Chop 2–5, Regime Guard: OFF
+  Analyzers: OpeningRange + RecentMomentum + MomentumCascade (exact replica)
+  Decay-Aware Targets: ON (floor=0.4, halflife=8 bars / 40 min)
+══════════════════════════════════════════════════════════════════════
+
+  Triggers:        9 (1.0/day)
+  Win Rate:        66.7% (6/9)
+  Profit Factor:   6.61
+  Total P&L (cascade-sized): $+21.36
+  Avg P&L/Trade:   $+2.3731
+  Avg Winner:      $+4.1947
+  Avg Loser:       $-1.2700
+  R:R Ratio:       3.30
+
+  Risk-Adjusted Metrics (annualized via 252 trading days):
+    Sharpe Ratio:         5.72   (>1.0 good, >2.0 excellent)
+    Sortino Ratio:        104.65   (downside-only volatility)
+    Max Drawdown:         $0.36 (1.7% of peak)
+    Calmar Ratio:         59.33   (annual return / max DD)
+    Longest Underwater:   3 days
+    DD Window:            2026-06-10 → 2026-06-15
+
+  Cascade Tier Breakdown:
+    Tier              N    WR%    PF    TotPnL   AvgPnL
+    E 2-3 (3ct)       1 100.0%   inf $  +0.06 $+0.059
+    E 4-5 (3ct)       6  50.0%  3.76 $  +3.51 $+0.585
+    E 6-7 (3ct)       1 100.0%   inf $  +0.17 $+0.170
+    E 8+  (3ct)       1 100.0%   inf $  +3.38 $+3.380
+
+  Exit Breakdown:
+    decay_target   5 (56%)
+    stagnation     3 (33%)
+    stop           1 (11%)
+
+  Call vs Put Aggregation (cascade-sized):
+    Side      N  %Tot    WR%    PF     TotPnL    AvgPnL
+    CALL      2 22.2%   0.0%  0.00 $   -0.36 $ -0.180
+    PUT       7 77.8%  85.7%  7.30 $  +21.72 $ +3.103
+
+  Date         Time   Dir    Q  E  C  Ct    Entry     Exit      Δ$  Opt$/ct     Tot$ Outcome 
+  ──────────── ────── ───── ── ── ── ─── ──────── ──────── ─────── ──────── ──────── ────────
+  2026-06-09   10:35  PUT    6  4  5   3 $ 741.18 $ 740.25 $+0.93 $   +149 $   +447 decay_target ✅
+  2026-06-09   10:40  PUT    5  4  4   3 $ 740.90 $ 739.79 $+1.11 $   +291 $   +873 decay_target ✅
+  2026-06-09   10:45  PUT    6  5  4   3 $ 738.64 $ 735.75 $+2.89 $   -115 $   -345 decay_target ❌
+  2026-06-09   10:50  PUT    7  9  3   3 $ 735.26 $ 730.75 $+4.51 $   +338 $  +1014 decay_target ✅
+  2026-06-10   12:50  PUT    7  5  4   3 $ 730.09 $ 728.45 $+1.64 $    +38 $   +114 decay_target ✅
+  2026-06-15   12:35  CALL   7  4  4   3 $ 756.21 $ 755.99 $-0.23 $    -10 $    -30 stagnation ❌
+  2026-06-15   12:40  CALL   4  4  4   3 $ 755.93 $ 756.15 $+0.22 $     -2 $     -6 stagnation ❌
+  2026-06-16   10:35  PUT    7  7  5   3 $ 752.55 $ 753.89 $-1.34 $    +17 $    +51 stop     ✅
+  2026-06-22   12:25  PUT    6  2  5   3 $ 744.53 $ 744.28 $+0.24 $     +6 $    +18 stagnation ✅
+
+  Total Option P&L (per contract, ×100 multiplier): $+712
+  Total Option P&L (cascade-sized, ×100 multiplier): $+2,136
+  Pricing source:  real=8  synth_fallback=1

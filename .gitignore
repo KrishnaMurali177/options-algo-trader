@@ -10,6 +10,11 @@ __pycache__/
 
 # Environment
 .env
+.env.live
+.env.shadow
+
+# Shadow new-golden worktree (main checkout for paper comparison)
+.worktree-main/
 
 # OAuth / secrets
 gmail_credentials.json

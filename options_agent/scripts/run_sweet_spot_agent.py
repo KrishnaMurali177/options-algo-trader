@@ -245,8 +245,13 @@ def _check_gainz_exit(underlying_symbol: str, direction: str, body_ratio: float,
 # ── Setup ──
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
-JOURNAL_DIR = Path(__file__).resolve().parent.parent / "sweet_spot_journal"
-JOURNAL_DIR.mkdir(exist_ok=True)
+# Journal dir is env-overridable so the real-money (live) agents write to a separate
+# directory and never mix with paper journals / dashboard P&L. Defaults to paper.
+JOURNAL_DIR = Path(os.environ.get(
+    "SWEET_SPOT_JOURNAL_DIR",
+    str(Path(__file__).resolve().parent.parent / "sweet_spot_journal"),
+))
+JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
 
 _SYMBOL_TAG = os.environ.get("AGENT_SYMBOL", "")
 
@@ -709,6 +714,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             cascade_size_low: int = 3,
             cascade_size_mid: int = 3,
             cascade_size_high: int = 3,
+            max_contracts: int = 0,
             regime_guard: bool = False,
             vix_max: float = 30.0,
             vix_spike_pct: float = 20.0,
@@ -1204,6 +1210,13 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                     else:
                                         num_contracts = contracts * cascade_size_low
 
+                                    # Hard ceiling on contracts per trade (live safety:
+                                    # --max-contracts 1 guarantees never more than 1 lot).
+                                    if max_contracts > 0 and num_contracts > max_contracts:
+                                        logger.info("  ⛓️ Capping %d → %d contracts (--max-contracts)",
+                                                    num_contracts, max_contracts)
+                                        num_contracts = max_contracts
+
                                     order = trader.place_options_trade(
                                         occ_symbol=contract["occ_symbol"],
                                         direction=trigger["direction"],
@@ -1236,23 +1249,21 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                                 opt_type.upper(), contract["occ_symbol"],
                                                 contract["strike"], contract["delta"], contract["mid"], num_contracts)
                                 else:
-                                    logger.warning("  ⚠️ No 0DTE contract found — falling back to shares")
-                                    order = trader.place_sweet_spot_trade(
-                                        symbol=symbol,
-                                        direction=trigger["direction"],
-                                        qty=qty,
-                                        entry=None,
-                                        stop=trigger["stop"],
-                                        target=trigger["target"],
-                                        time_in_force="day",
+                                    # No 0DTE chain (e.g. MSFT/AAPL on Tue + intermittent
+                                    # Thu). Live account does NOT trade shares and does NOT
+                                    # short — so skip the trigger entirely rather than
+                                    # falling back to a stock order.
+                                    logger.warning(
+                                        "  ⛔ No 0DTE contract for %s — SKIPPING "
+                                        "(shares fallback disabled in live: no shares, no shorting)",
+                                        symbol,
                                     )
-                                    trigger["order_id"] = order["order_id"]
-                                    trigger["trade_mode"] = "shares_fallback"
-                                    open_directions[symbol] = trigger["direction"]
+                                    trigger["trade_mode"] = "skipped_no_0dte"
 
                             journal_file.write_text(json.dumps(triggers, indent=2, default=str))
-                            logger.info("  📝 Order placed: %s", trigger.get("order_id", "?")[:12])
-                            notifier.notify_trade_entry(trigger)
+                            if trigger.get("order_id"):
+                                logger.info("  📝 Order placed: %s", trigger["order_id"][:12])
+                                notifier.notify_trade_entry(trigger)
                         except Exception as e:
                             logger.error("  ⚠️ Order failed: %s", e)
 
@@ -1308,6 +1319,9 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                 p["symbol"], p["qty"], p["entry_price"], p["unrealized_pnl"])
         except Exception as e:
             logger.error("  EOD summary failed: %s", e)
+
+    # ── EOD report file (per symbol) for after-hours review ──
+    _write_eod_report_file(symbol, today.isoformat(), triggers, trader, scan_count)
 
     # ── EOD Daily Report (SPY agent only to avoid duplicates) ──
     if symbol == "SPY":
@@ -1411,6 +1425,81 @@ def _reconcile_journal(trader, triggers: list[dict], journal_file: Path) -> None
                 closed, open_n, pnl_total)
 
 
+def _write_eod_report_file(symbol: str, day, triggers: list[dict],
+                           trader, scan_count: int) -> None:
+    """Write a human-readable end-of-day report to JOURNAL_DIR for after-hours review.
+
+    One file per symbol per day (eod_report_<date>_<symbol>.md). Captures every
+    trigger/trade with its outcome plus the account's real dollar P&L, so the live
+    SPY/QQQ agents leave a reviewable record once the session is over.
+    """
+    try:
+        mode = "LIVE 🔴" if (trader and getattr(trader, "paper", True) is False) else "PAPER"
+        lines = [
+            f"# EOD Report — {symbol} — {day}",
+            "",
+            f"- Mode: **{mode}**",
+            f"- Scans: {scan_count}",
+            f"- Triggers: {len(triggers)}",
+        ]
+
+        # Account-level real dollar P&L (authoritative for live).
+        if trader:
+            try:
+                pnl = trader.get_today_pnl()
+                lines += [
+                    f"- Account equity: ${pnl['equity']:,.2f}",
+                    f"- Buying power: ${pnl['buying_power']:,.2f}",
+                    f"- **Today P&L: ${pnl['today_pnl']:,.2f} ({pnl['today_pnl_pct']:+.2f}%)**",
+                ]
+            except Exception as e:
+                lines.append(f"- (account P&L unavailable: {e})")
+
+        closed = [t for t in triggers if t.get("closed")]
+        open_t = [t for t in triggers if not t.get("closed")]
+        winners = sum(1 for t in closed if t.get("is_winner"))
+        lines += [
+            "",
+            f"## Trades — {len(closed)} closed ({winners}W/{len(closed) - winners}L), {len(open_t)} open",
+            "",
+            "| Time | Dir | Q/E/C | Contract | Contracts | Entry→Exit | Exit reason | Result |",
+            "|------|-----|-------|----------|-----------|------------|-------------|--------|",
+        ]
+        for t in sorted(triggers, key=lambda x: x.get("time", "")):
+            d = "CALL" if "call" in t.get("direction", "") else "PUT"
+            qec = f"{t.get('quality','?')}/{t.get('explosion','?')}/{t.get('chop','?')}"
+            contract = t.get("occ_symbol") or (f"${t.get('option_strike')}" if t.get("option_strike") else t.get("trade_mode", "—"))
+            ncon = t.get("num_contracts", "—")
+            entry = t.get("actual_entry") or t.get("entry")
+            exitp = t.get("exit_price")
+            ee = f"{entry}→{exitp}" if exitp is not None else f"{entry}→(open)"
+            reason = t.get("exit_reason", "open")
+            if t.get("pnl") is not None:
+                res = f"{'✅' if t.get('is_winner') else '❌'} {t['pnl']:+.2f}/sh"
+            else:
+                res = "open" if not t.get("closed") else "—"
+            lines.append(f"| {t.get('time','?')} | {d} | {qec} | {contract} | {ncon} | {ee} | {reason} | {res} |")
+
+        # Open positions snapshot at close.
+        if trader:
+            try:
+                positions = trader.get_positions()
+                if positions:
+                    lines += ["", "## Open positions at close", ""]
+                    for p in positions:
+                        lines.append(f"- {p['symbol']}: {p['qty']} @ ${p['entry_price']} "
+                                     f"(unrealized ${p['unrealized_pnl']})")
+            except Exception:
+                pass
+
+        lines.append("")
+        report_file = JOURNAL_DIR / f"eod_report_{day}_{symbol}.md"
+        report_file.write_text("\n".join(lines))
+        logger.info("  🧾 EOD report written: %s", report_file)
+    except Exception as e:
+        logger.error("  EOD report file failed: %s", e)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Autonomous Sweet Spot Paper Trading Agent")
     parser.add_argument("--symbol", "-s", default="SPY", help="Symbol to monitor (default: SPY)")
@@ -1450,6 +1539,8 @@ def main():
                         help="Contracts for E 6-7 tier (default: 3)")
     parser.add_argument("--cascade-size-high", type=int, default=3,
                         help="Contracts for E 8+ tier (default: 3)")
+    parser.add_argument("--max-contracts", type=int, default=0,
+                        help="Hard ceiling on contracts per trade (0 = no cap; live uses 1)")
     parser.add_argument("--no-regime-guard", action="store_true",
                         help="Disable regime guard (legacy flag, already OFF by default)")
     parser.add_argument("--regime-guard", action="store_true",
@@ -1516,6 +1607,7 @@ def main():
                         cascade_size_low=args.cascade_size_low,
                         cascade_size_mid=args.cascade_size_mid,
                         cascade_size_high=args.cascade_size_high,
+                        max_contracts=args.max_contracts,
                         regime_guard=args.regime_guard,
                         vix_max=args.vix_max,
                         vix_spike_pct=args.vix_spike_pct,
@@ -1551,6 +1643,7 @@ def main():
                 cascade_size_low=args.cascade_size_low,
                 cascade_size_mid=args.cascade_size_mid,
                 cascade_size_high=args.cascade_size_high,
+                max_contracts=args.max_contracts,
                 regime_guard=args.regime_guard,
                 vix_max=args.vix_max,
                 vix_spike_pct=args.vix_spike_pct,

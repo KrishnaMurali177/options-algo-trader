@@ -1,5 +1,12 @@
 # Changelog
 
+- [2026-07-06] Created: options_agent/src/utils/broker.py — get_trader() factory selecting execution backend via BROKER env (default alpaca; public → Public.com). Execution-only switch; market data/0DTE chain stay on Alpaca.
+- [2026-07-06] Created: options_agent/src/utils/public_broker.py — PublicTrader: 0DTE single-leg option execution on Public.com via publicdotcom-py, mirroring AlpacaPaperTrader interface/return-shapes. PUBLIC_DRY_RUN (default true) routes orders through Public's preflight (validated+logged, not placed) since Public has no paper env. Option quotes delegate to Alpaca data. Some response-field mappings flagged # CONFIRM (need live-account validation).
+- [2026-07-06] Created: options_agent/.env.public.example — Template for Public.com creds (PUBLIC_API_SECRET_KEY/PUBLIC_ACCOUNT_NUMBER), BROKER=public, PUBLIC_DRY_RUN=true.
+- [2026-07-06] Modified: options_agent/scripts/run_sweet_spot_agent.py — Trader instantiation now via broker.get_trader() (was hardcoded AlpacaPaperTrader); broker-agnostic account log line.
+- [2026-07-06] Modified: options_agent/requirements.txt + requirements.txt — Added publicdotcom-py.
+- [2026-07-06] Modified: .gitignore — Ignore .env.public (real-money Public creds).
+- [2026-07-06] Modified: docker-compose.yml — Added agent-public-spy (profile: public): same strategy executing on Public.com via .env.public, separate sweet_spot_journal_public.
 - [2026-06-17] Modified: options_agent/scripts/ensure_agents.sh — Export Homebrew PATH so cron can find limactl/colima/docker (fixes "limactl not found" failure)
 - [2026-06-17] Modified: options_agent/scripts/check_agents_health.sh — Export Homebrew PATH so cron can resolve docker
 - [2026-06-17] Created: options_agent/scripts/check_agents_health.sh — Host cron health check that pings Discord when any agent container goes down/unhealthy (transition-deduped)

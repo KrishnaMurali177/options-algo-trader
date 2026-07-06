@@ -10,6 +10,7 @@ __pycache__/
 
 # Environment
 .env
+.env.public
 
 # OAuth / secrets
 gmail_credentials.json

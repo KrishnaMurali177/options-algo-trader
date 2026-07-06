@@ -734,12 +734,13 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
     trader = None
     if paper_trade:
         try:
-            from src.utils.alpaca_paper import AlpacaPaperTrader
-            trader = AlpacaPaperTrader()
+            from src.utils.broker import get_trader
+            trader = get_trader()
             pnl = trader.get_today_pnl()
-            logger.info("Paper account: $%.0f equity, $%.0f buying power", pnl["equity"], pnl["buying_power"])
+            logger.info("%s account: $%.0f equity, $%.0f buying power",
+                        os.environ.get("BROKER", "alpaca").upper(), pnl["equity"], pnl["buying_power"])
         except Exception as e:
-            logger.error("Paper trader init failed: %s — running journal-only", e)
+            logger.error("Trader init failed: %s — running journal-only", e)
 
     notifier = TradeNotifier(
         discord_webhook_url=os.getenv("DISCORD_WEBHOOK_URL", ""),

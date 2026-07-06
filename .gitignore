@@ -12,6 +12,7 @@ __pycache__/
 .env
 .env.live
 .env.shadow
+.env.public
 
 # Shadow new-golden worktree (main checkout for paper comparison)
 .worktree-main/

@@ -933,19 +933,30 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         # Iterates by position_id; an OCC-fate-cohort close drops ALL positions
         # sharing that OCC together (single Alpaca close_position call closes them all).
         if gainz_exit and trader and open_directions:
+            # Fetch live positions to prune tracked state. CRITICAL: fail CLOSED —
+            # if the fetch errors (network/rate-limit/timeout), do NOT purge tracked
+            # state, or a single transient error strands an open position (agent thinks
+            # it holds nothing, stops monitoring, exits the loop, position expires).
+            # See bug_live_exit_not_firing_2026_07: 07-01 SPY C747 orphaned this way (-$519).
+            _positions_fetched = False
+            live_symbols: set[str] = set()
             try:
                 live_symbols = {p["symbol"] for p in trader.get_positions()}
+                _positions_fetched = True
             except Exception as e:
-                logger.warning("Failed to fetch positions for Gainz check: %s", e)
-                live_symbols = set()
+                logger.warning("Failed to fetch positions for Gainz check: %s — "
+                               "keeping tracked state this iteration (fail-closed)", e)
             # Drop tracked positions whose OCC is no longer open at Alpaca
             # (stop/target/EOD already fired). For shares fallback, the "occ" is the underlying symbol.
             def _pos_alpaca_symbol(pid):
                 info = open_options.get(pid, {})
                 return info.get("occ_symbol") or pid  # shares fallback: pid IS the underlying symbol
-            open_directions = {pid: d for pid, d in open_directions.items()
-                               if _pos_alpaca_symbol(pid) in live_symbols}
-            open_options = {pid: info for pid, info in open_options.items() if pid in open_directions}
+            # Only prune on a SUCCESSFUL fetch — never purge based on an empty set that
+            # came from a failed request.
+            if _positions_fetched:
+                open_directions = {pid: d for pid, d in open_directions.items()
+                                   if _pos_alpaca_symbol(pid) in live_symbols}
+                open_options = {pid: info for pid, info in open_options.items() if pid in open_directions}
             for pos_id, dir_ in list(open_directions.items()):
                 if pos_id not in open_directions:
                     continue  # already closed earlier this iteration (fate cohort)
@@ -1179,6 +1190,55 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         # 5-min bar opens at scan_end (rounded down). Its close = open + 5min,
         # and the live agent can only see it as closed at that wall-clock + buffer.
         # So the live entry cutoff is `scan_end + 5min + buffer`.
+        # Belt-and-suspenders before breaking the loop: an empty in-memory
+        # open_directions can be WRONG (see bug_live_exit_not_firing_2026_07 —
+        # a transient fetch error could purge tracked state). Never break with a
+        # real Alpaca position still open. Confirm truth against the broker; if the
+        # confirmation fetch itself fails, treat as "positions may be open" (keep
+        # monitoring) rather than exiting.
+        def _safe_to_exit() -> bool:
+            if open_directions:
+                return False
+            if not trader:
+                return True
+            try:
+                live = trader.get_positions()
+            except Exception as e:
+                logger.warning("Loop-exit position check failed: %s — staying in loop", e)
+                return False
+            mine = [p for p in live if str(p.get("symbol", "")).startswith(symbol)]
+            if mine:
+                logger.warning("Loop-exit blocked: Alpaca still shows %d open %s position(s) "
+                               "not in tracked state — re-hydrating and continuing to monitor.",
+                               len(mine), symbol)
+                for p in mine:
+                    occ = p["symbol"]
+                    trig = next((t for t in triggers
+                                 if t.get("occ_symbol") == occ and not t.get("closed")), None)
+                    if trig is None:
+                        continue
+                    try:
+                        et = datetime.fromisoformat(trig.get("timestamp"))
+                    except Exception:
+                        et = get_et_now()
+                    pid = f"{occ}#{et.isoformat()}"
+                    if pid not in open_options:
+                        open_options[pid] = {
+                            "occ_symbol": occ,
+                            "entry_premium": trig.get("option_premium", 1.0),
+                            "stop_price": trig["stop"],
+                            "target_price": trig["target"],
+                            "original_target_dist": abs(trig["target"] - trig["entry"]),
+                            "direction": trig["direction"],
+                            "delta": trig.get("option_delta", 0.5),
+                            "entry_time": et,
+                            "entry_underlying": trig.get("price", trig["entry"]),
+                            "max_favorable_excursion": 0.0,
+                        }
+                        open_directions[pid] = trig["direction"]
+                return False
+            return True
+
         try:
             _se_h, _se_m = (int(x) for x in scan_end.split(":"))
         except ValueError:
@@ -1187,10 +1247,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         _now_min = now.hour * 60 + now.minute + now.second / 60
         if _now_min >= _cutoff_min:
             # After 15:30, if no open positions, we're done for the day
-            if now.hour == 15 and now.minute >= 30 and not open_directions:
+            if now.hour == 15 and now.minute >= 30 and _safe_to_exit():
                 logger.info("Loop exit: time stop reached (15:30 ET) and no open positions.")
                 break
-            if not open_directions:
+            if _safe_to_exit():
                 logger.info("Loop exit: past %s entry cutoff (%02d:%02d ET) and no open positions.",
                             scan_end, now.hour, now.minute)
                 break
@@ -1216,7 +1276,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         at_flip_cap = flip_trades_today >= 1  # max 1 flip trade per day
         if at_regular_cap and at_flip_cap:
             logger.info("Daily trade limit reached (%d regular + %d flip). Monitoring open positions only.", regular_trades, flip_trades_today)
-            if not open_directions:
+            if _safe_to_exit():
                 logger.info("Loop exit: daily trade cap reached and no open positions.")
                 break
             _write_heartbeat(f"run_day_{symbol}_trade_cap_monitoring")

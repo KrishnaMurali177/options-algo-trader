@@ -173,6 +173,9 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                rsi_extreme_cost: int = 0,
                vix_stop_slope: float = 0.0, vix_stop_anchor: float = 15.0,
                min_quality: int = 4, max_quality: int = 7,
+               time_decay_min_q_start: str | None = None,
+               time_decay_min_q_step_min: int = 60,
+               time_decay_min_q_max_steps: int = 3,
                breakout_pct: float = 0.25, cooldown_bars: int = 2,
                scan_end: str = "13:59",
                scan_start: str = "11:30",
@@ -241,6 +244,10 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                     logit_r_model: object | None = None,
                     logit_r_min_threshold: float = -1e9,
                     logit_r_max_threshold: float = 1e9,
+                    gbm_model: object | None = None,
+                    gbm_min_p: float = 0.0,
+                    rank_model: object | None = None,
+                    rank_top_k: int = 0,
                     vix_continuous: bool = False,
                     atr_stop_k: float = 0.0,
                     stop_buffer_pct: float = 0.10,
@@ -321,6 +328,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
     chop_rejects_today = 0  # Count of chop-gate rejections before next entry (audit)
     first_chop_reject_ts = None  # Earliest bar that hit chop reject this day
     flip_trades_today = 0  # Track momentum-flip trades (separate allowance)
+    rank_today_scores: list[float] = []  # LambdaRank scores of today's candidates (for top-K-per-day gate)
 
     # Scan every bar (5 min) from scan_start to scan_end
     scan_bars = post_or.between_time(effective_scan_start if dynamic_or else scan_start, scan_end)
@@ -655,11 +663,25 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                                 bar_time, direction, rsi_val, _rsi_pressure)
                 continue
 
-        if not (min_quality <= quality <= max_quality):
+        # Time-decayed min_quality: raises the floor as the day ages.
+        # diag_picker_vs_cluster.py showed first-half trades win +8-11pp WR
+        # vs last-half trades on the SAME day — time-of-day carries more
+        # signal than the Q-scorer within a cluster day. Tighten Q-floor over
+        # time to reject the low-edge late-in-day cohort.
+        effective_min_q = min_quality
+        if time_decay_min_q_start is not None:
+            _h, _m = time_decay_min_q_start.split(":")
+            start_min = int(_h) * 60 + int(_m)
+            cur_min = ts.hour * 60 + ts.minute
+            steps = max(0, (cur_min - start_min) // time_decay_min_q_step_min)
+            steps = min(steps, time_decay_min_q_max_steps)
+            effective_min_q = min_quality + steps
+
+        if not (effective_min_q <= quality <= max_quality):
             if debug:
                 bar_time = ts.strftime("%H:%M")
                 logger.info("  [DEBUG] %s  dir=%s or_mom=%d Q=%d (range %d-%d) → QUALITY REJECT",
-                            bar_time, direction, or_momentum, quality, min_quality, max_quality)
+                            bar_time, direction, or_momentum, quality, effective_min_q, max_quality)
             continue
 
         # ── Momentum Cascade (EXACT same as live agent) ──
@@ -794,6 +816,59 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                     bar_time = ts.strftime("%H:%M")
                     logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d p_cal=%.3f (thr=%.3f) → LOGIT-Q REJECT",
                                 bar_time, direction, quality, explosion, p_cal, logit_q_reject_threshold)
+                continue
+
+        # ── GBM gate ──
+        # LightGBM binary classifier on ungated population, predicting
+        # p(realized_r > +0.3). Trained on ~9.4K candidate bars; CV log-loss
+        # +0.031 vs constant baseline; OOF decile WR monotone 13.5% → 49.7%.
+        # Reject when p_winner < min_p. Default 0.0 = disabled.
+        if gbm_model is not None and gbm_min_p > 0:
+            from src.utils.logit_q import featurize as _logit_featurize
+            _feats = _logit_featurize(
+                direction=direction, symbol=symbol,
+                or_direction=or_direction, or_momentum=or_momentum,
+                recent_dir=recent_dir, recent_momentum=recent_momentum,
+                rsi_14=rsi_val, vix=vix, chop=chop.chop_score, atr_14=atr_val,
+                sma_20=indicators.sma_20, sma_50=indicators.sma_50,
+                price=price, zlema_trend=zlema_trend,
+            )
+            p_winner = gbm_model.predict(_feats)
+            if p_winner < gbm_min_p:
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d p_win=%.3f (min=%.3f) → GBM REJECT",
+                                bar_time, direction, quality, explosion, p_winner, gbm_min_p)
+                continue
+
+        # ── LambdaRank GBM gate (top-K per day) ──
+        # Trained on ungated breakout candidates grouped by (symbol, date)
+        # with realized_r-bucketed grades. The model produces within-day
+        # ranking scores — designed to fix the picker-vs-cluster problem
+        # where the hand-tuned Q-scorer can't discriminate within a day.
+        # Online live-faithful version: track all rank scores SEEN SO FAR
+        # today. Accept iff this candidate is in the top-K seen.
+        if rank_model is not None and rank_top_k > 0:
+            from src.utils.logit_q import featurize as _logit_featurize
+            _feats = _logit_featurize(
+                direction=direction, symbol=symbol,
+                or_direction=or_direction, or_momentum=or_momentum,
+                recent_dir=recent_dir, recent_momentum=recent_momentum,
+                rsi_14=rsi_val, vix=vix, chop=chop.chop_score, atr_14=atr_val,
+                sma_20=indicators.sma_20, sma_50=indicators.sma_50,
+                price=price, zlema_trend=zlema_trend,
+            )
+            rank_score = rank_model.predict(_feats)
+            # rank_today_scores: list[float] tracks today's candidate scores
+            # (initialized per-day in the daily loop init). Append this one,
+            # then check whether our rank is in top-K.
+            rank_today_scores.append(rank_score)
+            n_better = sum(1 for s in rank_today_scores if s > rank_score)
+            if n_better >= rank_top_k:
+                if debug:
+                    bar_time = ts.strftime("%H:%M")
+                    logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d rank=%.4f (n_better=%d >= K=%d) → RANK REJECT",
+                                bar_time, direction, quality, explosion, rank_score, n_better, rank_top_k)
                 continue
 
         # ── PB EMA inside-band gate (symmetric chop reject) ──
@@ -1353,6 +1428,17 @@ def main():
     parser.add_argument("--multi", action="store_true", help="Allow multiple triggers per day")
     parser.add_argument("--min-quality", type=int, default=3, help="Minimum quality score (golden: 3)")
     parser.add_argument("--max-quality", type=int, default=7, help="Maximum quality score (golden: 7)")
+    parser.add_argument("--time-decay-min-q-start", type=str, default=None,
+                        help="If set (HH:MM), raise min_quality by +1 every "
+                             "--time-decay-min-q-step-min minutes after this time, "
+                             "capped at --time-decay-min-q-max-steps. e.g. 10:30 with "
+                             "step=60 max=3 → Q≥3 at 10:30, Q≥4 by 11:30, Q≥5 by 12:30, "
+                             "Q≥6 by 13:30. Motivated by diag_picker_vs_cluster.py: "
+                             "first-half same-day trades win +8-11pp WR vs last-half.")
+    parser.add_argument("--time-decay-min-q-step-min", type=int, default=60,
+                        help="Minutes between each +1 step of the time-decayed min_quality floor.")
+    parser.add_argument("--time-decay-min-q-max-steps", type=int, default=3,
+                        help="Max total bump applied to min_quality (default 3).")
     parser.add_argument("--min-cascade", type=int, default=2, help="Minimum cascade proxy (golden: 2, was 4)")
     parser.add_argument("--cluster-penalty", action="store_true", default=False,
                         help="Within-day clustering penalty: subtract 1 from quality per prior "
@@ -1606,6 +1692,37 @@ def main():
     parser.add_argument("--logit-r-max-threshold", type=float, default=1e9,
                         help="Reject when predicted E[R] >= threshold (fade-reject). "
                              "+inf = disabled. ~0.138 = top-decile on 730d train.")
+    parser.add_argument("--gbm-model", type=str, default=None,
+                        help="Path to a LightGBM model file (see scripts/train_gbm.py). "
+                             "Trained on the ungated breakout-candidate population to "
+                             "predict p(realized_r > +0.3). CV log-loss +0.031 vs constant "
+                             "baseline; OOF decile WR monotone 13.5%% → 49.7%%.")
+    parser.add_argument("--gbm-min-p", type=float, default=0.0,
+                        help="Reject when p_winner < threshold. 0 = disabled. "
+                             "OOF deciles: 0.178 = bottom 10%%, 0.270 = bottom 40%%, "
+                             "0.318 = bottom 50%%, 0.355 = bottom 60%%.")
+    parser.add_argument("--rank-model", type=str, default=None,
+                        help="Path to a LightGBM LambdaRank model (see "
+                             "scripts/train_rank.py). Trained on (symbol, date) "
+                             "groups to rank trades WITHIN the same day. "
+                             "CV: NDCG@4=0.835, top-1 hit +33.8pp vs random, "
+                             "within-day grade-gap +0.88 (vs ~0 for the hand-tuned "
+                             "Q-scorer). Designed to fix the picker-vs-cluster problem.")
+    parser.add_argument("--rank-top-k", type=int, default=0,
+                        help="Top-K per day to accept after rank scoring. 0 = "
+                             "disabled. Live-faithful: accept iff among today's "
+                             "candidates seen so far, this is in the top-K by "
+                             "predicted rank score.")
+    parser.add_argument("--day-cluster-model", type=str, default=None,
+                        help="Path to a LightGBM day-cluster classifier "
+                             "(see scripts/train_day_cluster.py). Predicts "
+                             "p(this day will produce >=4 gated triggers) from "
+                             "pre-9:30 + first-15-min features. Used to sit out "
+                             "predicted-solo days entirely.")
+    parser.add_argument("--day-cluster-min-p", type=float, default=0.0,
+                        help="Reject all triggers on days where p_cluster < threshold. "
+                             "0 = disabled. OOF decile cluster rates were 29%% (p<0.35) "
+                             "to 71%% (p>0.51); 0.40 = bottom 30%% sit-out.")
     parser.add_argument("--continuous-vix", dest="vix_continuous", action="store_true",
                         default=False,
                         help="Replace binary criterion #5 (VIX≥18.5 → +1) with a graded "
@@ -1669,6 +1786,31 @@ def main():
         from src.utils.logit_q import LogitRModel
         _logit_r_model = LogitRModel(args.logit_r_v1)
         logger.info("Loaded logit-R v1 model: %s", args.logit_r_v1)
+
+    # Load GBM (LightGBM binary classifier) if requested
+    _gbm_model = None
+    if args.gbm_model:
+        from src.utils.logit_q import GBMModel
+        _gbm_model = GBMModel(args.gbm_model)
+        logger.info("Loaded GBM model: %s (win_threshold=%.2f)",
+                    args.gbm_model, _gbm_model.win_threshold)
+
+    # Load LambdaRank GBM model if requested
+    _rank_model = None
+    if args.rank_model:
+        from src.utils.logit_q import RankModel
+        _rank_model = RankModel(args.rank_model)
+        logger.info("Loaded rank model: %s (top_k=%d)",
+                    args.rank_model, args.rank_top_k)
+
+    # Load day-cluster model if requested
+    _day_cluster_model = None
+    if args.day_cluster_model:
+        from src.utils.logit_q import DayClusterModel
+        _day_cluster_model = DayClusterModel(args.day_cluster_model)
+        logger.info("Loaded day-cluster model: %s (cv_auc=%.3f, min_p=%.2f)",
+                    args.day_cluster_model, _day_cluster_model.cv_auc,
+                    args.day_cluster_min_p)
 
     if args.research_mode:
         args.max_chop = 10
@@ -1736,6 +1878,34 @@ def main():
 
     # ── Number of prior context bars for multi-day SMA (3 days ≈ 234 bars covers SMA-200) ──
     PRIOR_DAYS_CONTEXT = 4  # prepend 4 prior trading days' bars for SMA-50/200 warmup
+
+    # ── Day-cluster filter precompute (optional) ──
+    # If a day-cluster model is loaded, precompute one daily summary table
+    # (open/high/low/close/first15_range/atr/daily_returns) so we can derive
+    # per-day archetype features in O(1) when the loop reaches each day.
+    _day_summary = None
+    if _day_cluster_model is not None:
+        # Build daily summary once. Index: date. Columns: open, high, low,
+        # close, first15_range, true_range, atr_14, daily_ret, rv_5d, rv_20d.
+        _bars_by_day = df.groupby(df.index.date)
+        _ds = pd.DataFrame({
+            "open": _bars_by_day["Open"].first(),
+            "high": _bars_by_day["High"].max(),
+            "low": _bars_by_day["Low"].min(),
+            "close": _bars_by_day["Close"].last(),
+        })
+        _first15 = []
+        for _d, _b in _bars_by_day:
+            _early = _b.iloc[:3]
+            _first15.append(float(_early["High"].max() - _early["Low"].min())
+                            if len(_early) else float("nan"))
+        _ds["first15_range"] = _first15
+        _ds["true_range"] = _ds["high"] - _ds["low"]
+        _ds["atr_14"] = _ds["true_range"].rolling(14, min_periods=5).mean()
+        _ds["daily_ret"] = _ds["close"].pct_change()
+        _ds["rv_5d"] = _ds["daily_ret"].rolling(5, min_periods=3).std()
+        _ds["rv_20d"] = _ds["daily_ret"].rolling(20, min_periods=10).std()
+        _day_summary = _ds
 
     all_triggers = []
     for idx, day in enumerate(trading_days):
@@ -1817,9 +1987,69 @@ def main():
                 if spike_pct > args.vix_spike_pct:
                     continue
 
+        # ── Day-cluster sit-out filter ──
+        # If model loaded, predict p(this day will be a cluster day) using
+        # only pre-9:30 + first-15-min features. Skip the whole day if below
+        # threshold. Mirrors the FOMC-sit-out pattern: a calendar/regime
+        # filter applied at the day level, not the trigger level.
+        if _day_cluster_model is not None and args.day_cluster_min_p > 0:
+            try:
+                _row = _day_summary.loc[day]
+                _prior_close = float(_row.get("close"))  # placeholder; overridden below
+                # Walk back through trading_days to find the prior trading day
+                # (handles weekends/holidays without prepending bad gaps)
+                _prior_d = None
+                for _pd in reversed(trading_days[:idx]):
+                    if _pd in _day_summary.index:
+                        _prior_d = _pd
+                        break
+                if _prior_d is None:
+                    _skip_cluster_gate = True
+                else:
+                    _prow = _day_summary.loc[_prior_d]
+                    _prior_close = float(_prow["close"])
+                    _prior_high = float(_prow["high"])
+                    _prior_low = float(_prow["low"])
+                    _today_open = float(_row["open"])
+                    _overnight_gap_pct = (_today_open - _prior_close) / _prior_close
+                    _rng = _prior_high - _prior_low
+                    _prior_close_position = ((_prior_close - _prior_low) / _rng
+                                             if _rng > 0 else 0.5)
+                    _atr14 = float(_row["atr_14"])
+                    _first15 = float(_row["first15_range"])
+                    _first15_atr = _first15 / _atr14 if _atr14 > 0 else 1.0
+                    _vix_today = day_vix
+                    # VIX from 5 trading days back
+                    _vix_5d = None
+                    if idx >= 5:
+                        for _pd in reversed(trading_days[max(0, idx-7):idx-4]):
+                            _vix_5d = vix_map.get(_pd)
+                            if _vix_5d is not None:
+                                break
+                    _vix_change_5d = ((_vix_today - _vix_5d) if _vix_5d is not None else 0.0)
+                    _rv5 = float(_row["rv_5d"]) if pd.notna(_row["rv_5d"]) else 0.0
+                    _rv20 = float(_row["rv_20d"]) if pd.notna(_row["rv_20d"]) else 0.0
+                    _dow = day.weekday()
+                    _sym_qqq = 1.0 if args.symbol == "QQQ" else 0.0
+                    _feats = [_overnight_gap_pct, _prior_close_position,
+                              _first15_atr, float(_dow), float(_vix_today),
+                              float(_vix_change_5d), _rv5, _rv20, _sym_qqq]
+                    _p_cluster = _day_cluster_model.predict(_feats)
+                    _skip_cluster_gate = _p_cluster < args.day_cluster_min_p
+                    if _skip_cluster_gate and getattr(args, "debug", False):
+                        logger.info("  [DEBUG] %s  p_cluster=%.3f < min_p=%.3f → DAY SKIP",
+                                    day.isoformat(), _p_cluster, args.day_cluster_min_p)
+                if _skip_cluster_gate:
+                    continue
+            except (KeyError, ValueError):
+                pass  # if any feature missing, fail-open (let day run)
+
         triggers = replay_day(day_bars, day, max_chop=args.max_chop,
                               min_chop=args.min_chop,
                               min_quality=args.min_quality, max_quality=args.max_quality,
+                              time_decay_min_q_start=args.time_decay_min_q_start,
+                              time_decay_min_q_step_min=args.time_decay_min_q_step_min,
+                              time_decay_min_q_max_steps=args.time_decay_min_q_max_steps,
                               min_cascade=args.min_cascade, min_cascade_call=args.min_cascade_call,
                               cluster_penalty=args.cluster_penalty,
                               cluster_penalty_window_min=args.cluster_penalty_window_min,
@@ -1895,6 +2125,10 @@ def main():
                               logit_r_model=_logit_r_model,
                               logit_r_min_threshold=args.logit_r_min_threshold,
                               logit_r_max_threshold=args.logit_r_max_threshold,
+                              gbm_model=_gbm_model,
+                              gbm_min_p=args.gbm_min_p,
+                              rank_model=_rank_model,
+                              rank_top_k=args.rank_top_k,
                               vix_continuous=args.vix_continuous,
                               atr_stop_k=args.atr_stop_k,
                               stop_buffer_pct=args.stop_buffer_pct,

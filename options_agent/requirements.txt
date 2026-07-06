@@ -11,6 +11,7 @@ pyotp>=2.9.0
 # Market Data & Analysis
 yfinance>=0.2.40
 alpaca-py>=0.30.0
+publicdotcom-py>=0.1.0  # Public.com trading API (optional live-execution broker, BROKER=public)
 pandas>=2.2.0
 pandas-ta>=0.3.14b
 numpy>=1.26.0

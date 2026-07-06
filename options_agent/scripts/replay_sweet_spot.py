@@ -174,6 +174,8 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                confirmation_bar: bool = False,
                stagnation_bars: int = 12,
                stagnation_threshold: float = 0.3,
+               prem_stop_pct: float = 0.0,
+               trail_stop_pct: float = 0.0,
                gainz_exit: bool = True,
                gainz_body_ratio: float = 0.7,
                gainz_rsi_overbought: float = 70.0,
@@ -855,6 +857,30 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         # Track Maximum Favorable Excursion for smart stagnation exit
         max_favorable_excursion = 0.0
 
+        # ── Preload the real 0DTE option series (hoisted above the exit loop) ──
+        # so the per-bar premium stops can read the contract's own mid each bar.
+        # Reused by the post-loop pricing block (single fetch per trade).
+        opt_bars = None
+        occ_symbol = None
+        entry_premium_real = None
+        peak_prem = None
+        _option_close_at = None
+        if simulate_options and real_options:
+            try:
+                from src.utils.alpaca_options import (
+                    fetch_intraday_option_bars,
+                    option_close_at as _option_close_at,
+                    resolve_atm_0dte,
+                )
+                opt_type = "call" if direction == "buy_call" else "put"
+                occ_symbol = resolve_atm_0dte(symbol, trade_date, opt_type, price)
+                if occ_symbol:
+                    opt_bars = fetch_intraday_option_bars(occ_symbol, trade_date, "5min")
+                    entry_premium_real = _option_close_at(opt_bars, ts)
+                    peak_prem = entry_premium_real
+            except Exception as e:
+                logger.debug("Real-options preload failed for %s %s: %s", symbol, ts, e)
+
         for bar_j, (_, fb) in enumerate(future_bars.iterrows()):
             fh, fl, fc = float(fb["High"]), float(fb["Low"]), float(fb["Close"])
 
@@ -922,6 +948,21 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 if not decay_aware_targets and fl <= target:
                     outcome = "target"; exit_price = target; exit_ts = fb.name; break
 
+            # ── Premium-based stops (real option mid, checked per bar) ──
+            # Watches the decaying contract directly, so theta bleed the
+            # underlying-based exits miss (flat/round-tripping stock, option
+            # craters) still gets cut. Placed after the profit-takes above so a
+            # genuine winner books target first; acts as the backstop otherwise.
+            if (prem_stop_pct > 0 or trail_stop_pct > 0) and entry_premium_real and opt_bars is not None:
+                cur_prem = _option_close_at(opt_bars, fb.name)
+                if cur_prem is not None:
+                    if peak_prem is None or cur_prem > peak_prem:
+                        peak_prem = cur_prem
+                    if prem_stop_pct > 0 and cur_prem <= entry_premium_real * (1 - prem_stop_pct):
+                        outcome = "prem_stop"; exit_price = fc; exit_ts = fb.name; break
+                    if trail_stop_pct > 0 and peak_prem and cur_prem <= peak_prem * (1 - trail_stop_pct):
+                        outcome = "prem_trail_stop"; exit_price = fc; exit_ts = fb.name; break
+
             # GainzAlgoV2 reversal exit (opposing signal closes position at bar close)
             if gainz_exit:
                 fo = float(fb["Open"])
@@ -969,33 +1010,25 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         pnl = (exit_price - entry) if direction == "buy_call" else (entry - exit_price)
 
         # ── 0DTE Option P&L: prefer REAL Alpaca bars, fall back to synth ──
+        # Contract + intraday bars were preloaded above the exit loop (so the
+        # per-bar premium stops could read them); reuse them here — no re-fetch.
         underlying_move = pnl  # signed move in underlying
         priced_real = False
-        occ_symbol: str | None = None
-        if simulate_options and real_options:
+        if simulate_options and real_options and occ_symbol and opt_bars is not None:
             try:
-                from src.utils.alpaca_options import (
-                    fetch_intraday_option_bars,
-                    option_close_at,
-                    resolve_atm_0dte,
-                )
-                opt_type = "call" if direction == "buy_call" else "put"
-                occ_symbol = resolve_atm_0dte(symbol, trade_date, opt_type, price)
-                if occ_symbol:
-                    opt_bars = fetch_intraday_option_bars(occ_symbol, trade_date, "5min")
-                    entry_premium = option_close_at(opt_bars, ts)
-                    exit_premium = option_close_at(opt_bars, exit_ts)
-                    if entry_premium and entry_premium > 0 and exit_premium is not None:
-                        # Long-option P&L is identical for call & put — direction
-                        # is encoded in which contract we bought.
-                        option_pnl_per_contract = exit_premium - entry_premium
-                        # Cap loss at premium paid (defined risk for long options)
-                        option_pnl_per_contract = max(option_pnl_per_contract, -entry_premium)
-                        option_pnl_per_contract -= slippage
-                        option_pnl_total = option_pnl_per_contract * 100
-                        est_premium = entry_premium
-                        pnl = option_pnl_per_contract
-                        priced_real = True
+                entry_premium = entry_premium_real
+                exit_premium = _option_close_at(opt_bars, exit_ts)
+                if entry_premium and entry_premium > 0 and exit_premium is not None:
+                    # Long-option P&L is identical for call & put — direction
+                    # is encoded in which contract we bought.
+                    option_pnl_per_contract = exit_premium - entry_premium
+                    # Cap loss at premium paid (defined risk for long options)
+                    option_pnl_per_contract = max(option_pnl_per_contract, -entry_premium)
+                    option_pnl_per_contract -= slippage
+                    option_pnl_total = option_pnl_per_contract * 100
+                    est_premium = entry_premium
+                    pnl = option_pnl_per_contract
+                    priced_real = True
             except Exception as e:
                 logger.debug("Real-options pricing failed for %s %s: %s — falling back to synth",
                              symbol, ts, e)
@@ -1220,6 +1253,12 @@ def build_parser():
     parser.add_argument("--stagnation-threshold", type=float, default=0.3,
                         help="Minimum P&L as fraction of R to avoid stagnation exit (golden: 0.3, was 0.5). "
                              "Lower threshold keeps trades with some momentum alive for decaying target.")
+    parser.add_argument("--prem-stop-pct", type=float, default=0.0,
+                        help="Premium stop: exit if the option mid drops this fraction below the ENTRY "
+                             "premium (e.g. 0.5 = cut at -50%%). 0 = off. Real-options mode only.")
+    parser.add_argument("--trail-stop-pct", type=float, default=0.0,
+                        help="Trailing premium stop: exit if the option mid gives back this fraction from "
+                             "its PEAK (e.g. 0.4 = -40%% from peak). 0 = off. Real-options mode only.")
     parser.add_argument("--no-gainz-exit", action="store_true",
                         help="Disable GainzAlgoV2 reversal early-exit (golden: enabled)")
     parser.add_argument("--gainz-body-ratio", type=float, default=0.7, help="Min candle body/range ratio for Gainz signal (golden: 0.7)")
@@ -1486,6 +1525,8 @@ def main():
                               confirmation_bar=args.confirmation_bar,
                               stagnation_bars=args.stagnation_bars,
                               stagnation_threshold=args.stagnation_threshold,
+                              prem_stop_pct=args.prem_stop_pct,
+                              trail_stop_pct=args.trail_stop_pct,
                               gainz_exit=not args.no_gainz_exit,
                               gainz_body_ratio=args.gainz_body_ratio,
                               gainz_rsi_overbought=args.gainz_rsi_overbought,

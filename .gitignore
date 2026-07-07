@@ -17,6 +17,12 @@ __pycache__/
 # Shadow new-golden worktree (main checkout for paper comparison)
 .worktree-main/
 
+# Runtime trade journals (generated per-mode; incl. real live-account data — never commit)
+options_agent/sweet_spot_journal/
+options_agent/sweet_spot_journal_live/
+options_agent/sweet_spot_journal_shadow/
+options_agent/sweet_spot_journal_public/
+
 # OAuth / secrets
 gmail_credentials.json
 gmail_token.json

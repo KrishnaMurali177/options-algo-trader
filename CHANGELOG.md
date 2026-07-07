@@ -140,3 +140,5 @@
 - [2026-07-06] Modified: .worktree-main/options_agent/src/utils/discord_notifier.py — DiscordNotifier reads DISCORD_TAG env → sets webhook sender username (distinguishes shadow posts in shared channel); worktree-local edit
 - [2026-07-06] Modified: docker-compose.yml — agent-shadow-spy/qqq set DISCORD_TAG='🧪 SHADOW · NEW-GOLDEN'
 - [2026-07-06] Modified: options_agent/scripts/run_sweet_spot_agent.py — Separate paper/live/shadow logs by mode (completes D): agents sharing a symbol (paper agent-spy + live agent-live-spy both AGENT_SYMBOL=SPY) were interleaving into one file once the date was fixed. Log filename stem now includes a mode suffix derived from SWEET_SPOT_JOURNAL_DIR (_live/_shadow; paper unchanged for backward-compat). Verified both modes via agent-spy live mount.
+- [2026-07-06] Made permanent: DISCORD_TAG support committed on worktree branch shadow-newgold (1597cbe); survives worktree rebuild
+- [2026-07-07] Modified: .gitignore — Ignore runtime trade journals (sweet_spot_journal/_live/_shadow/_public); protects live-account data from being committed

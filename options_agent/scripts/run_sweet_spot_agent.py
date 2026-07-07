@@ -255,13 +255,26 @@ JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
 
 _SYMBOL_TAG = os.environ.get("AGENT_SYMBOL", "")
 
-_LOG_DATE = ""  # calendar date (YYYY-MM-DD) the active FileHandler is bound to
-_LOG_TAG = ""   # tag the active log file is named for
+_LOG_DATE = ""   # calendar date (YYYY-MM-DD) the active FileHandler is bound to
+_LOG_STEM = ""   # filename stem, e.g. "spy" (paper) or "spy_live" (live)
+_LOG_TAG = ""    # display tag, e.g. "SPY"
 
 
-def _point_latest_link(tag: str, log_file: Path) -> None:
-    """(Re)point sweet_spot_agent_<tag>.log → the dated log file."""
-    latest_link = LOG_DIR / f"sweet_spot_agent_{tag.lower()}.log"
+def _log_mode_suffix() -> str:
+    """Distinguish paper/live/shadow agents that share a symbol so their logs
+    don't collide in one file. Live/shadow set SWEET_SPOT_JOURNAL_DIR; paper
+    leaves it at the default."""
+    jd = os.environ.get("SWEET_SPOT_JOURNAL_DIR", "").lower()
+    if "live" in jd:
+        return "_live"
+    if "shadow" in jd:
+        return "_shadow"
+    return ""
+
+
+def _point_latest_link(stem: str, log_file: Path) -> None:
+    """(Re)point sweet_spot_agent_<stem>.log → the dated log file."""
+    latest_link = LOG_DIR / f"sweet_spot_agent_{stem}.log"
     try:
         latest_link.unlink(missing_ok=True)
         latest_link.symlink_to(log_file.name)
@@ -270,10 +283,11 @@ def _point_latest_link(tag: str, log_file: Path) -> None:
 
 
 def _setup_logging(symbol: str = "") -> logging.Logger:
-    global _LOG_DATE, _LOG_TAG
+    global _LOG_DATE, _LOG_STEM, _LOG_TAG
     tag = symbol or _SYMBOL_TAG or "agent"
+    stem = f"{tag.lower()}{_log_mode_suffix()}"
     today = datetime.now().strftime("%Y-%m-%d")
-    log_file = LOG_DIR / f"sweet_spot_agent_{tag.lower()}_{today}.log"
+    log_file = LOG_DIR / f"sweet_spot_agent_{stem}_{today}.log"
     logging.basicConfig(
         level=logging.INFO,
         format=f"%(asctime)s [{tag}] [%(levelname)s] %(message)s",
@@ -282,23 +296,23 @@ def _setup_logging(symbol: str = "") -> logging.Logger:
             logging.FileHandler(log_file, mode="a"),
         ],
     )
-    _LOG_DATE, _LOG_TAG = today, tag
-    _point_latest_link(tag, log_file)
+    _LOG_DATE, _LOG_STEM, _LOG_TAG = today, stem, tag
+    _point_latest_link(stem, log_file)
     return logging.getLogger(f"sweet_spot_agent_{tag}")
 
 
 def _rotate_log_if_new_day() -> None:
     """A daemon runs for days, but the FileHandler is bound to the process-start
-    date — so every day's output kept landing in the start-date file (and paper vs
-    live agents, started on different days, wrote mismatched filenames). When the
+    date — so every day's output kept landing in the start-date file. When the
     calendar date rolls over, swap the FileHandler to a fresh dated log and
     re-point the latest symlink so each trading day gets its own file."""
     global _LOG_DATE
     today = datetime.now().strftime("%Y-%m-%d")
     if not _LOG_DATE or today == _LOG_DATE:
         return
+    stem = _LOG_STEM or f"{(_SYMBOL_TAG or 'agent').lower()}{_log_mode_suffix()}"
     tag = _LOG_TAG or _SYMBOL_TAG or "agent"
-    new_file = LOG_DIR / f"sweet_spot_agent_{tag.lower()}_{today}.log"
+    new_file = LOG_DIR / f"sweet_spot_agent_{stem}_{today}.log"
     root = logging.getLogger()
     handler = logging.FileHandler(new_file, mode="a")
     handler.setFormatter(logging.Formatter(f"%(asctime)s [{tag}] [%(levelname)s] %(message)s"))
@@ -308,7 +322,7 @@ def _rotate_log_if_new_day() -> None:
         root.removeHandler(h)
         h.close()
     _LOG_DATE = today
-    _point_latest_link(tag, new_file)
+    _point_latest_link(stem, new_file)
     logging.getLogger(f"sweet_spot_agent_{tag}").info("📅 Rolled log to new day: %s", new_file.name)
 
 

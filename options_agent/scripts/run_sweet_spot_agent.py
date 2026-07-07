@@ -255,11 +255,25 @@ JOURNAL_DIR.mkdir(parents=True, exist_ok=True)
 
 _SYMBOL_TAG = os.environ.get("AGENT_SYMBOL", "")
 
+_LOG_DATE = ""  # calendar date (YYYY-MM-DD) the active FileHandler is bound to
+_LOG_TAG = ""   # tag the active log file is named for
+
+
+def _point_latest_link(tag: str, log_file: Path) -> None:
+    """(Re)point sweet_spot_agent_<tag>.log → the dated log file."""
+    latest_link = LOG_DIR / f"sweet_spot_agent_{tag.lower()}.log"
+    try:
+        latest_link.unlink(missing_ok=True)
+        latest_link.symlink_to(log_file.name)
+    except OSError:
+        pass
+
+
 def _setup_logging(symbol: str = "") -> logging.Logger:
+    global _LOG_DATE, _LOG_TAG
     tag = symbol or _SYMBOL_TAG or "agent"
     today = datetime.now().strftime("%Y-%m-%d")
     log_file = LOG_DIR / f"sweet_spot_agent_{tag.lower()}_{today}.log"
-    latest_link = LOG_DIR / f"sweet_spot_agent_{tag.lower()}.log"
     logging.basicConfig(
         level=logging.INFO,
         format=f"%(asctime)s [{tag}] [%(levelname)s] %(message)s",
@@ -268,12 +282,35 @@ def _setup_logging(symbol: str = "") -> logging.Logger:
             logging.FileHandler(log_file, mode="a"),
         ],
     )
-    try:
-        latest_link.unlink(missing_ok=True)
-        latest_link.symlink_to(log_file.name)
-    except OSError:
-        pass
+    _LOG_DATE, _LOG_TAG = today, tag
+    _point_latest_link(tag, log_file)
     return logging.getLogger(f"sweet_spot_agent_{tag}")
+
+
+def _rotate_log_if_new_day() -> None:
+    """A daemon runs for days, but the FileHandler is bound to the process-start
+    date — so every day's output kept landing in the start-date file (and paper vs
+    live agents, started on different days, wrote mismatched filenames). When the
+    calendar date rolls over, swap the FileHandler to a fresh dated log and
+    re-point the latest symlink so each trading day gets its own file."""
+    global _LOG_DATE
+    today = datetime.now().strftime("%Y-%m-%d")
+    if not _LOG_DATE or today == _LOG_DATE:
+        return
+    tag = _LOG_TAG or _SYMBOL_TAG or "agent"
+    new_file = LOG_DIR / f"sweet_spot_agent_{tag.lower()}_{today}.log"
+    root = logging.getLogger()
+    handler = logging.FileHandler(new_file, mode="a")
+    handler.setFormatter(logging.Formatter(f"%(asctime)s [{tag}] [%(levelname)s] %(message)s"))
+    stale = [h for h in root.handlers if isinstance(h, logging.FileHandler)]
+    root.addHandler(handler)
+    for h in stale:
+        root.removeHandler(h)
+        h.close()
+    _LOG_DATE = today
+    _point_latest_link(tag, new_file)
+    logging.getLogger(f"sweet_spot_agent_{tag}").info("📅 Rolled log to new day: %s", new_file.name)
+
 
 logger = _setup_logging()
 
@@ -1683,6 +1720,7 @@ def main():
     if args.daemon:
         logger.info("Starting in daemon mode — will run every trading day")
         while True:
+            _rotate_log_if_new_day()  # daemon spans days; keep the log file dated to today
             now = get_et_now()
             if now.weekday() >= 5 or not is_trading_day(now):
                 if now.weekday() >= 5:

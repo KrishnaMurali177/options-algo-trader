@@ -26,6 +26,7 @@ from __future__ import annotations
 import logging
 import os
 import time
+import uuid
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
@@ -94,6 +95,37 @@ class AlpacaPaperTrader:
             mode, account.buying_power, account.equity,
         )
         self.account = account
+
+    def _submit_order_idempotent(self, order_data, client_order_id: str, desc: str = ""):
+        """Submit an order, retrying transient network errors WITHOUT risking a
+        double-submit.
+
+        The order carries a client_order_id. If a submit's response is lost to a
+        network blip but the order actually landed, the retry (same id) is rejected
+        as a duplicate — we then look the order up by client_order_id and return it
+        instead of placing a second one. Non-transient errors (e.g. insufficient
+        buying power) raise immediately.
+        """
+        order_data.client_order_id = client_order_id
+        for i in range(1, 4):
+            try:
+                return self.client.submit_order(order_data)
+            except Exception as e:
+                # Did a prior attempt already land the order? (duplicate id, or a
+                # lost-response success). If so, return it rather than resubmitting.
+                try:
+                    existing = self.client.get_order_by_client_id(client_order_id)
+                except Exception:
+                    existing = None
+                if existing is not None:
+                    logger.info("%s: order already landed as %s (client_order_id dedup) — "
+                                "not resubmitting", desc, existing.id)
+                    return existing
+                if not _is_transient(e) or i == 3:
+                    raise
+                logger.warning("%s attempt %d/3 hit transient error: %s — retrying in 2s",
+                               desc, i, e)
+                time.sleep(2.0)
 
     def place_sweet_spot_trade(
         self,
@@ -175,7 +207,9 @@ class AlpacaPaperTrader:
                 time_in_force=tif,
             )
 
-        order = self.client.submit_order(order_data)
+        order = self._submit_order_idempotent(
+            order_data, client_order_id=f"ssa-{symbol}-{uuid.uuid4().hex[:16]}",
+            desc=f"place_sweet_spot_trade({symbol})")
         logger.info(
             "Paper order placed: %s %s %d %s @ %s (id=%s)",
             side.value, symbol, qty,
@@ -360,7 +394,9 @@ class AlpacaPaperTrader:
                 time_in_force=tif,
             )
 
-        order = self.client.submit_order(order_data)
+        order = self._submit_order_idempotent(
+            order_data, client_order_id=f"ssa-{occ_symbol}-{uuid.uuid4().hex[:16]}",
+            desc=f"place_options_trade({occ_symbol})")
         logger.info(
             "Options order placed: BUY %d %s @ %s (id=%s)",
             qty, occ_symbol,

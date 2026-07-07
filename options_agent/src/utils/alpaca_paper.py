@@ -339,7 +339,8 @@ class AlpacaPaperTrader:
         return out
 
     def get_fill_price(self, order_id: str) -> dict | None:
-        """Fetch fill price/time for a single order (used for Gainz close-position fills)."""
+        """Fetch fill price/time for a single order (used for close-position fills:
+        gainz / stagnation / decay_target / time_stop / theta_exit)."""
         try:
             order = self.client.get_order_by_id(order_id)
         except Exception as e:

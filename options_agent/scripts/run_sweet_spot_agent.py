@@ -1496,8 +1496,11 @@ def _reconcile_journal(trader, triggers: list[dict], journal_file: Path, notifie
                 trig["actual_entry"] = outcome["actual_entry"]
                 trig.setdefault("entry_filled_at", outcome["entry_filled_at"])
 
-            # ── Exit fill: prefer Gainz close if already stamped, else use bracket leg ──
-            if trig.get("exit_reason") == "gainz_exit" and trig.get("close_order_id"):
+            # ── Exit fill: prefer our explicit close fill if one was placed
+            # (gainz / stagnation / decay_target / time_stop / theta_exit all set
+            # close_order_id), else fall back to the bracket leg. Without this,
+            # non-gainz option exits showed "(open)" with no exit price / P&L. ──
+            if trig.get("close_order_id"):
                 fill = trader.get_fill_price(trig["close_order_id"])
                 if fill:
                     trig["exit_price"] = fill["price"]
@@ -1511,14 +1514,18 @@ def _reconcile_journal(trader, triggers: list[dict], journal_file: Path, notifie
                 # Position still open — will reconcile on next run
                 trig["exit_reason"] = "open"
 
-        # ── Compute P&L per share if we have both fills ──
+        # ── Compute P&L per share/contract if we have both fills ──
+        # Options are always BOUGHT (long premium) — a long call AND a long put
+        # both profit when their premium rises, so pnl = exit - entry for either.
+        # Only a share-mode put is short-the-underlying (profit when price falls).
         entry = trig.get("actual_entry")
         exit_p = trig.get("exit_price")
         if entry is not None and exit_p is not None:
-            if "call" in trig.get("direction", ""):
-                pnl = exit_p - entry
-            else:  # put = short the underlying
-                pnl = entry - exit_p
+            is_option = bool(trig.get("occ_symbol"))
+            if is_option or "call" in trig.get("direction", ""):
+                pnl = exit_p - entry            # long premium / long shares
+            else:
+                pnl = entry - exit_p            # short-underlying share put
             trig["pnl"] = round(pnl, 4)
             trig["is_winner"] = pnl > 0
 

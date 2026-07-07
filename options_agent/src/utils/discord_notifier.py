@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -28,12 +29,18 @@ class DiscordNotifier:
     def __init__(self, webhook_url: str):
         self.webhook_url = webhook_url
         self.enabled = bool(webhook_url)
+        # Optional label shown as the Discord sender name, so messages from a
+        # tagged agent (e.g. the shadow new-golden agents) are distinguishable
+        # from the live/paper agents in the SAME channel. Empty = default sender.
+        self.tag = os.environ.get("DISCORD_TAG", "").strip()
         if not self.enabled:
             logger.info("Discord notifier disabled — no DISCORD_WEBHOOK_URL configured")
 
     def _post(self, payload: dict) -> None:
         if not self.enabled:
             return
+        if self.tag:
+            payload.setdefault("username", self.tag)
         data = json.dumps(payload).encode()
         req = urllib.request.Request(
             self.webhook_url,

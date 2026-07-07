@@ -52,3 +52,11 @@ class TradeNotifier:
                 ch.notify_daily_report(date_str, trades, total_scans)
             except Exception as e:
                 logger.error("Notification failed (%s): %s", type(ch).__name__, e)
+
+    def notify_alert(self, message: str) -> None:
+        """Send a plain operational alert (e.g. orphaned-position warnings)."""
+        for ch in self._channels:
+            try:
+                ch.notify_alert(message)
+            except Exception as e:
+                logger.error("Notification failed (%s): %s", type(ch).__name__, e)

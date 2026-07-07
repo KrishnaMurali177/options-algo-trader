@@ -25,12 +25,45 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from datetime import datetime, timedelta
 
 from dotenv import load_dotenv
 
 load_dotenv()
 logger = logging.getLogger(__name__)
+
+# Substrings that mark a transient network/DNS error worth retrying in-line.
+# (A genuine API error like "position not found" won't match, so we fail fast
+# on those rather than hammering the broker.)
+_TRANSIENT_MARKERS = (
+    "max retries", "resolve", "connection", "timed out", "timeout",
+    "temporarily unavailable", "connection aborted", "connection reset",
+    "read timed out", "bad gateway", "service unavailable", "502", "503", "504",
+)
+
+
+def _is_transient(exc: Exception) -> bool:
+    msg = str(exc).lower()
+    return any(m in msg for m in _TRANSIENT_MARKERS)
+
+
+def _retry_on_network(fn, *, attempts: int = 3, delay: float = 2.0, desc: str = ""):
+    """Call fn(); retry up to `attempts` times on transient network errors.
+
+    A short in-line retry (seconds) so a brief DNS/connection blip does not
+    orphan an order until the next monitoring loop. Non-transient errors and
+    the final attempt re-raise immediately.
+    """
+    for i in range(1, attempts + 1):
+        try:
+            return fn()
+        except Exception as e:  # noqa: BLE001 — inspected via _is_transient
+            if not _is_transient(e) or i == attempts:
+                raise
+            logger.warning("%s attempt %d/%d hit transient error: %s — retrying in %.0fs",
+                           desc, i, attempts, e, delay)
+            time.sleep(delay)
 
 
 class AlpacaPaperTrader:
@@ -228,9 +261,10 @@ class AlpacaPaperTrader:
     def close_position(self, symbol: str) -> dict | None:
         """Close a single open paper position by symbol (cancels its bracket too)."""
         try:
-            order = self.client.close_position(symbol)
+            order = _retry_on_network(lambda: self.client.close_position(symbol),
+                                      desc=f"close_position({symbol})")
         except Exception as e:
-            logger.warning("close_position(%s) failed: %s", symbol, e)
+            logger.warning("close_position(%s) failed after retries: %s", symbol, e)
             return None
         logger.info("Paper position closed: %s (order=%s)", symbol, order.id)
         return {"order_id": str(order.id), "symbol": symbol, "status": order.status.value}
@@ -348,9 +382,10 @@ class AlpacaPaperTrader:
     def close_options_position(self, occ_symbol: str) -> dict | None:
         """Sell-to-close an open option position."""
         try:
-            order = self.client.close_position(occ_symbol)
+            order = _retry_on_network(lambda: self.client.close_position(occ_symbol),
+                                      desc=f"close_options_position({occ_symbol})")
         except Exception as e:
-            logger.warning("close_options_position(%s) failed: %s", occ_symbol, e)
+            logger.warning("close_options_position(%s) failed after retries: %s", occ_symbol, e)
             return None
         logger.info("Option position closed: %s (order=%s)", occ_symbol, order.id)
         return {"order_id": str(order.id), "occ_symbol": occ_symbol, "status": order.status.value}

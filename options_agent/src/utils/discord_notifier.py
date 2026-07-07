@@ -60,6 +60,10 @@ class DiscordNotifier:
                 logger.error("Discord send failed: %s", e)
                 return
 
+    def notify_alert(self, message: str) -> None:
+        """Send a plain operational alert (e.g. orphaned-position warnings)."""
+        self._post({"content": f"🚨 **AGENT ALERT** — {message}"})
+
     def notify_trade_entry(self, trigger: dict) -> None:
         direction = trigger.get("direction", "?")
         dir_label = "CALL" if "call" in direction else "PUT"

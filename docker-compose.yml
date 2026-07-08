@@ -118,6 +118,7 @@ services:
       - PYTHONUNBUFFERED=1
       - AGENT_SYMBOL=SPY
       - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal_live
+      - DISCORD_TAG=🔴 LIVE · REAL-MONEY   # tags live posts in the shared Discord channel
     volumes:
       - ./options_agent/logs:/app/logs
       - ./options_agent/sweet_spot_journal_live:/app/sweet_spot_journal_live
@@ -140,6 +141,7 @@ services:
       - PYTHONUNBUFFERED=1
       - AGENT_SYMBOL=QQQ
       - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal_live
+      - DISCORD_TAG=🔴 LIVE · REAL-MONEY   # tags live posts in the shared Discord channel
     volumes:
       - ./options_agent/logs:/app/logs
       - ./options_agent/sweet_spot_journal_live:/app/sweet_spot_journal_live

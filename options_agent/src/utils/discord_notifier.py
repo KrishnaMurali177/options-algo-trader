@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import urllib.request
 import urllib.error
 from datetime import datetime
@@ -25,8 +26,13 @@ REASON_LABELS = {
 
 
 class DiscordNotifier:
-    def __init__(self, webhook_url: str):
+    def __init__(self, webhook_url: str, tag: str = ""):
         self.webhook_url = webhook_url
+        # Per-mode tag (e.g. shadow/live) so posts from different agents are
+        # distinguishable in the shared Discord channel. Defaults to the
+        # DISCORD_TAG env var (set per-container in docker-compose); paper
+        # agents leave it unset and post under the webhook's default name.
+        self.tag = tag or os.environ.get("DISCORD_TAG", "")
         self.enabled = bool(webhook_url)
         if not self.enabled:
             logger.info("Discord notifier disabled — no DISCORD_WEBHOOK_URL configured")
@@ -34,6 +40,10 @@ class DiscordNotifier:
     def _post(self, payload: dict) -> None:
         if not self.enabled:
             return
+        # Tag every message type (embeds + plain content) in one place by
+        # overriding the webhook sender name.
+        if self.tag:
+            payload.setdefault("username", self.tag)
         data = json.dumps(payload).encode()
         req = urllib.request.Request(
             self.webhook_url,

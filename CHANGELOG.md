@@ -1,5 +1,7 @@
 # Changelog
 
+- [2026-07-07] Modified: options_agent/src/utils/discord_notifier.py — DiscordNotifier now reads a per-mode tag (DISCORD_TAG env / tag arg) and injects it as the webhook username in _post(), tagging every post type. Activates the previously-dormant shadow tag (env was set in compose but never consumed) and enables the live tag.
+- [2026-07-07] Modified: docker-compose.yml — Added DISCORD_TAG=🔴 LIVE · REAL-MONEY to agent-live-spy/qqq so real-money posts are distinguishable in the shared Discord channel (mirrors the shadow tag).
 - [2026-07-07] Modified: options_agent/src/utils/alpaca_data.py — Added _atomic_write_parquet() (temp-file + os.replace, uuid-tagged) and switched the bar-cache write to it. Fixes torn/0-byte parquet reads when concurrent paper/live/shadow agents share the same data_cache file.
 - [2026-07-07] Modified: options_agent/src/utils/alpaca_options.py — Route all three option-bar cache writes through alpaca_data._atomic_write_parquet for the same concurrency-safe write.
 - [2026-07-07] Modified: options_agent/scripts/run_sweet_spot_agent.py — Options-exit monitoring now retries the underlying-bar read once with force_refresh on failure instead of silently skipping the whole stop/target/decay cycle.

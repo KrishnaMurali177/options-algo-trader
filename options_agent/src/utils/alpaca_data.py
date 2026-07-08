@@ -22,12 +22,41 @@ from __future__ import annotations
 
 import logging
 import os
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+
+def _atomic_write_parquet(df: pd.DataFrame, path: Path) -> None:
+    """Write a DataFrame to Parquet atomically.
+
+    Multiple agent processes (paper/live/shadow) share the same data_cache
+    volume and cache filenames, so a plain df.to_parquet(path) — which
+    truncates then streams the body, writing the footer magic bytes last —
+    lets a concurrent reader catch a 0-byte or footer-less file
+    ("Parquet magic bytes not found in footer"). Writing to a unique
+    per-process temp file and os.replace()-ing it into place is atomic on
+    POSIX within one filesystem: readers always see a complete old-or-new
+    file, never a torn one. The temp name carries a uuid (not just the pid,
+    which can collide across containers) so concurrent writers never share
+    a temp file either.
+    """
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp")
+    try:
+        df.to_parquet(tmp)
+        os.replace(tmp, path)
+    finally:
+        # If to_parquet raised, a partial temp may linger — clean it up.
+        # (On success os.replace consumed it, so exists() is False.)
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
 
 
 def alpaca_is_paper() -> bool:
@@ -238,8 +267,8 @@ def fetch_bars(
     # point and skew the live agent's gates vs. the replay's closed-bar view.
     df = _drop_partial_trailing_bar(df, interval)
 
-    # Cache to Parquet
-    df.to_parquet(cache)
+    # Cache to Parquet (atomic: concurrent agents share this file)
+    _atomic_write_parquet(df, cache)
     logger.info(
         "Cached %d %s bars for %s (%s → %s) at %s",
         len(df), interval, symbol,

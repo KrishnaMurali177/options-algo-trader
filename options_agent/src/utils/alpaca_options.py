@@ -30,6 +30,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from src.utils.alpaca_data import _atomic_write_parquet
+
 logger = logging.getLogger(__name__)
 
 _CACHE_DIR = Path(__file__).resolve().parent.parent.parent / "data_cache"
@@ -190,13 +192,13 @@ def fetch_option_bars(
         logger.warning("Option bars fetch failed for %s: %s", occ, e)
         # Cache an empty frame so we don't retry every replay.
         empty = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume", "VWAP"])
-        empty.to_parquet(cache)
+        _atomic_write_parquet(empty, cache)
         return empty
 
     df = bars.df
     if df is None or df.empty:
         empty = pd.DataFrame(columns=["Open", "High", "Low", "Close", "Volume", "VWAP"])
-        empty.to_parquet(cache)
+        _atomic_write_parquet(empty, cache)
         return empty
 
     if isinstance(df.index, pd.MultiIndex):
@@ -214,7 +216,7 @@ def fetch_option_bars(
         df.index = df.index.tz_localize("UTC")
     df.index = df.index.tz_convert("America/New_York")
 
-    df.to_parquet(cache)
+    _atomic_write_parquet(df, cache)
     return df
 
 

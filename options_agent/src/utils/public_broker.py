@@ -26,11 +26,34 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timezone
 from decimal import Decimal
 
 logger = logging.getLogger(__name__)
+
+# Transient errors worth an in-line retry (network blips, rate limits, 5xx). A
+# ValidationError / AuthenticationError / NotFoundError is NOT transient — fail
+# fast. Classified by SDK exception class name (avoids importing the lazy SDK).
+_TRANSIENT_EXC = {"RateLimitError", "ServerError"}
+_TRANSIENT_MSG = (
+    "timed out", "timeout", "connection", "temporarily unavailable", "max retries",
+    "reset", "bad gateway", "service unavailable", "502", "503", "504",
+)
+
+
+def _is_transient(exc: Exception) -> bool:
+    if type(exc).__name__ in _TRANSIENT_EXC:
+        return True
+    m = str(exc).lower()
+    return any(s in m for s in _TRANSIENT_MSG)
+
+
+def _status_name(order) -> str:
+    """OrderStatus enum name (e.g. 'FILLED') regardless of str/enum rendering."""
+    st = getattr(order, "status", None)
+    return getattr(st, "name", str(st or "")).upper()
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -79,32 +102,34 @@ class PublicTrader:
         self.portfolio = portfolio
 
     # ── Order-request builders ────────────────────────────────────────────────
-    def _single_leg_option_order(self, occ_symbol: str, side, qty: int, limit_price, tif):
-        """Build a one-leg MultilegOrderRequest for an option (buy/sell to open/close)."""
+    def _single_leg_option_order(self, occ_symbol: str, side, qty: int, limit_price, tif,
+                                 order_id: str | None = None):
+        """Build a single-instrument OrderRequest for a 0DTE option (buy/sell to
+        open/close), placed via `place_order`.
+
+        NOTE: single-leg options use OrderRequest/place_order — NOT
+        MultilegOrderRequest, which the SDK rejects for <2 legs. `order_id` is the
+        client-supplied RFC-4122 UUID idempotency key; pass a stable value so a
+        retried submit reuses the same id (dedup) instead of creating a 2nd order.
+        """
         from public_api_sdk import (
-            MultilegOrderRequest, OrderLegRequest, LegInstrument,
-            LegInstrumentType, OrderType, OrderExpirationRequest, TimeInForce,
-            OpenCloseIndicator,
+            OrderRequest, OrderInstrument, InstrumentType, OrderType,
+            OrderExpirationRequest, TimeInForce, OpenCloseIndicator,
         )
         open_close = (
             OpenCloseIndicator.OPEN
             if side_is_buy(side) else OpenCloseIndicator.CLOSE
         )
-        expiration = OrderExpirationRequest(
-            time_in_force=TimeInForce.DAY if tif == "day" else TimeInForce.GTC
-        )
-        return MultilegOrderRequest(
-            order_id=str(uuid.uuid4()),
+        return OrderRequest(
+            order_id=order_id or str(uuid.uuid4()),
+            instrument=OrderInstrument(symbol=occ_symbol, type=InstrumentType.OPTION),
+            order_side=side,
+            order_type=OrderType.LIMIT,
+            expiration=OrderExpirationRequest(
+                time_in_force=TimeInForce.DAY if tif == "day" else TimeInForce.GTC),
             quantity=qty,
-            type=OrderType.LIMIT,               # Public options orders use LIMIT
             limit_price=Decimal(str(round(limit_price, 2))),
-            expiration=expiration,
-            legs=[OrderLegRequest(
-                instrument=LegInstrument(symbol=occ_symbol, type=LegInstrumentType.OPTION),
-                side=side,
-                open_close_indicator=open_close,
-                ratio_quantity=1,
-            )],
+            open_close_indicator=open_close,
         )
 
     def _preflight_option(self, occ_symbol: str, side, qty: int, limit_price):
@@ -122,6 +147,90 @@ class PublicTrader:
             limit_price=Decimal(str(round(limit_price, 2))),
         )
         return self.client.perform_preflight_calculation(req)
+
+    # ── Resilience helpers (Phase 1/2 hardening) ──────────────────────────────
+    def _get_order_safe(self, order_id: str):
+        """get_order(order_id) or None (never raises)."""
+        try:
+            return self.client.get_order(order_id=order_id, account_id=self.account_number)
+        except Exception:
+            return None
+
+    def _place_with_retry(self, order_request, order_id: str, desc: str) -> str:
+        """Submit an order idempotently, retrying transient errors.
+
+        The request carries `order_id` (client idempotency key). On a transient
+        failure we first check whether the order already landed (get_order) before
+        resubmitting, so a lost response never creates a second order. Returns the
+        broker order_id. Non-transient errors and the final attempt re-raise.
+        """
+        for i in range(1, 4):
+            try:
+                resp = self.client.place_order(order_request, account_id=self.account_number)
+                return str(getattr(resp, "order_id", order_id))
+            except Exception as e:
+                if self._get_order_safe(order_id) is not None:
+                    logger.info("%s: order %s already landed — not resubmitting (idempotent)",
+                                desc, order_id)
+                    return order_id
+                if not _is_transient(e) or i == 3:
+                    raise
+                logger.warning("%s attempt %d/3 transient error: %s — retrying in 2s", desc, i, e)
+                time.sleep(2.0)
+
+    def _wait_for_fill(self, order_id: str, timeout: float, poll: float = 1.0):
+        """Poll get_order until terminal. Returns the filled Order, or None if the
+        order died (cancelled/rejected/expired) or the window elapsed unfilled.
+
+        Public closes are resting LIMIT orders, so 'placed' != 'closed'. This is
+        how the caller learns the close actually happened. (Hand-rolled rather than
+        NewOrder.wait_for_fill so the idempotent-recovery path — which only has an
+        order_id — shares one code path.)
+        """
+        deadline = time.time() + timeout
+        while True:
+            o = self._get_order_safe(order_id)
+            if o is not None:
+                st = _status_name(o)
+                if st == "FILLED":
+                    return o
+                if st in ("CANCELLED", "REJECTED", "EXPIRED", "QUEUED_CANCELLED"):
+                    return None
+                # NEW / PARTIALLY_FILLED / PENDING_* → keep waiting
+            if time.time() >= deadline:
+                return None
+            time.sleep(poll)
+
+    def _order_is_for_symbol(self, order, occ_symbol: str) -> bool:
+        inst = getattr(order, "instrument", None)
+        if inst is not None and getattr(inst, "symbol", None) == occ_symbol:
+            return True
+        for leg in getattr(order, "legs", []) or []:
+            li = getattr(leg, "instrument", None)
+            if li is not None and getattr(li, "symbol", None) == occ_symbol:
+                return True
+        return False
+
+    def _cancel_open_orders_for(self, occ_symbol: str) -> None:
+        """Cancel any still-open order on this OCC symbol before placing a new one,
+        so a retry / safety-net re-close never stacks multiple resting SELLs."""
+        try:
+            pf = self.client.get_portfolio(account_id=self.account_number)
+        except Exception as e:
+            logger.debug("cancel-before-replace: portfolio fetch failed: %s", e)
+            return
+        terminal = {"FILLED", "CANCELLED", "REJECTED", "EXPIRED", "QUEUED_CANCELLED", "REPLACED"}
+        for o in getattr(pf, "orders", []) or []:
+            if _status_name(o) in terminal or not self._order_is_for_symbol(o, occ_symbol):
+                continue
+            oid = getattr(o, "order_id", None)
+            if not oid:
+                continue
+            try:
+                self.client.cancel_order(order_id=str(oid), account_id=self.account_number)
+                logger.info("Cancelled resting order %s on %s before re-close", oid, occ_symbol)
+            except Exception as e:
+                logger.warning("cancel_order(%s) failed: %s", oid, e)
 
     # ── Interface: options entry/exit ─────────────────────────────────────────
     def place_options_trade(
@@ -160,9 +269,10 @@ class PublicTrader:
                 "submitted_at": datetime.now(timezone.utc).isoformat(),
             }
 
-        order = self._single_leg_option_order(occ_symbol, side, qty, limit_price, time_in_force)
-        resp = self.client.place_multileg_order(order)
-        oid = str(getattr(resp, "order_id", order.order_id))  # CONFIRM response field
+        order_id = str(uuid.uuid4())  # Public requires an RFC-4122 UUID idempotency key
+        req = self._single_leg_option_order(occ_symbol, side, qty, limit_price,
+                                            time_in_force, order_id=order_id)
+        oid = self._place_with_retry(req, order_id, desc=f"place_options_trade({occ_symbol})")
         logger.info("Public options order placed: BUY %d %s @ $%.2f (id=%s)",
                     qty, occ_symbol, limit_price, oid)
         return {
@@ -172,8 +282,18 @@ class PublicTrader:
             "submitted_at": datetime.now(timezone.utc).isoformat(),
         }
 
-    def close_options_position(self, occ_symbol: str) -> dict | None:
-        """Sell-to-close an open option position. Mirrors the Alpaca method."""
+    def close_options_position(self, occ_symbol: str, fill_timeout: float = 15.0) -> dict | None:
+        """Sell-to-close an open option position, returning a truthy dict ONLY when
+        the close is confirmed filled (mirrors the Alpaca 'truthy = closed' contract
+        the agent relies on).
+
+        Unlike Alpaca's idempotent market close, Public has no close primitive: we
+        place a marketable-limit SELL, which may rest unfilled. So we
+          1. cancel any prior open order on this symbol (no stacked SELLs),
+          2. place an idempotent SELL,
+          3. poll for the fill; if it doesn't fill within `fill_timeout`, cancel it
+             and return None so the agent's pending_close retries next loop.
+        """
         from public_api_sdk import OrderSide
 
         held = next((p for p in self.get_positions() if p["symbol"] == occ_symbol), None)
@@ -192,16 +312,33 @@ class PublicTrader:
             return {"order_id": f"dryrun-{uuid.uuid4()}", "occ_symbol": occ_symbol,
                     "status": "preflight_dryrun"}
 
+        # 1) No stacking: cancel any resting order on this symbol first.
+        self._cancel_open_orders_for(occ_symbol)
+
+        # 2) Place the SELL idempotently.
+        order_id = str(uuid.uuid4())  # Public requires an RFC-4122 UUID idempotency key
+        req = self._single_leg_option_order(occ_symbol, OrderSide.SELL, qty, limit_price,
+                                            "day", order_id=order_id)
         try:
-            order = self._single_leg_option_order(occ_symbol, OrderSide.SELL, qty, limit_price, "day")
-            resp = self.client.place_multileg_order(order)
+            self._place_with_retry(req, order_id, desc=f"close {occ_symbol}")
         except Exception as e:
-            logger.warning("close_options_position(%s) failed: %s", occ_symbol, e)
+            logger.warning("close_options_position(%s) placement failed: %s", occ_symbol, e)
             return None
-        oid = str(getattr(resp, "order_id", order.order_id))  # CONFIRM
-        logger.info("Public option position closed: %s (order=%s)", occ_symbol, oid)
-        return {"order_id": oid, "occ_symbol": occ_symbol,
-                "status": str(getattr(resp, "status", "submitted"))}
+
+        # 3) Poll-to-fill: truthy only when actually closed.
+        filled = self._wait_for_fill(order_id, timeout=fill_timeout)
+        if filled is None:
+            try:
+                self.client.cancel_order(order_id=order_id, account_id=self.account_number)
+            except Exception:
+                pass
+            logger.warning("close_options_position(%s): SELL %s did not fill in %.0fs — "
+                           "cancelled, position still OPEN", occ_symbol, order_id, fill_timeout)
+            return None
+        avg = float(getattr(filled, "average_price", 0) or 0)
+        logger.info("Public option position closed: %s (order=%s avg=$%.2f)", occ_symbol, order_id, avg)
+        return {"order_id": order_id, "occ_symbol": occ_symbol,
+                "status": _status_name(filled), "fill_price": avg}
 
     def close_all(self):
         """Flatten every open option position (cancels open orders first)."""
@@ -220,9 +357,12 @@ class PublicTrader:
             inst = getattr(p, "instrument", None)
             symbol = getattr(inst, "symbol", None) or getattr(p, "symbol", "?")
             qty = float(getattr(p, "quantity", 0) or 0)
-            entry = float(getattr(p, "average_cost", 0) or getattr(p, "cost_basis", 0) or 0)  # CONFIRM
-            cur = float(getattr(p, "current_price", 0) or getattr(p, "last_price", 0) or 0)    # CONFIRM
-            upl = float(getattr(p, "unrealized_pnl", 0) or 0)                                  # CONFIRM
+            # PortfolioPosition fields confirmed via SDK introspection (v0.1.17):
+            # cost_basis (total), last_price (current per-contract), instrument_gain (unrealized).
+            cost_basis = float(getattr(p, "cost_basis", 0) or 0)
+            cur = float(getattr(p, "last_price", 0) or 0)
+            upl = float(getattr(p, "instrument_gain", 0) or 0)
+            entry = (cost_basis / qty) if qty else cost_basis  # per-contract
             result.append({
                 "symbol": symbol,
                 "qty": qty,
@@ -230,21 +370,25 @@ class PublicTrader:
                 "entry_price": entry,
                 "current_price": cur,
                 "unrealized_pnl": upl,
-                "unrealized_pnl_pct": (upl / (abs(entry) * abs(qty)) * 100) if entry and qty else 0.0,
+                "unrealized_pnl_pct": (upl / abs(cost_basis) * 100) if cost_basis else 0.0,
             })
         return result
 
     def get_today_pnl(self) -> dict:
-        """Account balances in AlpacaPaperTrader's dict shape."""
+        """Account balances in AlpacaPaperTrader's dict shape.
+
+        Public's Portfolio has no previous_close_equity, so day P&L is approximated
+        as the sum of per-position daily gains (misses realized-and-closed-today).
+        """
         portfolio = self.client.get_portfolio(account_id=self.account_number)
         equity = float(getattr(portfolio, "equity", 0) or 0)
-        last_equity = float(getattr(portfolio, "previous_close_equity", 0) or 0)  # CONFIRM
-        today_pnl = (equity - last_equity) if last_equity else 0.0
+        today_pnl = sum(float(getattr(p, "position_daily_gain", 0) or 0)
+                        for p in getattr(portfolio, "positions", []) or [])
         return {
             "equity": equity,
             "buying_power": float(getattr(portfolio, "buying_power", 0) or 0),
             "today_pnl": today_pnl,
-            "today_pnl_pct": (today_pnl / last_equity * 100) if last_equity else 0.0,
+            "today_pnl_pct": (today_pnl / equity * 100) if equity else 0.0,
         }
 
     # ── Interface: order reconciliation ───────────────────────────────────────
@@ -258,10 +402,10 @@ class PublicTrader:
         except Exception as e:
             logger.warning("get_order_outcome(%s) failed: %s", order_id, e)
             return None
-        filled = getattr(o, "filled_price", None) or getattr(o, "average_price", None)  # CONFIRM
+        filled = getattr(o, "average_price", None)  # confirmed field (v0.1.17)
         return {
             "actual_entry": float(filled) if filled else None,
-            "entry_filled_at": str(getattr(o, "filled_at", "") or "") or None,
+            "entry_filled_at": str(getattr(o, "closed_at", "") or "") or None,
             "exit_price": None, "exit_time": None,
             "exit_reason": "open",
         }
@@ -275,27 +419,39 @@ class PublicTrader:
         except Exception as e:
             logger.warning("get_fill_price(%s) failed: %s", order_id, e)
             return None
-        filled = getattr(o, "filled_price", None) or getattr(o, "average_price", None)  # CONFIRM
+        filled = getattr(o, "average_price", None)  # confirmed field (v0.1.17)
         if not filled:
             return None
-        return {"price": float(filled), "filled_at": str(getattr(o, "filled_at", "") or "")}
+        return {"price": float(filled), "filled_at": str(getattr(o, "closed_at", "") or "")}
 
     def get_orders(self, status: str = "all", limit: int = 20) -> list[dict]:
-        """Best-effort recent orders. Public's history shape needs live confirmation."""
+        """Current orders from the live portfolio (Portfolio.orders — confirmed shape).
+        status='open' filters out terminal orders."""
+        terminal = {"FILLED", "CANCELLED", "REJECTED", "EXPIRED", "QUEUED_CANCELLED", "REPLACED"}
         try:
-            hist = self.client.get_history(account_id=self.account_number)  # CONFIRM method/shape
+            pf = self.client.get_portfolio(account_id=self.account_number)
         except Exception as e:
             logger.debug("get_orders failed: %s", e)
             return []
         out = []
-        for o in (getattr(hist, "orders", None) or [])[:limit]:
+        for o in (getattr(pf, "orders", None) or []):
+            st = _status_name(o)
+            if status == "open" and st in terminal:
+                continue
+            inst = getattr(o, "instrument", None)
+            sym = getattr(inst, "symbol", None)
+            if not sym:
+                legs = getattr(o, "legs", []) or []
+                sym = getattr(getattr(legs[0], "instrument", None), "symbol", "?") if legs else "?"
             out.append({
                 "id": str(getattr(o, "order_id", "")),
-                "symbol": getattr(o, "symbol", "?"),
+                "symbol": sym,
                 "side": str(getattr(o, "side", "")),
-                "status": str(getattr(o, "status", "")),
-                "filled_price": getattr(o, "filled_price", None),
+                "status": st,
+                "filled_price": getattr(o, "average_price", None),
             })
+            if len(out) >= limit:
+                break
         return out
 
     def cancel_open_orders(self):

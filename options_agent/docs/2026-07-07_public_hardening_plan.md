@@ -59,18 +59,30 @@ installed in the running image** — Public can't even load today. Unverified:
 - [ ] DRY-RUN verification harness (preflight paths) — needs market hours + creds.
 - [ ] (Greenlit) one real 1-contract 0DTE round trip → lock down field names.
 
-### Phase 1 — Idempotent placement + transient retry (Public-local)
-- [ ] Local `_is_transient` + retry helper (no Alpaca import).
-- [ ] `place_options_trade`: generate `order_id` once, thread into
-      `_single_leg_option_order` (new param), reuse across retries; on transient
-      failure look up via `get_order(order_id)` before resubmitting.
+### Phase 1 — Idempotent placement + transient retry (Public-local) ✅ (code)
+- [x] Local `_is_transient` + `_place_with_retry` (classifies by SDK exc name).
+- [x] `place_options_trade`: generate `order_id` once, thread into
+      `_single_leg_option_order`, reuse across retries; on transient failure look
+      up via `get_order(order_id)` before resubmitting.
 
-### Phase 2 — Poll-to-fill close + cancel-before-replace (core fix)
-- [ ] `close_options_position`: cancel existing open order for the symbol →
-      place idempotent marketable-limit SELL → poll `get_order` for fill over a
-      bounded window (re-cross more aggressively if needed) → filled: return
-      truthy with real fill; not filled: cancel + return None.
-- [ ] Config knobs: poll timeout, interval, re-cross step.
+### Phase 2 — Poll-to-fill close + cancel-before-replace (core fix) ✅ (code)
+- [x] `close_options_position`: `_cancel_open_orders_for(symbol)` → place
+      idempotent SELL → `_wait_for_fill` poll over `fill_timeout` (default 15s) →
+      filled: truthy dict w/ `fill_price`; not filled: cancel + return None.
+- [x] Field-mapping fixes: `average_price`/`closed_at` (reconcile), `cost_basis`/
+      `last_price`/`instrument_gain` (positions), `Portfolio.orders` (get_orders).
+
+**Two SDK gotchas caught by the mock tests (before any real order):**
+1. `order_id` MUST be an RFC-4122 UUID — the `ssa-<sym>-<hex>` scheme (fine on
+   Alpaca) is rejected. Now `str(uuid.uuid4())`.
+2. A single-leg option must use **`OrderRequest` + `place_order`**, NOT
+   `MultilegOrderRequest`/`place_multileg_order` (the SDK requires 2–6 legs). The
+   original `public_broker.py` used the wrong request type entirely.
+
+Validated: syntax + a mock-client unit test covering transient classify,
+poll-to-fill (fill/reject/timeout), idempotent retry (retry-then-success,
+landed-dedup, non-transient-raise), cancel-before-replace, and both close
+outcomes. Live preflight + real 1-contract roundtrip still pending creds + market.
 
 ### Phase 3 — Agent-contract validation
 - [ ] Verify pending_close, "already gone" guard, and

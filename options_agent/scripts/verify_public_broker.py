@@ -75,21 +75,22 @@ def cmd_chain(args):
 
 
 def _build_single_leg(occ, side_name, qty, limit, order_id):
+    # Single-leg options use OrderRequest/place_order (MultilegOrderRequest requires 2+ legs).
     from public_api_sdk import (
-        MultilegOrderRequest, OrderLegRequest, LegInstrument, LegInstrumentType,
-        OrderType, OrderExpirationRequest, TimeInForce, OpenCloseIndicator, OrderSide,
+        OrderRequest, OrderInstrument, InstrumentType, OrderType,
+        OrderExpirationRequest, TimeInForce, OpenCloseIndicator, OrderSide,
     )
     side = OrderSide.BUY if side_name == "buy" else OrderSide.SELL
     oc = OpenCloseIndicator.OPEN if side_name == "buy" else OpenCloseIndicator.CLOSE
-    return MultilegOrderRequest(
+    return OrderRequest(
         order_id=order_id,
-        quantity=qty,
-        type=OrderType.LIMIT,
-        limit_price=Decimal(str(round(limit, 2))),
+        instrument=OrderInstrument(symbol=occ, type=InstrumentType.OPTION),
+        order_side=side,
+        order_type=OrderType.LIMIT,
         expiration=OrderExpirationRequest(time_in_force=TimeInForce.DAY),
-        legs=[OrderLegRequest(
-            instrument=LegInstrument(symbol=occ, type=LegInstrumentType.OPTION),
-            side=side, open_close_indicator=oc, ratio_quantity=1)],
+        quantity=qty,
+        limit_price=Decimal(str(round(limit, 2))),
+        open_close_indicator=oc,
     )
 
 
@@ -124,12 +125,12 @@ def cmd_roundtrip(args):
     client, acct = _client()
 
     # 1) Idempotency probe: submit the SAME order_id twice, expect ONE order.
-    buy_id = f"ssa-verify-{uuid.uuid4().hex[:16]}"
+    buy_id = str(uuid.uuid4())  # Public requires an RFC-4122 UUID
     print(f"BUY order_id={buy_id} occ={args.occ} qty={args.qty} limit={args.limit}")
-    o1 = client.place_multileg_order(_build_single_leg(args.occ, "buy", args.qty, args.limit, buy_id), account_id=acct)
+    o1 = client.place_order(_build_single_leg(args.occ, "buy", args.qty, args.limit, buy_id), account_id=acct)
     print(f"  submit#1 -> NewOrder.order_id={o1.order_id}")
     try:
-        o2 = client.place_multileg_order(_build_single_leg(args.occ, "buy", args.qty, args.limit, buy_id), account_id=acct)
+        o2 = client.place_order(_build_single_leg(args.occ, "buy", args.qty, args.limit, buy_id), account_id=acct)
         print(f"  submit#2 (same id) -> order_id={o2.order_id}  (SAME id => dedup works)")
     except Exception as e:
         print(f"  submit#2 (same id) raised {type(e).__name__}: {e}  (rejection => dedup via error)")
@@ -138,10 +139,10 @@ def cmd_roundtrip(args):
     _print_order("BUY filled", filled)
 
     # 2) Close via SELL + wait_for_fill (poll-to-fill proof).
-    sell_id = f"ssa-verify-{uuid.uuid4().hex[:16]}"
+    sell_id = str(uuid.uuid4())  # Public requires an RFC-4122 UUID
     sell_limit = round(args.limit * 0.9, 2)
     print(f"SELL close order_id={sell_id} limit={sell_limit}")
-    s = client.place_multileg_order(_build_single_leg(args.occ, "sell", args.qty, sell_limit, sell_id), account_id=acct)
+    s = client.place_order(_build_single_leg(args.occ, "sell", args.qty, sell_limit, sell_id), account_id=acct)
     try:
         sf = s.wait_for_fill(timeout=args.timeout)
         _print_order("SELL filled", sf)

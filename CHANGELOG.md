@@ -7,6 +7,9 @@
 - [2026-07-06] Modified: options_agent/requirements.txt + requirements.txt — Added publicdotcom-py.
 - [2026-07-06] Modified: .gitignore — Ignore .env.public (real-money Public creds).
 - [2026-07-06] Modified: docker-compose.yml — Added agent-public-spy (profile: public): same strategy executing on Public.com via .env.public, separate sweet_spot_journal_public.
+- [2026-07-08] Modified: options_agent/src/utils/alpaca_data.py — Added _atomic_write_parquet() (temp-file + os.replace, uuid-tagged) and switched the bar-cache write to it. Fixes torn/0-byte parquet reads on the data_cache shared with the paper/live agents.
+- [2026-07-08] Modified: options_agent/src/utils/alpaca_options.py — Route all three option-bar cache writes through alpaca_data._atomic_write_parquet for the same concurrency-safe write.
+- [2026-07-08] Modified: options_agent/scripts/run_sweet_spot_agent.py — Options-exit monitoring now retries the underlying-bar read once with force_refresh on failure instead of silently skipping the whole stop/target/decay cycle.
 - [2026-06-17] Modified: options_agent/scripts/ensure_agents.sh — Export Homebrew PATH so cron can find limactl/colima/docker (fixes "limactl not found" failure)
 - [2026-06-17] Modified: options_agent/scripts/check_agents_health.sh — Export Homebrew PATH so cron can resolve docker
 - [2026-06-17] Created: options_agent/scripts/check_agents_health.sh — Host cron health check that pings Discord when any agent container goes down/unhealthy (transition-deduped)

@@ -1033,7 +1033,17 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         # OCC-fate-cohort closes together via Alpaca's close_position(occ).
         if trader and open_options:
             try:
-                current_price_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
+                # A torn cache read (another agent mid-write to the shared
+                # data_cache) must NOT skip the whole exit-check cycle — that
+                # would silently drop stop/target/decay monitoring for this
+                # loop. Retry once with force_refresh to pull a fresh copy
+                # straight from Alpaca (which also atomically rewrites the
+                # good file) before letting the outer handler give up.
+                try:
+                    current_price_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
+                except Exception as read_err:
+                    logger.warning("Monitoring bar read failed (%s) — refetching fresh from Alpaca", read_err)
+                    current_price_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min", force_refresh=True)
                 if len(current_price_bars) > 0:
                     underlying_price = float(current_price_bars["Close"].iloc[-1])
                     # Intrabar extremes of the last completed bar. Replay fires a

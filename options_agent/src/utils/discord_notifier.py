@@ -22,6 +22,7 @@ REASON_LABELS = {
     "stagnation": "STAGNATION EXIT",
     "time_stop": "TIME STOP",
     "gainz": "GAINZ EXIT",
+    "closed_externally": "CLOSED (broker)",
 }
 
 

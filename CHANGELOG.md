@@ -1,5 +1,8 @@
 # Changelog
 
+- [2026-07-10] Modified: options_agent/src/utils/alpaca_paper.py — Added get_closing_fill(occ) that pulls the actual sell-to-close fill from Alpaca order history, so positions closed outside the agent (e.g. manually on the broker website) can be reconciled to broker truth.
+- [2026-07-10] Modified: options_agent/src/utils/alpaca_fills.py — enrich_trades_with_fills now reconciles journal-"open" trades against the broker: if the option is no longer held, it stamps the real close fill (exit_reason 'closed_externally') so the daily report reflects reality instead of a phantom open position.
+- [2026-07-10] Modified: options_agent/src/utils/discord_notifier.py — Added 'closed_externally' → 'CLOSED (broker)' report label.
 - [2026-07-09] Modified: options_agent/src/utils/discord_notifier.py — notify_daily_report now excludes still-open positions (closed != True) and non-executed signals from the P&L/record; a still-open 0DTE trade was rendering as a bogus "$underlying → $0.00  -NNN R (?)" loss that corrupted Net P&L and the W/L record. Open executed positions are now surfaced as a separate "still open (excluded)" note.
 - [2026-07-07] Modified: options_agent/src/utils/discord_notifier.py — DiscordNotifier now reads a per-mode tag (DISCORD_TAG env / tag arg) and injects it as the webhook username in _post(), tagging every post type. Activates the previously-dormant shadow tag (env was set in compose but never consumed) and enables the live tag.
 - [2026-07-07] Modified: docker-compose.yml — Added DISCORD_TAG=🔴 LIVE · REAL-MONEY to agent-live-spy/qqq so real-money posts are distinguishable in the shared Discord channel (mirrors the shadow tag).

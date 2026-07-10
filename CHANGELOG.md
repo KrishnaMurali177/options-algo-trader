@@ -1,5 +1,6 @@
 # Changelog
 
+- [2026-07-09] Modified: options_agent/src/utils/discord_notifier.py — notify_daily_report now excludes still-open positions (closed != True) and non-executed signals from the P&L/record; a still-open 0DTE trade was rendering as a bogus "$underlying → $0.00  -NNN R (?)" loss that corrupted Net P&L and the W/L record. Open executed positions are now surfaced as a separate "still open (excluded)" note.
 - [2026-07-07] Modified: options_agent/src/utils/discord_notifier.py — DiscordNotifier now reads a per-mode tag (DISCORD_TAG env / tag arg) and injects it as the webhook username in _post(), tagging every post type. Activates the previously-dormant shadow tag (env was set in compose but never consumed) and enables the live tag.
 - [2026-07-07] Modified: docker-compose.yml — Added DISCORD_TAG=🔴 LIVE · REAL-MONEY to agent-live-spy/qqq so real-money posts are distinguishable in the shared Discord channel (mirrors the shadow tag).
 - [2026-07-07] Modified: options_agent/src/utils/alpaca_data.py — Added _atomic_write_parquet() (temp-file + os.replace, uuid-tagged) and switched the bar-cache write to it. Fixes torn/0-byte parquet reads when concurrent paper/live/shadow agents share the same data_cache file.

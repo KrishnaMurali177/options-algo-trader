@@ -8,11 +8,10 @@ venv/
 __pycache__/
 *.pyc
 
-# Environment
+# Environment — ignore .env and every .env.<mode> secret, but keep *.example templates
 .env
-.env.live
-.env.shadow
-.env.public
+.env.*
+!*.example
 
 # Shadow new-golden worktree (main checkout for paper comparison)
 .worktree-main/

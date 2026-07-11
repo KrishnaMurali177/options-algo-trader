@@ -56,6 +56,20 @@ def _status_name(order) -> str:
     return getattr(st, "name", str(st or "")).upper()
 
 
+def _nested_float(obj, *path, default: float = 0.0) -> float:
+    """Walk nested attributes (obj.a.b.c) and float the leaf; default on any miss.
+    Public wraps money/prices in sub-objects (cost_basis.unit_cost,
+    last_price.last_price, buying_power.options_buying_power, *_gain.gain_value)."""
+    for p in path:
+        obj = getattr(obj, p, None)
+        if obj is None:
+            return default
+    try:
+        return float(obj)
+    except (TypeError, ValueError):
+        return default
+
+
 def _env_bool(name: str, default: bool) -> bool:
     v = os.environ.get(name)
     if v is None:
@@ -355,38 +369,37 @@ class PublicTrader:
         result = []
         for p in getattr(portfolio, "positions", []) or []:
             inst = getattr(p, "instrument", None)
-            symbol = getattr(inst, "symbol", None) or getattr(p, "symbol", "?")
-            qty = float(getattr(p, "quantity", 0) or 0)
-            # PortfolioPosition fields confirmed via SDK introspection (v0.1.17):
-            # cost_basis (total), last_price (current per-contract), instrument_gain (unrealized).
-            cost_basis = float(getattr(p, "cost_basis", 0) or 0)
-            cur = float(getattr(p, "last_price", 0) or 0)
-            upl = float(getattr(p, "instrument_gain", 0) or 0)
-            entry = (cost_basis / qty) if qty else cost_basis  # per-contract
+            symbol = getattr(inst, "symbol", None) or "?"
+            qty = _nested_float(p, "quantity")
+            # Nested sub-objects, confirmed against a live account 2026-07-11:
+            # cost_basis.unit_cost, last_price.last_price, instrument_gain.gain_*.
             result.append({
                 "symbol": symbol,
                 "qty": qty,
                 "side": "long" if qty >= 0 else "short",
-                "entry_price": entry,
-                "current_price": cur,
-                "unrealized_pnl": upl,
-                "unrealized_pnl_pct": (upl / abs(cost_basis) * 100) if cost_basis else 0.0,
+                "entry_price": _nested_float(p, "cost_basis", "unit_cost"),
+                "current_price": _nested_float(p, "last_price", "last_price"),
+                "unrealized_pnl": _nested_float(p, "instrument_gain", "gain_value"),
+                "unrealized_pnl_pct": _nested_float(p, "instrument_gain", "gain_percentage"),
             })
         return result
 
     def get_today_pnl(self) -> dict:
         """Account balances in AlpacaPaperTrader's dict shape.
 
-        Public's Portfolio has no previous_close_equity, so day P&L is approximated
-        as the sum of per-position daily gains (misses realized-and-closed-today).
+        Public's Portfolio.equity is a list of {type,value} buckets, buying_power is
+        a nested object, and there is no previous_close_equity — so day P&L is summed
+        from per-position position_daily_gain (confirmed against a live account
+        2026-07-11; misses realized-and-closed-today).
         """
         portfolio = self.client.get_portfolio(account_id=self.account_number)
-        equity = float(getattr(portfolio, "equity", 0) or 0)
-        today_pnl = sum(float(getattr(p, "position_daily_gain", 0) or 0)
+        equity = sum(_nested_float(e, "value") for e in (getattr(portfolio, "equity", []) or []))
+        buying_power = _nested_float(portfolio, "buying_power", "options_buying_power")
+        today_pnl = sum(_nested_float(p, "position_daily_gain", "gain_value")
                         for p in getattr(portfolio, "positions", []) or [])
         return {
             "equity": equity,
-            "buying_power": float(getattr(portfolio, "buying_power", 0) or 0),
+            "buying_power": buying_power,
             "today_pnl": today_pnl,
             "today_pnl_pct": (today_pnl / equity * 100) if equity else 0.0,
         }

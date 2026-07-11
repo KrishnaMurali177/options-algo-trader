@@ -81,8 +81,27 @@ installed in the running image** — Public can't even load today. Unverified:
 
 Validated: syntax + a mock-client unit test covering transient classify,
 poll-to-fill (fill/reject/timeout), idempotent retry (retry-then-success,
-landed-dedup, non-transient-raise), cancel-before-replace, and both close
-outcomes. Live preflight + real 1-contract roundtrip still pending creds + market.
+landed-dedup, non-transient-raise), cancel-before-replace, and both close outcomes.
+
+### Phase 1 live verification (2026-07-11) — Tier 1 PASSED (real account, no orders)
+Ran against real account 5LH07630 with only the API key (no funding, nothing placed):
+- **auth + read** work; `get_positions`/`get_today_pnl` fixed & verified.
+- **Single-leg OPTION preflight ACCEPTED** (`validate_order=False` what-if):
+  SPY 0DTE call BUY 1 → order_value 50.00, buying_power_requirement 50.04. This
+  resolves the residual unknown — single-leg options DO work via
+  `OrderRequest`/`place_order` (the SDK examples only showed spreads).
+- **More real-shape fixes** (introspection showed names, not that they're nested
+  objects): `Portfolio.equity` is a LIST of {type,value}; `buying_power`,
+  `cost_basis` (.unit_cost/.total_cost), `last_price` (.last_price),
+  `instrument_gain`/`position_daily_gain` (.gain_value/.gain_percentage) are all
+  nested — added `_nested_float` and remapped `get_positions`/`get_today_pnl`.
+- Expirations/chain need an EQUITY `instrument` + explicit `expiration_date`
+  (not `base_symbol`) — harness `chain` fixed.
+
+**Blocker for Tier 2 (real 1-contract roundtrip):** the account has only **$1.50
+options buying power** (equity ~$90 tied up in AFRM/AMZN shares). A 0DTE SPY
+contract needs ~$50+. Fund/free up cash before the real fill test. Order-response
+fields (`average_price`/`closed_at`) remain unconfirmed until that real order.
 
 ### Phase 3 — Agent-contract validation
 - [ ] Verify pending_close, "already gone" guard, and

@@ -63,15 +63,26 @@ def cmd_account(args):
 
 
 def cmd_chain(args):
-    from public_api_sdk import OptionChainRequest
+    # OptionExpirations/ChainRequest take an EQUITY instrument (not base_symbol);
+    # chain needs an explicit expiration_date. Confirmed against a live account.
+    from public_api_sdk import (OptionExpirationsRequest, OptionChainRequest,
+                                OrderInstrument, InstrumentType)
     client, acct = _client()
-    req = OptionChainRequest(base_symbol=args.symbol)  # nearest expiry by default
-    chain = client.get_option_chain(req, account_id=acct)
+    inst = OrderInstrument(symbol=args.symbol, type=InstrumentType.EQUITY)
+    xs = getattr(client.get_option_expirations(OptionExpirationsRequest(instrument=inst),
+                                               account_id=acct), "expirations", []) or []
+    exp_list = [str(getattr(x, "expiration_date", x)) for x in xs]
+    print(f"  {args.symbol} expirations (first 6): {exp_list[:6]}")
+    exp = args.expiration or (exp_list[0] if exp_list else None)
+    if not exp:
+        return
+    chain = client.get_option_chain(OptionChainRequest(instrument=inst, expiration_date=exp), account_id=acct)
     calls = getattr(chain, "calls", []) or []
-    puts = getattr(chain, "puts", []) or []
-    print(f"  {args.symbol}: {len(calls)} calls, {len(puts)} puts (nearest expiry)")
-    for c in calls[:8]:
-        print("      call:", c)
+    print(f"  {args.symbol} {exp}: {len(calls)} calls — near-ATM window:")
+    mid = len(calls) // 2
+    for c in calls[max(0, mid - 4):mid + 4]:
+        occ = getattr(getattr(c, "instrument", None), "symbol", "?")
+        print(f"      {occ}  bid={getattr(c,'bid','?')} ask={getattr(c,'ask','?')} last={getattr(c,'last','?')}")
 
 
 def _build_single_leg(occ, side_name, qty, limit, order_id):
@@ -160,6 +171,7 @@ def main():
     sub = ap.add_subparsers(dest="mode", required=True)
     sub.add_parser("account")
     c = sub.add_parser("chain"); c.add_argument("--symbol", default="SPY")
+    c.add_argument("--expiration", default=None, help="YYYY-MM-DD (default: nearest)")
     p = sub.add_parser("preflight")
     p.add_argument("--occ", required=True); p.add_argument("--side", choices=["buy", "sell"], default="buy")
     p.add_argument("--qty", type=int, default=1); p.add_argument("--limit", type=float, required=True)

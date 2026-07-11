@@ -7,6 +7,7 @@
 - [2026-07-06] Modified: options_agent/requirements.txt + requirements.txt — Added publicdotcom-py.
 - [2026-07-06] Modified: .gitignore — Ignore .env.public (real-money Public creds).
 - [2026-07-06] Modified: docker-compose.yml — Added agent-public-spy (profile: public): same strategy executing on Public.com via .env.public, separate sweet_spot_journal_public.
+- [2026-07-10] Modified: options_agent/src/utils/discord_notifier.py, alpaca_fills.py, alpaca_paper.py, scripts/run_sweet_spot_agent.py — Port of the daily-report broker-truth fixes: exclude still-open/non-executed trades from the report; add get_closing_fill() + enrich/reconcile so positions closed outside the agent (e.g. manual website close) show their real Alpaca fills as closed_externally; persist that reconcile to the journal in _reconcile_journal.
 - [2026-07-08] Modified: options_agent/src/utils/alpaca_data.py — Added _atomic_write_parquet() (temp-file + os.replace, uuid-tagged) and switched the bar-cache write to it. Fixes torn/0-byte parquet reads on the data_cache shared with the paper/live agents.
 - [2026-07-08] Modified: options_agent/src/utils/alpaca_options.py — Route all three option-bar cache writes through alpaca_data._atomic_write_parquet for the same concurrency-safe write.
 - [2026-07-08] Modified: options_agent/scripts/run_sweet_spot_agent.py — Options-exit monitoring now retries the underlying-bar read once with force_refresh on failure instead of silently skipping the whole stop/target/decay cycle.

@@ -1643,7 +1643,32 @@ def _reconcile_journal(trader, triggers: list[dict], journal_file: Path) -> None
       - stop    (bracket stop-loss leg filled)
       - gainz_exit (already stamped by the Gainz handler; we just look up the close fill)
       - eod     (still open at EOD — Alpaca will auto-close DAY orders; mark and let next-day reconcile)
+
+    Also runs a broker-truth reconcile: a journal-open trigger the broker no
+    longer holds was closed outside the agent (e.g. manually on the website).
+    Pull the real sell fill so the journal reflects reality, not a stale 'open'.
     """
+    try:
+        live_syms = {p["symbol"] for p in trader.get_positions()}
+    except Exception as e:
+        logger.warning("  Reconcile: could not fetch live positions: %s", e)
+        live_syms = None
+    if live_syms is not None:
+        for trig in triggers:
+            occ = trig.get("occ_symbol")
+            if (occ and trig.get("trade_mode") == "0dte_option"
+                    and not trig.get("closed") and occ not in live_syms):
+                get_closing_fill = getattr(trader, "get_closing_fill", None)
+                fill = get_closing_fill(occ) if get_closing_fill else None
+                if fill:
+                    trig["close_order_id"] = fill["order_id"]
+                    trig["exit_price"] = fill["price"]
+                    trig["exit_time"] = fill["time"]
+                    trig["exit_reason"] = "closed_externally"
+                    trig["closed"] = True
+                    logger.info("  🔄 %s was closed outside the agent — reconciled from broker "
+                                "@ $%.2f (order=%s)", occ, fill["price"], fill["order_id"])
+
     for trig in triggers:
         order_id = trig.get("order_id")
         if not order_id:

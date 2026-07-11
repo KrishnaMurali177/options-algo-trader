@@ -280,6 +280,36 @@ class AlpacaPaperTrader:
             "time": str(order.filled_at) if order.filled_at else None,
         }
 
+    def get_closing_fill(self, occ_symbol: str) -> dict | None:
+        """Find the actual sell-to-close fill for an option straight from Alpaca
+        order history.
+
+        Used to reconcile positions closed OUTSIDE the agent — e.g. manually on
+        the broker website, or any close the agent didn't place/record — so the
+        journal and daily report reflect broker truth instead of a stale 'open'.
+        Returns the most recent FILLED sell order's price/time/qty/id, or None.
+        """
+        from alpaca.trading.requests import GetOrdersRequest
+        from alpaca.trading.enums import QueryOrderStatus
+        try:
+            req = GetOrdersRequest(status=QueryOrderStatus.CLOSED, symbols=[occ_symbol], limit=100)
+            orders = self.client.get_orders(req)
+        except Exception as e:
+            logger.warning("get_closing_fill(%s) failed: %s", occ_symbol, e)
+            return None
+        sells = [o for o in orders
+                 if o.side.value == "sell" and o.filled_avg_price and o.status.value == "filled"]
+        if not sells:
+            return None
+        sells.sort(key=lambda o: (o.filled_at or o.submitted_at))
+        o = sells[-1]
+        return {
+            "price": float(o.filled_avg_price),
+            "time": str(o.filled_at) if o.filled_at else None,
+            "qty": int(float(o.qty)),
+            "order_id": str(o.id),
+        }
+
     def place_options_trade(
         self,
         occ_symbol: str,

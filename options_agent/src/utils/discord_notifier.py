@@ -22,6 +22,7 @@ REASON_LABELS = {
     "stagnation": "STAGNATION EXIT",
     "time_stop": "TIME STOP",
     "gainz": "GAINZ EXIT",
+    "closed_externally": "CLOSED (broker)",
 }
 
 
@@ -249,6 +250,18 @@ class DiscordNotifier:
 
     def notify_daily_report(self, date_str: str, trades: list[dict],
                             total_scans: int) -> None:
+        # Only executed-and-closed trades belong in the daily P&L/record. A
+        # still-open position (closed != True) has no exit price yet, so it
+        # would render as a bogus "$entry → $0.00  -NNN R (?)" loss and corrupt
+        # both the Net P&L and the W/L record. Non-executed signals (e.g.
+        # skipped_no_0dte) likewise have no fills. Exclude both; surface any
+        # still-open executed positions as a separate note.
+        open_positions = [
+            t for t in trades
+            if t.get("trade_mode") == "0dte_option" and t.get("closed") is not True
+        ]
+        trades = [t for t in trades if t.get("closed") is True]
+
         wins = 0
         losses = 0
         total_r = 0.0
@@ -319,7 +332,12 @@ class DiscordNotifier:
         day_emoji = "\U0001f4c8" if (total_dollar_pnl >= 0 if has_fills else total_r >= 0) else "\U0001f4c9"
         color = 0x2e7d32 if (total_dollar_pnl >= 0 if has_fills else total_r >= 0) else 0xc62828
 
-        desc = "\n".join(trade_lines) if trade_lines else "*No trades today*"
+        desc = "\n".join(trade_lines) if trade_lines else "*No closed trades today*"
+        if open_positions:
+            still_open = ", ".join(
+                f"{t.get('time','?')} {t.get('symbol','?')}" for t in open_positions
+            )
+            desc += f"\n\n⏳ *{len(open_positions)} still open (excluded): {still_open}*"
 
         self._post({
             "embeds": [{

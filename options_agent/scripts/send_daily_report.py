@@ -17,7 +17,13 @@ from src.utils.alpaca_fills import enrich_trades_with_fills
 logger = logging.getLogger(__name__)
 
 ET = ZoneInfo("America/New_York")
-JOURNAL_DIR = Path(__file__).resolve().parent.parent / "sweet_spot_journal"
+# Journal dir is overridable so the same script can report the paper journal
+# (default) or the live journal (JOURNAL_DIR=/app/sweet_spot_journal_live),
+# mirroring send_weekly_report.py.
+JOURNAL_DIR = Path(os.environ.get(
+    "JOURNAL_DIR",
+    str(Path(__file__).resolve().parent.parent / "sweet_spot_journal"),
+))
 
 
 def load_trades(date_str: str) -> list[dict]:

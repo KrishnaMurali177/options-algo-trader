@@ -1,5 +1,6 @@
 # Changelog
 
+- [2026-07-11] Modified: options_agent/scripts/send_daily_report.py — JOURNAL_DIR now overridable via env (mirrors send_weekly_report.py) so a live daily cron can report the live journal.
 - [2026-07-10] Modified: options_agent/scripts/run_sweet_spot_agent.py — _verify_closes_against_broker now reconciles BOTH directions: a journal-open trigger no longer held on the broker (closed outside the agent) is stamped closed_externally with the real Alpaca sell fill and persisted to the journal, so the on-disk record + dashboard reflect broker truth (not just the report).
 - [2026-07-10] Modified: options_agent/src/utils/alpaca_paper.py — Added get_closing_fill(occ) that pulls the actual sell-to-close fill from Alpaca order history, so positions closed outside the agent (e.g. manually on the broker website) can be reconciled to broker truth.
 - [2026-07-10] Modified: options_agent/src/utils/alpaca_fills.py — enrich_trades_with_fills now reconciles journal-"open" trades against the broker: if the option is no longer held, it stamps the real close fill (exit_reason 'closed_externally') so the daily report reflects reality instead of a phantom open position.

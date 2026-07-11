@@ -100,6 +100,9 @@ def cmd_preflight(args):
         OrderExpirationRequest, TimeInForce, OrderSide,
     )
     client, acct = _client()
+    # validate_order=False → "what-if" that skips account-state/buying-power
+    # checks, so this confirms the request shape (incl. single-leg OPTION support)
+    # on an UNFUNDED account, placing nothing. Pass --validate to include state checks.
     req = PreflightRequest(
         instrument=OrderInstrument(symbol=args.occ, type=InstrumentType.OPTION),
         order_side=OrderSide.BUY if args.side == "buy" else OrderSide.SELL,
@@ -107,6 +110,7 @@ def cmd_preflight(args):
         expiration=OrderExpirationRequest(time_in_force=TimeInForce.DAY),
         quantity=args.qty,
         limit_price=Decimal(str(round(args.limit, 2))),
+        validate_order=args.validate,
     )
     pf = client.perform_preflight_calculation(req, account_id=acct)
     _dump("preflight", pf, ["order_value", "estimated_cost", "estimated_commission",
@@ -159,6 +163,8 @@ def main():
     p = sub.add_parser("preflight")
     p.add_argument("--occ", required=True); p.add_argument("--side", choices=["buy", "sell"], default="buy")
     p.add_argument("--qty", type=int, default=1); p.add_argument("--limit", type=float, required=True)
+    p.add_argument("--validate", action="store_true",
+                   help="include account-state/buying-power checks (default: what-if only, no funding needed)")
     r = sub.add_parser("roundtrip")
     r.add_argument("--occ", required=True); r.add_argument("--qty", type=int, default=1)
     r.add_argument("--limit", type=float, required=True); r.add_argument("--timeout", type=float, default=15.0)

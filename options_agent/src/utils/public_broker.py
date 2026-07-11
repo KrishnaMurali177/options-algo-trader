@@ -478,26 +478,27 @@ class PublicTrader:
                     logger.warning("cancel_order(%s) failed: %s", oid, e)
         logger.info("Public: open orders cancel requested")
 
-    # ── Interface: option quote (delegates to Alpaca option data) ─────────────
+    # ── Interface: option quote (Public's own market data) ────────────────────
     def get_option_quote(self, occ_symbol: str) -> float | None:
-        """Current option mid — sourced from Alpaca option data (data layer is unchanged)."""
+        """Current option mid from Public's OWN quote (bid/ask), so the marketable
+        limit is priced against the same venue that fills it — not a cross-broker
+        Alpaca mid. Falls back to last, then None."""
+        from public_api_sdk import OrderInstrument, InstrumentType
         try:
-            from alpaca.data.historical import OptionHistoricalDataClient
-            from alpaca.data.requests import OptionLatestQuoteRequest
-
-            option_client = OptionHistoricalDataClient(
-                api_key=os.environ.get("ALPACA_API_KEY", ""),
-                secret_key=os.environ.get("ALPACA_SECRET_KEY", ""),
+            quotes = self.client.get_quotes(
+                [OrderInstrument(symbol=occ_symbol, type=InstrumentType.OPTION)],
+                account_id=self.account_number,
             )
-            quotes = option_client.get_option_latest_quote(
-                OptionLatestQuoteRequest(symbol_or_symbols=[occ_symbol])
-            )
-            q = quotes.get(occ_symbol)
-            if q and q.bid_price and q.ask_price:
-                return (float(q.bid_price) + float(q.ask_price)) / 2
         except Exception as e:
             logger.warning("get_option_quote(%s) failed: %s", occ_symbol, e)
-        return None
+            return None
+        q = quotes[0] if quotes else None
+        if q is None:
+            return None
+        bid, ask, last = (_nested_float(q, "bid"), _nested_float(q, "ask"), _nested_float(q, "last"))
+        if bid > 0 and ask > 0:
+            return (bid + ask) / 2
+        return last if last > 0 else None
 
     # ── Shares (disabled in live — matches the 2026-06-28 no-shares-fallback change) ──
     def place_sweet_spot_trade(self, *args, **kwargs):

@@ -1498,9 +1498,16 @@ def _safe_sleep(seconds: float, label: str = "waiting") -> None:
 
 
 def _verify_closes_against_broker(trader, triggers: list[dict], notifier=None) -> None:
-    """Detect journal-vs-broker mismatches: triggers marked closed that are still
-    open live positions. Re-attempt the close; if it still fails, mark the trigger
-    open again (so the next run keeps trying) and fire an alert."""
+    """Reconcile the journal against broker truth, both directions:
+
+      1. Marked closed but STILL OPEN on the broker → a prior close silently
+         failed. Re-attempt it; if it still fails, flag the trigger open again
+         (so the next run keeps trying) and alert.
+      2. Marked open but NO LONGER HELD on the broker → it was closed outside
+         the agent (e.g. manually on the broker website, or an untracked close).
+         Pull the real sell-to-close fill from Alpaca and stamp the trigger
+         closed ('closed_externally') so the journal/report reflect reality.
+    """
     try:
         live_syms = {p["symbol"] for p in trader.get_positions()}
     except Exception as e:
@@ -1527,6 +1534,18 @@ def _verify_closes_against_broker(trader, triggers: list[dict], notifier=None) -
                     notifier.notify_alert(
                         f"{occ} was reported closed but is still OPEN on the broker and could "
                         f"not be auto-closed. Manual action needed.")
+        elif not trig.get("closed") and occ not in live_syms:
+            # Journal says open, broker no longer holds it → closed outside the
+            # agent. Recover the real close fill so the record is broker-true.
+            get_closing_fill = getattr(trader, "get_closing_fill", None)
+            fill = get_closing_fill(occ) if get_closing_fill else None
+            if fill:
+                trig["close_order_id"] = fill["order_id"]
+                trig["exit_time"] = fill["time"]
+                trig["exit_reason"] = "closed_externally"
+                trig["closed"] = True
+                logger.info("  🔄 %s was closed outside the agent — reconciled from broker "
+                            "@ $%.2f (order=%s)", occ, fill["price"], fill["order_id"])
 
 
 def _reconcile_journal(trader, triggers: list[dict], journal_file: Path, notifier=None) -> None:

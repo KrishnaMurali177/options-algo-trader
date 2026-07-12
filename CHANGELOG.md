@@ -166,3 +166,5 @@
 - [2026-07-11] Modified: .gitignore — Future-proof env-secret ignores: `.env` + `.env.*` with `!*.example` so any new .env.<mode> (incl. .env.public with real Public API keys) is auto-ignored while *.example templates stay tracked. Verified no secret .env is tracked.
 - [2026-07-11] Modified: options_agent/src/utils/public_broker.py — get_option_quote now uses Public's OWN quote (client.get_quotes bid/ask mid) instead of Alpaca's option data, so the marketable limit is priced against the same venue that fills it. Removes the cross-broker quote dependency. Verified live (SPY 743C → mid 12.015).
 - [2026-07-11] Modified: docker-compose.yml — Discord account tags: live Alpaca agents now post as "🔴 ALPACA · REAL-MONEY" (was "LIVE · REAL-MONEY"); added "🔵 PUBLIC · REAL-MONEY" DISCORD_TAG to agent-public-spy. Same shared channel, distinguishable by broker/account.
+- [2026-07-11] Modified: .gitignore — ignore .DS_Store and stray options_agent/weekly/backtest/*.json (weekly source lives on feature/weekly-options-agent, not this branch).
+- [2026-07-11] Modified: HOWTO.md — added live-agent stop/logs commands.

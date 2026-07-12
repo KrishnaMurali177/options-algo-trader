@@ -136,3 +136,6 @@ The dashboard works without any credentials — it uses public market data via y
 # Run tests
 ./run.sh test
 ```
+docker-compose --profile realmoney stop agent-live-spy agent-live-qqq
+
+docker-compose --profile realmoney logs -f agent-live-spy agent-live-qqq

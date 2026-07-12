@@ -8,6 +8,12 @@ venv/
 __pycache__/
 *.pyc
 
+# macOS
+.DS_Store
+
+# Stray weekly-agent artifacts on non-weekly branches (source lives on feature/weekly-options-agent)
+options_agent/weekly/backtest/*.json
+
 # Environment — ignore .env and every .env.<mode> secret, but keep *.example templates
 .env
 .env.*

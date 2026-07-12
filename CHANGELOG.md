@@ -168,3 +168,4 @@
 - [2026-07-11] Modified: docker-compose.yml — Discord account tags: live Alpaca agents now post as "🔴 ALPACA · REAL-MONEY" (was "LIVE · REAL-MONEY"); added "🔵 PUBLIC · REAL-MONEY" DISCORD_TAG to agent-public-spy. Same shared channel, distinguishable by broker/account.
 - [2026-07-11] Modified: .gitignore — ignore .DS_Store and stray options_agent/weekly/backtest/*.json (weekly source lives on feature/weekly-options-agent, not this branch).
 - [2026-07-11] Modified: HOWTO.md — added live-agent stop/logs commands.
+- [2026-07-11] Created: options_agent/scripts/compare_shadow_vs_current.py — A/B compare of SHADOW (NEW-golden) vs CURRENT (OLD-golden) paper agents from their journals: per-symbol trades/win-rate/$P&L/PF/maxDD over the common window, with an exit-reason win/loss proxy + reconciled-coverage indicator for partially-reconciled tracks. Surfaced that shadow journals are unreconciled (no P&L) + weren't persisting.

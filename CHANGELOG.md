@@ -173,3 +173,8 @@
 - [2026-07-11] Modified: docker-compose.yml — Shadow persistence fix: mount host sweet_spot_journal_shadow at /app/sweet_spot_journal (the path main hardcodes), so shadow trades persist to host instead of a trapped/contaminated container path.
 - [2026-07-11] Cleaned: options_agent/sweet_spot_journal_shadow — removed contaminated pre-July baked paper-journal copies; kept genuine 07-07..07-10 shadow trades (now reconciled).
 - [2026-07-11] Created: options_agent/scripts/reconcile_shadow.sh — cron wrapper that runs reconcile_shadow.py daily after close (PATH/Docker-up guard, logs to shadow_reconcile.log). Crontab line not auto-installed (persistence guard) — user installs manually.
+- [2026-07-12] Created: options_agent/scripts/ensure_agents.linux.sh — Linux/Ubuntu port of ensure_agents.sh (native Docker/systemd, no Colima, path-derived PROJ_DIR).
+- [2026-07-12] Created: options_agent/scripts/reconcile_shadow.linux.sh — Linux/Ubuntu port of reconcile_shadow.sh.
+- [2026-07-12] Created: options_agent/scripts/check_agents_health.linux.sh — Linux/Ubuntu port of check_agents_health.sh.
+- [2026-07-12] Created: options_agent/scripts/make_migration_zip.sh — bundles gitignored .env* secrets into ~/ubuntu_migration.zip for copying to another machine.
+- [2026-07-12] Created: options_agent/docs/UBUNTU_SETUP.md — step-by-step guide to run the full stack on Ubuntu (deps, secrets, worktree, profiles, Linux cron).

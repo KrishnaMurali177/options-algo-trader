@@ -1,0 +1,153 @@
+# Running the options-algo-trader on Ubuntu
+
+Steps to stand up the full stack on a fresh Ubuntu box. The repo is portable;
+only **secrets** and **machine-local state** need to be copied over by hand
+(they're gitignored). macOS-specific cron wrappers have Linux twins (`*.linux.sh`).
+
+---
+
+## 1. Prerequisites
+
+```bash
+# Docker Engine + the V1 docker-compose binary (this project uses the hyphenated
+# `docker-compose`, NOT the `docker compose` V2 plugin — see CLAUDE.md).
+sudo apt-get update
+sudo apt-get install -y docker.io
+sudo curl -L "https://github.com/docker/compose/releases/latest/download/docker-compose-$(uname -s)-$(uname -m)" \
+     -o /usr/local/bin/docker-compose
+sudo chmod +x /usr/local/bin/docker-compose
+
+# Run docker without sudo (log out/in afterwards for it to take effect).
+sudo usermod -aG docker "$USER"
+
+# Docker starts on boot as a systemd service.
+sudo systemctl enable --now docker
+```
+
+Verify: `docker info` and `docker-compose version` both succeed as your user.
+
+---
+
+## 2. Clone the repo
+
+```bash
+cd ~/projects   # or wherever you keep code
+git clone git@github.com:KrishnaMurali177/options-algo-trader.git
+cd options-algo-trader
+git checkout feature/mag7-single-name-agents
+```
+
+---
+
+## 3. Copy the secrets (NOT in git)
+
+These hold live API keys / Discord webhooks and are deliberately gitignored.
+Copy them from the Mac using the migration bundle (see `ubuntu_migration.zip`,
+produced by `scripts/make_migration_zip.sh`), then unzip into place:
+
+```
+options_agent/.env            # shared config + Alpaca paper keys (data)
+options_agent/.env.live       # LIVE Alpaca keys (ALPACA_PAPER=false)
+options_agent/.env.public     # BROKER=public + Public.com creds
+options_agent/.env.shadow     # 2nd Alpaca PAPER account (shadow A/B)
+```
+
+```bash
+unzip ~/ubuntu_migration.zip -d options_agent/
+```
+
+Templates (`.env.example`, `.env.live.example`, …) are committed if you'd rather
+fill them in fresh. **Never commit the real `.env*` files.**
+
+> Transfer the zip over a trusted channel (scp/USB), and delete it from both
+> machines once imported — it contains live-money credentials.
+
+---
+
+## 4. Recreate the shadow worktree (for the shadow A/B agents)
+
+The shadow agents run `main`'s NEW-golden code from a sibling git worktree that
+is gitignored. Recreate it:
+
+```bash
+git worktree add .worktree-main main
+```
+
+(Skip if you don't run the `shadow` profile.)
+
+---
+
+## 5. Build the image and start the agents
+
+```bash
+docker-compose build                       # builds the `options-algo-trader` image
+docker-compose --profile live up -d        # SPY/QQQ/MSFT/AAPL paper agents + dashboard
+```
+
+Optional profiles (start only what you need):
+
+```bash
+docker-compose --profile realmoney up -d agent-live-spy agent-live-qqq   # LIVE money
+docker-compose --profile shadow    up -d agent-shadow-spy agent-shadow-qqq
+docker-compose --profile public    up -d agent-public-spy
+```
+
+Dashboard: http://localhost:8501
+
+Journals (`sweet_spot_journal*/`) and `data_cache/` regenerate themselves at
+runtime. Only copy `sweet_spot_journal_live/` from the Mac if you want to keep
+real-money trade history continuous.
+
+---
+
+## 6. Cron (use the Linux wrappers)
+
+The `*.linux.sh` wrappers derive the project dir from their own path, use the
+Linux docker locations, and drop the macOS Colima logic. Make them executable
+and install the schedule (times are the host's local timezone — adjust if the
+Ubuntu box isn't on US/Pacific like the Mac):
+
+```bash
+chmod +x options_agent/scripts/*.linux.sh
+
+( crontab -l 2>/dev/null | grep -v '\.linux\.sh'
+  P="$HOME/projects/options-algo-trader/options_agent/scripts"
+  echo "*/30 6-13 * * 1-5 $P/ensure_agents.linux.sh"
+  echo "*/10 6-13 * * 1-5 $P/check_agents_health.linux.sh"
+  echo "12 13 * * 1-5 $P/reconcile_shadow.linux.sh"
+) | crontab -
+
+crontab -l | grep linux   # verify
+```
+
+(Adjust `$P` if you cloned somewhere other than `~/projects`.)
+
+The daily/weekly Discord reports run via `docker-compose ... send_daily_report.py`
+— copy those two lines from the Mac's crontab if you want them here too; they're
+already cross-platform (no macOS paths inside).
+
+---
+
+## 7. Sanity checks
+
+```bash
+docker-compose ps                                   # agents up
+docker-compose logs -f --tail=50 agent-spy          # scanning?
+docker-compose run --rm --no-deps dashboard \
+    python scripts/compare_shadow_vs_current.py --symbols SPY,QQQ   # A/B works
+```
+
+---
+
+## Notes / gotchas
+
+- **`docker-compose` (V1) vs `docker compose` (V2):** this project standardizes
+  on the hyphenated V1 binary. If you only have the V2 plugin, either install the
+  V1 binary (step 1) or alias `docker-compose='docker compose'` — but the cron
+  wrappers call the binary by name via `command -v docker-compose`.
+- **Timezone:** cron times above assume the Mac's US/Pacific. `13:12` local =
+  after the 4pm ET close only if the box is on Pacific. Either set the box's TZ to
+  match, or shift the cron minutes/hours to land just after market close locally.
+- **Two machines, one live account:** do NOT run the `realmoney` or `public`
+  profiles on both the Mac and Ubuntu at once — they'd double-trade the same real
+  account. Run live on exactly one host; use the other for paper/shadow only.

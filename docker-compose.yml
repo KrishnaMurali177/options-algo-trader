@@ -173,11 +173,11 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - AGENT_SYMBOL=SPY
-      - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal_shadow
+      - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal   # (main ignores this; kept consistent with the mount)
       - DISCORD_TAG=🧪 SHADOW · NEW-GOLDEN   # tags shadow posts in the shared Discord channel
     volumes:
       - ./options_agent/logs:/app/logs
-      - ./options_agent/sweet_spot_journal_shadow:/app/sweet_spot_journal_shadow
+      - ./options_agent/sweet_spot_journal_shadow:/app/sweet_spot_journal   # main hardcodes JOURNAL_DIR=sweet_spot_journal; mount host shadow dir there so writes persist
       - ./options_agent/data_cache:/app/data_cache
       - ./options_agent/config:/app/config
       - ./.worktree-main/options_agent/scripts:/app/scripts:ro   # main = NEW-golden code
@@ -196,11 +196,11 @@ services:
     environment:
       - PYTHONUNBUFFERED=1
       - AGENT_SYMBOL=QQQ
-      - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal_shadow
+      - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal   # (main ignores this; kept consistent with the mount)
       - DISCORD_TAG=🧪 SHADOW · NEW-GOLDEN   # tags shadow posts in the shared Discord channel
     volumes:
       - ./options_agent/logs:/app/logs
-      - ./options_agent/sweet_spot_journal_shadow:/app/sweet_spot_journal_shadow
+      - ./options_agent/sweet_spot_journal_shadow:/app/sweet_spot_journal   # main hardcodes JOURNAL_DIR=sweet_spot_journal; mount host shadow dir there so writes persist
       - ./options_agent/data_cache:/app/data_cache
       - ./options_agent/config:/app/config
       - ./.worktree-main/options_agent/scripts:/app/scripts:ro

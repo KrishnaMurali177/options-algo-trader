@@ -172,3 +172,4 @@
 - [2026-07-11] Created: options_agent/scripts/reconcile_shadow.py — Post-hoc reconcile of shadow journals against the 2nd paper account (.env.shadow): backfills exit_price/pnl for stop/decay/stagnation/theta exits that main's code leaves unreconciled. Reconciled 14 trades (07-07..07-10).
 - [2026-07-11] Modified: docker-compose.yml — Shadow persistence fix: mount host sweet_spot_journal_shadow at /app/sweet_spot_journal (the path main hardcodes), so shadow trades persist to host instead of a trapped/contaminated container path.
 - [2026-07-11] Cleaned: options_agent/sweet_spot_journal_shadow — removed contaminated pre-July baked paper-journal copies; kept genuine 07-07..07-10 shadow trades (now reconciled).
+- [2026-07-11] Created: options_agent/scripts/reconcile_shadow.sh — cron wrapper that runs reconcile_shadow.py daily after close (PATH/Docker-up guard, logs to shadow_reconcile.log). Crontab line not auto-installed (persistence guard) — user installs manually.

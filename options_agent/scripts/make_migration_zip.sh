@@ -7,14 +7,19 @@
 #   unzip ubuntu_migration.zip -d options_agent/
 #
 # Journals/data_cache regenerate at runtime and are NOT included by default.
-# Pass --with-live-journal to also bundle real-money trade history.
+# Flags (bundle more for a full migration):
+#   --with-live-journal   also include real-money trade history
+#   --full                include ALL journals (live/paper/shadow/public) + data_cache
+#
+# Everything is stored relative to options_agent/, so the target unpacks with:
+#   unzip ubuntu_migration.zip -d options_agent/
 
 set -euo pipefail
 
 PROJ_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 AGENT_DIR="$PROJ_DIR/options_agent"
-OUT="${1:-$HOME/ubuntu_migration.zip}"
-[ "${1:-}" = "--with-live-journal" ] && OUT="$HOME/ubuntu_migration.zip"
+MODE="${1:-}"
+OUT="$HOME/ubuntu_migration.zip"
 
 cd "$AGENT_DIR"
 
@@ -31,9 +36,17 @@ fi
 rm -f "$OUT"
 zip -q "$OUT" "${FILES[@]}"
 
-if [ "${1:-}" = "--with-live-journal" ] && [ -d sweet_spot_journal_live ]; then
-    zip -qr "$OUT" sweet_spot_journal_live
-fi
+case "$MODE" in
+    --with-live-journal)
+        [ -d sweet_spot_journal_live ] && zip -qr "$OUT" sweet_spot_journal_live
+        ;;
+    --full)
+        for d in sweet_spot_journal sweet_spot_journal_live \
+                 sweet_spot_journal_shadow sweet_spot_journal_public data_cache; do
+            [ -d "$d" ] && zip -qr "$OUT" "$d"
+        done
+        ;;
+esac
 
 echo "Wrote $OUT"
 echo "Contents (names only, no secret values):"

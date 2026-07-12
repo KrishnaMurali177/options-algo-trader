@@ -128,7 +128,64 @@ already cross-platform (no macOS paths inside).
 
 ---
 
-## 7. Sanity checks
+## 7. Keep it always-on (Docker up 24/7, no sleep)
+
+Since this box is meant to run the agents unattended, make sure neither Docker
+nor the OS goes to sleep on you.
+
+**Docker survives reboots + crashes**
+
+```bash
+sudo systemctl enable --now docker     # daemon starts on boot
+```
+
+The agent containers already declare `restart: unless-stopped` in
+`docker-compose.yml`, so they come back automatically after a daemon restart or
+reboot — nothing extra needed. `ensure_agents.linux.sh` (cron, every 30 min) is
+the belt-and-suspenders re-start if anything is still down during market hours.
+
+**Stop the machine from suspending**
+
+```bash
+# Block all sleep/suspend/hibernate system-wide.
+sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+```
+
+**Laptop lid — keep running with the lid closed**
+
+Edit `/etc/systemd/logind.conf` and set:
+
+```
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+```
+
+then apply: `sudo systemctl restart systemd-logind`
+(note: restarting logind may end your desktop session — do it over SSH or expect
+to log back in).
+
+**If it's running a GNOME desktop, also disable GUI auto-suspend**
+
+```bash
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-ac-type 'nothing'
+gsettings set org.gnome.settings-daemon.plugins.power sleep-inactive-battery-type 'nothing'
+```
+
+**Verify nothing will suspend:**
+
+```bash
+systemctl status sleep.target        # should show "masked"
+cat /sys/power/state                 # informational
+```
+
+> Headless/server route (optional): if you won't use the desktop, boot to the
+> multi-user target (`sudo systemctl set-default multi-user.target`) — no GUI
+> power manager to fight, lower idle load.
+
+---
+
+## 8. Sanity checks
 
 ```bash
 docker-compose ps                                   # agents up

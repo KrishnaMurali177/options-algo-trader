@@ -178,3 +178,5 @@
 - [2026-07-12] Created: options_agent/scripts/check_agents_health.linux.sh — Linux/Ubuntu port of check_agents_health.sh.
 - [2026-07-12] Created: options_agent/scripts/make_migration_zip.sh — bundles gitignored .env* secrets into ~/ubuntu_migration.zip for copying to another machine.
 - [2026-07-12] Created: options_agent/docs/UBUNTU_SETUP.md — step-by-step guide to run the full stack on Ubuntu (deps, secrets, worktree, profiles, Linux cron).
+- [2026-07-12] Modified: options_agent/scripts/make_migration_zip.sh — added --full mode (bundles all journals + data_cache alongside .env* secrets) for a complete migration.
+- [2026-07-12] Modified: options_agent/docs/UBUNTU_SETUP.md — added "keep it always-on" section: Docker enable-on-boot, mask sleep/suspend targets, lid-close ignore, GNOME auto-suspend off.

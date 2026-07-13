@@ -180,3 +180,5 @@
 - [2026-07-12] Created: options_agent/docs/UBUNTU_SETUP.md — step-by-step guide to run the full stack on Ubuntu (deps, secrets, worktree, profiles, Linux cron).
 - [2026-07-12] Modified: options_agent/scripts/make_migration_zip.sh — added --full mode (bundles all journals + data_cache alongside .env* secrets) for a complete migration.
 - [2026-07-12] Modified: options_agent/docs/UBUNTU_SETUP.md — added "keep it always-on" section: Docker enable-on-boot, mask sleep/suspend targets, lid-close ignore, GNOME auto-suspend off.
+- [2026-07-12] Modified: docker-compose.yml — shadow agents (spy/qqq) now mount ./options_agent/logs/shadow so their logs no longer collide with paper/live SPY logs.
+- [2026-07-12] Created: options_agent/logs/shadow — isolated log dir for shadow agents.

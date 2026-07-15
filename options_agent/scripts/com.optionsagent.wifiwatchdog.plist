@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.optionsagent.wifiwatchdog</string>
+
+    <!-- Runs the watchdog script. Update this path if you move the repo. -->
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/sirius/projects/options-algo-trader/options_agent/scripts/wifi_watchdog.sh</string>
+    </array>
+
+    <!-- Check every 60s, and once immediately when loaded / at login. -->
+    <key>StartInterval</key>
+    <integer>60</integer>
+    <key>RunAtLoad</key>
+    <true/>
+
+    <!-- launchd's own stdout/stderr (script keeps its own log too). -->
+    <key>StandardOutPath</key>
+    <string>/Users/sirius/Library/Logs/wifi_watchdog.out.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/sirius/Library/Logs/wifi_watchdog.err.log</string>
+</dict>
+</plist>

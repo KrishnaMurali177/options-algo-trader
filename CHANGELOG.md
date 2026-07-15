@@ -182,3 +182,5 @@
 - [2026-07-12] Modified: options_agent/docs/UBUNTU_SETUP.md — added "keep it always-on" section: Docker enable-on-boot, mask sleep/suspend targets, lid-close ignore, GNOME auto-suspend off.
 - [2026-07-12] Modified: docker-compose.yml — shadow agents (spy/qqq) now mount ./options_agent/logs/shadow so their logs no longer collide with paper/live SPY logs.
 - [2026-07-12] Created: options_agent/logs/shadow — isolated log dir for shadow agents.
+- [2026-07-15] Created: options_agent/scripts/wifi_watchdog.sh — macOS Wi-Fi watchdog; power-cycles the interface when ping/DNS fails so always-on agents recover after a network drop.
+- [2026-07-15] Created: options_agent/scripts/com.optionsagent.wifiwatchdog.plist — launchd LaunchAgent that runs wifi_watchdog.sh every 60s (RunAtLoad).

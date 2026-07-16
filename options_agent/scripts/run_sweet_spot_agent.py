@@ -372,6 +372,18 @@ def is_past_or(min_after_open: int = 60) -> bool:
     return minutes_since_open >= min_after_open
 
 
+def _is_open_position(t: dict) -> bool:
+    """True only for a genuinely open broker position: an actually-placed trade
+    (has an order_id) that isn't closed or discarded.
+
+    Excludes signal-only rows like `skipped_no_0dte` — a sweet-spot that fired
+    but had no 0DTE contract to buy (e.g. MSFT/AAPL on a Tue), so nothing was
+    ever sent to the broker. Those rows have no order_id and must not show up as
+    open positions (Discord / EOD / reconcile) or count against the daily cap.
+    """
+    return bool(t.get("order_id")) and not t.get("closed") and not t.get("discard")
+
+
 def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
                      regime_guard: bool = True,
                      pb_ema: bool = True, pb_ema_fast: int = 13, pb_ema_slow: int = 55,
@@ -1386,6 +1398,14 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                         symbol,
                                     )
                                     trigger["trade_mode"] = "skipped_no_0dte"
+                                    # Nothing was placed — roll back the daily-cap
+                                    # increment (done at trigger time, before the
+                                    # chain lookup) so this signal-only row doesn't
+                                    # consume a trade slot and block a real trade
+                                    # later in the day.
+                                    trades_today -= 1
+                                    if trigger.get("is_flip", False):
+                                        flip_trades_today -= 1
 
                             journal_file.write_text(json.dumps(triggers, indent=2, default=str))
                             if trigger.get("order_id"):
@@ -1407,7 +1427,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                     all_trades_status.sort(key=lambda t: t.get("timestamp", ""))
                     enrich_trades_with_fills(all_trades_status)
 
-                    open_now = [t for t in all_trades_status if not t.get("closed")]
+                    open_now = [t for t in all_trades_status if _is_open_position(t)]
                     status_verdicts = verdicts_file.read_text().strip().split("\n") if verdicts_file.exists() else []
                     status_total = sum(1 for line in status_verdicts if line)
                     status_triggers = sum(1 for line in status_verdicts if line and '"trigger"' in line)
@@ -1611,7 +1631,7 @@ def _reconcile_journal(trader, triggers: list[dict], journal_file: Path, notifie
 
     journal_file.write_text(json.dumps(triggers, indent=2, default=str))
     closed = sum(1 for t in triggers if t.get("closed"))
-    open_n = len(triggers) - closed
+    open_n = sum(1 for t in triggers if _is_open_position(t))  # excludes skipped_no_0dte signal rows
     pnl_total = sum(t.get("pnl", 0.0) for t in triggers if t.get("pnl") is not None)
     logger.info("  Journal reconciled: %d closed, %d open, realized P&L: $%.2f",
                 closed, open_n, pnl_total)
@@ -1648,7 +1668,7 @@ def _write_eod_report_file(symbol: str, day, triggers: list[dict],
                 lines.append(f"- (account P&L unavailable: {e})")
 
         closed = [t for t in triggers if t.get("closed")]
-        open_t = [t for t in triggers if not t.get("closed")]
+        open_t = [t for t in triggers if _is_open_position(t)]
         winners = sum(1 for t in closed if t.get("is_winner"))
         lines += [
             "",

@@ -184,3 +184,4 @@
 - [2026-07-12] Created: options_agent/logs/shadow — isolated log dir for shadow agents.
 - [2026-07-15] Created: options_agent/scripts/wifi_watchdog.sh — macOS Wi-Fi watchdog; power-cycles the interface when ping/DNS fails so always-on agents recover after a network drop.
 - [2026-07-15] Created: options_agent/scripts/com.optionsagent.wifiwatchdog.plist — launchd LaunchAgent that runs wifi_watchdog.sh every 60s (RunAtLoad).
+- [2026-07-15] Modified: options_agent/scripts/run_sweet_spot_agent.py — Fix phantom "open positions": skipped_no_0dte signal rows (sweet-spot fired but no 0DTE contract to buy, e.g. MSFT/AAPL on Tue) no longer show as open in Discord/EOD/reconcile and no longer consume a daily trade-cap slot. Added _is_open_position() helper (requires order_id); roll back trades_today/flip_trades_today on the no-contract skip.

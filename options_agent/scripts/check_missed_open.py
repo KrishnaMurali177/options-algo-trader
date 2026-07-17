@@ -70,7 +70,7 @@ def _first_scan_by_symbol(journal_dir: str, day: str) -> dict[str, str]:
 def _post_discord(webhook: str, offenders: list[str], threshold: str) -> None:
     desc = "Agents that did NOT scan by the open threshold (" + threshold + " ET):"
     for o in offenders:
-        desc += f"\\n🟠 {o}"
+        desc += f"\n🟠 {o}"
     payload = {
         "embeds": [{
             "title": "⚠️ Options Agent MISSED THE OPEN",
@@ -125,7 +125,7 @@ def main() -> None:
     if state.exists() and state.read_text().strip() == key:
         print("already alerted for this offender set today — skipping"); return
 
-    print("MISSED-OPEN:\\n  " + "\\n  ".join(offenders))
+    print("MISSED-OPEN:\n  " + "\n  ".join(offenders))
     if args.webhook:
         try:
             _post_discord(args.webhook, offenders, args.threshold)

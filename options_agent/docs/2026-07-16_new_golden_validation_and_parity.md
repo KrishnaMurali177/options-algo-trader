@@ -127,24 +127,31 @@ column is keyed by **scan/action time**. So:
 10:35 scan. **The paths agree at the signal level; parity holds.** The apparent shift was the two
 columns using bar-time vs action-time headers for the *same* event.
 
-### 3b. So what actually drives the QQQ shadow-vs-replay divergence? (open)
+### 3b. Actual root cause (found) — shadow-agent UPTIME GAP, not a code/data issue
 
-With code-path parity confirmed, the +$1,878 (shadow) vs −$6 (replay) gap over the same window is
-**not** the fixed bar bug. It comes from things the clean historical replay doesn't reproduce:
+Reconciling the production verdicts JSONL against the snapshot bars isolates it. The first QQQ
+scan on 07-15 was at **10:58:44** — the agent was **not running before then** and missed the
+entire 10:00–10:55 window. It's a shared restart (SPY started 10:58:47 the same day):
 
-- **Real-time data at scan time.** The *production* shadow daemon scored the 07-15 AM as **Q8–Q9
-  → rejected** (verdicts log) and only entered at 11:10–11:55, whereas the same bars from the
-  saved snapshot score **Q7** in both the tool's live path and replay. That points to a real-time
-  data difference (late-arriving trades / bar revision / live VIX at scan time) rather than a code
-  divergence.
-- **Daemon sequencing.** Trade-cap, cooldown, `already_open_same_dir`, MFE-stagnation-skip and
-  real-time wall-clock exits make the live *sequence* of taken triggers differ from the batch
-  replay even when individual entry signals match.
+| Day | shadow first scan | #scans | note |
+|---|---|---|---|
+| 07-13 | 10:00:03 | 49 | normal (full day) |
+| **07-15** | **10:58:44** | **38** | **missed 10:00–10:55** |
+| 07-16 | 10:20:27 | 45 | missed 10:00–10:15 |
 
-**Status: open.** Next step is to reconcile the production verdicts JSONL against a bar-for-bar
-replay for 07-15 (same VIX, same bars) to isolate whether it's data revision or sequencing. Until
-then the QQQ shadow number remains untrustworthy — but the reason is real-time execution, **not**
-the (already-fixed) bar-alignment bug.
+So on 07-15 the live agents weren't scanning during **10:30–10:45** — exactly where the replay
+triggered the QQQ open-plunge PUTs (+$393). Production started at ~11:00 and instead caught the
+**11:10–11:55 afternoon reversal (+$1,140)**. Same code; a *different, later subset of trades*
+taken purely because the agent was down all morning. (Likely cause: the Mac was asleep until
+~07:58 PT — predates/escaped the always-on fix.) The verdicts' "Q8/Q9 rejects" I first read as a
+"morning rejection" are actually **11:00+** scans, not the 10:30–10:45 window.
+
+**Conclusion:** the QQQ shadow-vs-replay gap is an **agent-uptime artifact**, not a bar-alignment
+bug (fixed, §3a), not data revision, not quality computation. The shadow A/B measures "strategy ×
+when the agent happened to be running" — the **continuous replay is the trustworthy measure**, and
+the +$1,878 QQQ shadow was inflated by the 07-15 restart catching the afternoon move. This
+*reinforces* the §1 verdict: trust the 365d replay (SPY strong, QQQ marginal). It also argues for
+an uptime/health guard so shadow (and live) don't silently miss mornings.
 
 ---
 
@@ -157,11 +164,12 @@ the (already-fixed) bar-alignment bug.
    (PF 1.25, 46% DD); (b) live and replay diverge by ~$1,884 over the same window, so the
    shadow outperformance is execution-path-dependent and non-reproducible. Real money should
    not ride a QQQ edge that the backtest cannot reproduce.
-3. **The bar-alignment bug is already fixed (`2ce21d4`) — not the cause** (§3a). The remaining
-   QQQ shadow-vs-replay divergence (§3b) is a real-time execution effect (production scored the
-   07-15 AM Q8/Q9 and rejected it; clean-snapshot eval scores Q7), still **open**. Reconcile the
-   production verdicts vs a bar-for-bar replay for 07-15 to isolate data-revision vs sequencing
-   before trusting any QQQ number.
+3. **QQQ shadow-vs-replay is an agent-uptime artifact, not a parity bug** (§3a/§3b). Bar-alignment
+   was already fixed (`2ce21d4`); the divergence is that the shadow agents missed the 07-15 morning
+   (first scan 10:58) and took a different, later subset of trades. Trust the continuous replay for
+   QQQ; the +$1,878 shadow number was inflated by the restart. **Add an uptime/health guard** so
+   shadow and live agents don't silently miss mornings (the 07-15/07-16 late starts predate the
+   always-on fix).
 4. **If pursuing NEW's upside, add a concurrent-lot cap** (e.g. max 2 open lots/ticker). It's
    the single lever that keeps the pyramiding edge while bounding the stacked-cluster drawdown
    (QQQ's 46% / SPY's worst days).

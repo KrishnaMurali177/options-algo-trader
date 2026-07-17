@@ -194,3 +194,4 @@
 - [2026-07-17] Created: options_agent/scripts/check_missed_open.py — health check that alerts Discord if any agent (paper/live/shadow) didn't first-scan by a threshold (default 10:07 ET); reads per-day verdicts JSONL, dedups via state file. Catches the silent uptime gaps that skewed the 07-15/07-16 shadow data.
 - [2026-07-17] Created: options_agent/scripts/check_missed_open.sh — Mac cron wrapper for the missed-open check.
 - [2026-07-17] Created: options_agent/scripts/check_missed_open.linux.sh — Ubuntu cron wrapper for the missed-open check.
+- [2026-07-17] Modified: options_agent/docs/UBUNTU_SETUP.md — added check_missed_open.linux.sh to the §6 cron block (7:12 local / 10:12 ET) with a note on how it differs from check_agents_health.

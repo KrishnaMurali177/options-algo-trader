@@ -384,6 +384,39 @@ def _is_open_position(t: dict) -> bool:
     return bool(t.get("order_id")) and not t.get("closed") and not t.get("discard")
 
 
+def _capture_option_fills(trader, trig: dict, close_order_id: str,
+                          tries: int = 5, delay: float = 1.0) -> float | None:
+    """Fetch the REAL option entry/exit fills from the broker at close time so the
+    Discord exit post (and journal) carry the actual close premium and $ P&L — not
+    just the underlying price. Market close orders fill within ~1s; poll briefly for
+    the exit fill. Sets trig['exit_price'] (option premium) and trig['actual_entry']
+    if missing. Returns the exit fill, or None if it hadn't filled yet (the EOD
+    reconcile still backfills it). Options only — shares already price on underlying.
+    """
+    if not trig.get("occ_symbol"):
+        return None
+    exit_fill = None
+    for _ in range(max(1, tries)):
+        try:
+            fp = trader.get_fill_price(close_order_id)
+        except Exception:
+            fp = None
+        if fp and fp.get("price") is not None:
+            exit_fill = fp["price"]
+            break
+        time.sleep(delay)
+    if exit_fill is not None:
+        trig["exit_price"] = exit_fill
+    if trig.get("actual_entry") is None and trig.get("order_id"):
+        try:
+            ef = trader.get_fill_price(trig["order_id"])
+        except Exception:
+            ef = None
+        if ef and ef.get("price") is not None:
+            trig["actual_entry"] = ef["price"]
+    return exit_fill
+
+
 def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
                      regime_guard: bool = True,
                      pb_ema: bool = True, pb_ema_fast: int = 13, pb_ema_slow: int = 55,
@@ -974,23 +1007,26 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                         continue
                     pending_close.pop(sym, None)
                     # Stamp the matching trigger with the Gainz exit info
+                    closed_trig = None
                     for trig in triggers:
                         if (trig.get("occ_symbol") == sym or trig.get("symbol") == sym) and not trig.get("closed"):
                             trig["exit_reason"] = "gainz_exit"
                             trig["exit_time"] = get_et_now().isoformat()
                             trig["close_order_id"] = close_result["order_id"]
                             trig["closed"] = True
+                            closed_trig = trig
                             break
+                    # Real option close fill from Alpaca (for the actual premium/$ P&L).
+                    if closed_trig is not None and is_option:
+                        _capture_option_fills(trader, closed_trig, close_result["order_id"])
                     journal_file.write_text(json.dumps(triggers, indent=2, default=str))
-                    for trig in triggers:
-                        if (trig.get("occ_symbol") == sym or trig.get("symbol") == sym) and trig.get("closed"):
-                            try:
-                                g_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
-                                g_price = float(g_bars["Close"].iloc[-1]) if len(g_bars) > 0 else trig.get("entry", 0)
-                            except Exception:
-                                g_price = trig.get("entry", 0)
-                            notifier.notify_trade_exit(trig, "gainz", g_price)
-                            break
+                    if closed_trig is not None:
+                        try:
+                            g_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
+                            g_price = float(g_bars["Close"].iloc[-1]) if len(g_bars) > 0 else closed_trig.get("entry", 0)
+                        except Exception:
+                            g_price = closed_trig.get("entry", 0)
+                        notifier.notify_trade_exit(closed_trig, "gainz", g_price)
                     open_directions.pop(sym, None)
                     open_options.pop(sym, None)
 
@@ -1160,6 +1196,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                     "will retry next loop", close_reason.upper(), occ_sym)
                                 continue
                             pending_close.pop(occ_sym, None)
+                            closed_trig = None
                             for trig in triggers:
                                 if trig.get("occ_symbol") == occ_sym and not trig.get("closed"):
                                     trig["exit_reason"] = close_reason
@@ -1167,12 +1204,15 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                     trig["underlying_exit_price"] = underlying_price
                                     trig["close_order_id"] = close_result["order_id"]
                                     trig["closed"] = True
+                                    closed_trig = trig
                                     break
+                            # Grab the real option close fill from Alpaca so Discord
+                            # shows the actual premium/$ P&L, then persist + notify.
+                            if closed_trig is not None:
+                                _capture_option_fills(trader, closed_trig, close_result["order_id"])
                             journal_file.write_text(json.dumps(triggers, indent=2, default=str))
-                            for trig in triggers:
-                                if trig.get("occ_symbol") == occ_sym and trig.get("closed"):
-                                    notifier.notify_trade_exit(trig, close_reason, underlying_price)
-                                    break
+                            if closed_trig is not None:
+                                notifier.notify_trade_exit(closed_trig, close_reason, underlying_price)
                             open_options.pop(occ_sym, None)
                             open_directions.pop(occ_sym, None)
                             if close_reason == "stop":

@@ -145,7 +145,17 @@ class DiscordNotifier:
         else:
             pnl_pts = entry - exit_price
         pnl_r = f"{pnl_pts / risk:.2f}R" if risk > 0 else "?"
-        win = pnl_pts >= 0
+
+        # Actual option fills from the broker (captured at close). When present, show
+        # the real contract close premium + $ P&L instead of only the underlying move.
+        opt_entry = trigger.get("actual_entry")
+        opt_exit = trigger.get("exit_price")
+        ncon = trigger.get("num_contracts") or 1
+        opt_pnl = ((opt_exit - opt_entry) * 100 * ncon
+                   if (occ and opt_entry is not None and opt_exit is not None) else None)
+
+        # Base win/color on real $ when we have it, else the underlying points.
+        win = (opt_pnl >= 0) if opt_pnl is not None else (pnl_pts >= 0)
 
         reason_display = REASON_LABELS.get(exit_reason, exit_reason.upper())
         color = 0x2e7d32 if win else 0xc62828
@@ -154,11 +164,19 @@ class DiscordNotifier:
 
         fields = [
             {"name": "Symbol", "value": f"{dir_label} {symbol}", "inline": True},
-            {"name": "Entry", "value": f"${entry:.2f}", "inline": True},
-            {"name": "Exit", "value": f"${exit_price:.2f}", "inline": True},
-            {"name": "P&L", "value": f"{sign}{pnl_pts:.2f} pts ({pnl_r})", "inline": True},
-            {"name": "Reason", "value": reason_display, "inline": True},
+            {"name": "Underlying", "value": f"${entry:.2f} → ${exit_price:.2f}", "inline": True},
         ]
+        if opt_pnl is not None:
+            osign = "+" if opt_pnl >= 0 else ""
+            fields.append({"name": "Contract fill", "value": f"${opt_entry:.2f} → ${opt_exit:.2f}", "inline": True})
+            fields.append({"name": "P&L", "value": f"{osign}${opt_pnl:,.0f} ({ncon}x · {pnl_r})", "inline": True})
+        elif occ and opt_exit is not None:
+            # Have the real close but not the entry fill — show the actual close price.
+            fields.append({"name": "Close (fill)", "value": f"${opt_exit:.2f}", "inline": True})
+            fields.append({"name": "P&L", "value": f"{sign}{pnl_pts:.2f} pts ({pnl_r})", "inline": True})
+        else:
+            fields.append({"name": "P&L", "value": f"{sign}{pnl_pts:.2f} pts ({pnl_r})", "inline": True})
+        fields.append({"name": "Reason", "value": reason_display, "inline": True})
         if occ:
             fields.append({"name": "Contract", "value": occ, "inline": False})
 

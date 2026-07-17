@@ -108,6 +108,35 @@ full-bar; stagnation/MFE-skip timing; scan cadence). The known open parity item
 direction is reversed (replay *under*-performs live for QQQ), so it's likely a different
 mechanism. `scripts/verify_live_vs_replay.py` is the tool to chase it.
 
+### 3a. Root cause (found) — a one-bar alignment offset between the code paths
+
+`verify_live_vs_replay.py --symbol QQQ --date 2026-07-15 --times 10:30,10:35,10:40,10:45`
+shows the live and replay paths compute the **same** signal but **labeled one 5-min bar apart**:
+
+| `check_sweet_spot` (live/paper) | `replay_day` (replay) |
+|---|---|
+| 10:30 → Q7 E6, entry **$717.45** | 10:35 → Q7 E6, entry **$717.45** |
+| 10:35 → Q7 E7, entry **$715.36** | 10:40 → Q7 E7, entry **$715.36** |
+| 10:40 → Q7 E6, entry **$715.10** | 10:45 → Q7 E6, entry **$715.10** |
+
+i.e. `check_sweet_spot(T) ≡ replay_day(T+5min)` — a **one-bar (5-minute) index offset**.
+Consequences: (a) every entry shifts 5 min → different contract/fill/exit; (b) **at a
+quality-band edge the shift flips the trade**. On 07-15 QQQ's plunge sat right at Q7↔Q8, so the
+offset (plus the amplifier below) tipped it: the live daemon scored **Q8–Q9 → rejected the whole
+morning** (+ RSI-extreme vetoes, rsi 9.7) and instead caught the 11:10–11:55 reversal (+$1,140);
+the replay scored **Q7 → traded the open** (+$393). SPY's quality was nowhere near the 7/8 edge,
+so the same offset changed nothing → SPY parity stayed clean.
+
+**Amplifier:** the *production* daemon scored the AM ~1 quality point higher than the tool's
+completed-bar evaluation (Q8 vs Q7 at the same clock time) — a real-time/**partial-bar** effect
+(consistent with the prior partial-bar parity work, commit `2ce21d4`). That extra point is what
+actually tipped QQQ over the band edge in the live run.
+
+**Takeaway:** QQQ's shadow "edge" was an artifact of the one-bar offset landing favorably at a
+band boundary during an extreme move — **not reproducible, not alpha.** Fix = align bar indexing
+between `check_sweet_spot` and `replay_day` (and settle the partial-bar read), then re-run the
+QQQ A/B. Until then, neither the shadow nor the replay QQQ number is trustworthy.
+
 ---
 
 ## 4. Conclusions & recommendations
@@ -119,8 +148,10 @@ mechanism. `scripts/verify_live_vs_replay.py` is the tool to chase it.
    (PF 1.25, 46% DD); (b) live and replay diverge by ~$1,884 over the same window, so the
    shadow outperformance is execution-path-dependent and non-reproducible. Real money should
    not ride a QQQ edge that the backtest cannot reproduce.
-3. **Investigate the QQQ parity gap** with `verify_live_vs_replay.py` before trusting *any*
-   QQQ number (shadow or backtest) — the divergence undermines both.
+3. **Fix the one-bar alignment offset** (§3a) between `check_sweet_spot` and `replay_day` — the
+   confirmed root cause — then re-run the QQQ A/B. Until fixed, neither the shadow nor the
+   backtest QQQ number is trustworthy. (SPY is unaffected only because its quality sat away from
+   the band edge; the offset is still a latent bug that could bite SPY on an extreme day.)
 4. **If pursuing NEW's upside, add a concurrent-lot cap** (e.g. max 2 open lots/ticker). It's
    the single lever that keeps the pyramiding edge while bounding the stacked-cluster drawdown
    (QQQ's 46% / SPY's worst days).

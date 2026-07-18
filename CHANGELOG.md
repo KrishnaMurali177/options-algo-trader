@@ -199,3 +199,4 @@
 - [2026-07-17] Modified: options_agent/src/utils/discord_notifier.py — notify_trade_exit now shows the actual contract fill (entry→close premium) and dollar P&L when broker fills are present, basing win/color on real $; falls back to underlying points otherwise.
 - [2026-07-17] Created: options_agent/scripts/report_broker_pnl.py — separate routine that reads actual FILLED orders from Alpaca and posts realized CASH P&L to Discord (EOD/EOW), per-underlying + total, cross-checked against account equity delta (day). Authoritative money view vs the R-multiple exit posts. Account selected by env (.env=paper, .env.live=real money).
 - [2026-07-17] Modified: options_agent/scripts/check_missed_open.py — fix Discord/log newlines (were literal \n).
+- [2026-07-17] Modified: options_agent/scripts/report_broker_pnl.py, check_missed_open.py — add User-Agent header to Discord POST (default urllib UA gets 403 from Cloudflare). Weekly real-money cash post verified live.

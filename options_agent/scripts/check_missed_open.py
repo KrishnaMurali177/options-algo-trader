@@ -81,7 +81,8 @@ def _post_discord(webhook: str, offenders: list[str], threshold: str) -> None:
     }
     req = urllib.request.Request(
         webhook, data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"}, method="POST")
+        headers={"Content-Type": "application/json", "User-Agent": "OptionsAgent/1.0"},
+        method="POST")
     urllib.request.urlopen(req, timeout=10)
 
 

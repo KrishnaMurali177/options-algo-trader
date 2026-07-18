@@ -115,7 +115,7 @@ chmod +x options_agent/scripts/*.linux.sh
   echo "*/30 6-13 * * 1-5 $P/ensure_agents.linux.sh"
   echo "*/10 6-13 * * 1-5 $P/check_agents_health.linux.sh"
   echo "12 7 * * 1-5 $P/check_missed_open.linux.sh"
-  echo "*/15 7-12 * * 1-5 $P/check_missed_open.linux.sh --mode stale"
+  echo "*/15 7-10 * * 1-5 $P/check_missed_open.linux.sh --mode stale"
   echo "12 13 * * 1-5 $P/reconcile_shadow.linux.sh"
 ) | crontab -
 

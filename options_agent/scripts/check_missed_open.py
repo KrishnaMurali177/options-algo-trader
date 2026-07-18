@@ -41,8 +41,23 @@ DEFAULT_GROUPS = [
 ]
 
 
+# Groups watched for a MID-SESSION stall — only the feature-branch agents (paper +
+# live). They write an eod_report_<date>_<sym>.md marker on any normal/early finish
+# (entry cutoff OR daily-stop-limit halt), so a real stall is distinguishable from a
+# designed halt. Shadow runs main's code (no such marker) and hits its own daily-stop
+# halts, so it's covered by the once-a-day 'open' check only.
+STALE_GROUPS = [g for g in DEFAULT_GROUPS if g[0] in ("PAPER", "LIVE")]
+
+
 def _et_now() -> datetime:
     return datetime.now(_ET) if _ET else datetime.now()
+
+
+def _has_eod_report(journal_dir: str, day: str, symbol: str) -> bool:
+    """True if the agent already wrote today's EOD report for this symbol — i.e. it
+    finished its day (entry cutoff reached, or daily-stop-limit halt). A lack of
+    recent scans after that is expected, not a stall."""
+    return (Path(journal_dir) / f"eod_report_{day}_{symbol}.md").exists()
 
 
 def _scan_bounds_by_symbol(journal_dir: str, day: str) -> dict[str, tuple[str, str]]:
@@ -162,15 +177,16 @@ def main() -> None:
         return
 
     # ── mode == "stale": catch a mid-session stall (agent up but not scanning) ──
-    # Only meaningful once agents are scanning and before the close (ET 10:10–15:55).
+    # Only during the ENTRY-SCAN window (ET 10:10–14:00). After the ~14:00 cutoff
+    # agents stop scanning by design (and write an EOD report), so there's nothing to
+    # watch — running later would false-alarm on every agent.
     hm = now.timetz().replace(tzinfo=None)
-    if hm < time(10, 10) or hm > time(15, 55):
-        print("outside mid-session window (10:10–15:55 ET) — skipping"); return
+    if hm < time(10, 10) or hm >= time(14, 0):
+        print("outside entry-scan window (10:10–14:00 ET) — skipping"); return
     now_clock = _hhmmss(now)
-    cutoff_dt = now - timedelta(minutes=args.max_staleness)
-    cutoff = _hhmmss(cutoff_dt)
+    cutoff = _hhmmss(now - timedelta(minutes=args.max_staleness))
     offenders = []
-    for label, jdir, symbols in DEFAULT_GROUPS:
+    for label, jdir, symbols in STALE_GROUPS:
         if not Path(jdir).is_dir():
             continue
         bounds = _scan_bounds_by_symbol(jdir, day)
@@ -178,6 +194,8 @@ def main() -> None:
             b = bounds.get(sym)
             if b is None:
                 continue  # never scanned today → the 'open' check owns that case
+            if _has_eod_report(jdir, day, sym):
+                continue  # finished its day (cutoff or daily-stop halt) — not a stall
             last = b[1]
             if last < cutoff:
                 offenders.append(f"{label} {sym}: last scan {last} ET ({args.max_staleness}m+ stale)")

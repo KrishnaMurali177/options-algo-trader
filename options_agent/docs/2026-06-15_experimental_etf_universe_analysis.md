@@ -115,3 +115,25 @@ conclusions held with high stability:
 
 Takeaways unchanged and now twice-validated: **IWM robust**, **SLV overfit**, **XLF strong but
 thin**, breadth-without-holdout is misleading. USO still the worst (Sharpe -0.59 → -0.87).
+
+## Recheck #2 — 2026-07-18 (window shifted a full month; holdout 2026-04-17→2026-07-17)
+Third run on a genuinely different 365d window (train 2025-07-18→2026-04-16). Full three-way
+holdout-Sharpe trace:
+
+| Symbol | Holdout Sharpe (6/15 → 6/18 → 7/18) | Status |
+|--------|--------------------------------------|--------|
+| IWM | 2.07 → 2.00 → **1.49** | ✅ Still robust (PF 1.33, 104 OOS trades) but **softened** this quarter |
+| TLT | 0.59 → 1.26 → **2.09** | 🟢 **Strengthened into a real 2nd candidate** (PF 2.89, 45 trades, 0.9/day) |
+| XLF | 2.39 → 3.03 → **2.38** | ✅ Validates again (PF 4.72), still thin (~23 OOS trades) |
+| SLV | -2.82 → -3.07 → **-2.56** | ❌ **Overfit — 3rd straight holdout failure** |
+
+Updated reads after 3 runs across ~1 month of window drift:
+- **SLV overfit is now airtight** — three negative holdouts on different windows. Breadth
+  (PF 2.20, Calmar 7.61) lies every time.
+- **IWM softened** (holdout ~2.0 → 1.49). Still good/positive with the highest volume, but the
+  Apr–Jul quarter was harder for it. Not a breakdown, but no longer sparkling.
+- **TLT is the mover** — climbed every recheck (0.59→1.26→2.09); now genuinely robust OOS with
+  decent volume. Arguably co-leads with IWM as the experimental candidate.
+- **XLF** unchanged: validates but persistently too thin to lean on.
+- Bottom line: if extending live, **IWM and TLT** are the two worth a forward paper run; SLV
+  stays rejected; nothing here changes live config.

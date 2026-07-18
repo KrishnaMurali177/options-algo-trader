@@ -107,6 +107,18 @@ Linux docker locations, and drop the macOS Colima logic. Make them executable
 and install the schedule (times are the host's local timezone — adjust if the
 Ubuntu box isn't on US/Pacific like the Mac):
 
+> ⚠️ **Fix bind-mount ownership first.** Docker creates bind-mounted dirs (e.g.
+> `options_agent/logs`) **root-owned** the first time a container mounts them. The
+> cron wrappers run as your user and append to `logs/cron_agent.log`; with
+> `set -euo pipefail`, a failed log-write **aborts the whole wrapper** — silently
+> breaking even `ensure_agents` (the auto-restarter). Containers run as root and
+> can still write to a user-owned dir, so chown them to yourself once:
+> ```bash
+> sudo chown -R $USER:$USER options_agent/logs
+> ```
+> (Do the same for any dir the host *also* writes to — e.g. the journal dirs if you
+> run host-side reconciles.)
+
 ```bash
 chmod +x options_agent/scripts/*.linux.sh
 

@@ -249,6 +249,9 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                     rank_model: object | None = None,
                     rank_top_k: int = 0,
                     vix_continuous: bool = False,
+                    volume_q: bool = False,
+                    cascade_vol_confirm_t: float = 0.0,
+                    cascade_vol_confirm_e: int = 6,
                     atr_stop_k: float = 0.0,
                     stop_buffer_pct: float = 0.10,
                     dte: int = 0,
@@ -608,14 +611,18 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
         _cumvol_n = float(day_cumvol.iloc[:n].iloc[-1]) if n > 0 else 0
         _vwap_val = float(day_cum_tp_vol.iloc[:n].iloc[-1] / _cumvol_n) if _cumvol_n > 0 else None
 
+        # volume_q=False (golden) keeps the historical 1.0/1.0 placeholders that
+        # disable criteria #4 (surge >=1.2x, +1) and #9 (climax >=2.0x, +1).
+        # volume_q=True feeds the real 5-min bar volume vs 20-bar SMA already
+        # computed for `indicators` (ratio degrades to 1.0 before 20 bars).
         quality_result = compute_quality_score(
             direction=direction,
             current_price=indicators.current_price,
             sma_20=indicators.sma_20,
             sma_50=indicators.sma_50,
             vix=indicators.vix,
-            volume=1.0,
-            volume_sma_20=1.0,
+            volume=float(current_volume) if volume_q else 1.0,
+            volume_sma_20=vol_sma_val if volume_q else 1.0,
             or_direction=or_direction,
             or_momentum=or_momentum,
             or_confirmed=abs(or_momentum) >= 40,
@@ -707,6 +714,22 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d (min=%d) → CASCADE REJECT",
                             bar_time, direction, quality, explosion, effective_min_cascade)
             continue
+
+        # ── Volume-confirmed high-cascade gate (A/B 2026-07-07) ──
+        # cvr = mean(last 3 closed bars) / mean(day so far) — same convention as
+        # the cascade detector's climax check. Cohort diagnostic: within E6+,
+        # high-cvr is SPY's best cohort (PF 4.52) but QQQ's worst (PF 1.19);
+        # gate exists to test whether capacity reallocation flips that verdict.
+        if cascade_vol_confirm_t > 0 and explosion >= cascade_vol_confirm_e:
+            _dv = day_vol.iloc[:n]
+            _dv_mean = float(_dv.mean()) if len(_dv) >= 3 else 0.0
+            _cvr = float(_dv.iloc[-3:].mean()) / _dv_mean if _dv_mean > 0 else 1.0
+            if _cvr < cascade_vol_confirm_t:
+                if debug:
+                    logger.info("  [DEBUG] %s  dir=%s Q=%d E=%d cvr=%.2f < %.2f → VOL-CONFIRM REJECT",
+                                ts.strftime("%H:%M"), direction, quality, explosion,
+                                _cvr, cascade_vol_confirm_t)
+                continue
 
         # ── Choppiness ──
         # vol_factor is computed inside compute_choppiness (available on result)
@@ -1387,6 +1410,8 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             "range_high": round(range_high, 4),
             "range_low": round(range_low, 4),
             "vix": round(vix, 2),
+            # Added 2026-07-07 for volume-criteria (#4/#9) analysis.
+            "vol_ratio": round(current_volume / vol_sma_val, 3) if vol_sma_val > 0 else None,
         })
 
         if is_flip:
@@ -1729,6 +1754,23 @@ def main():
                              "contribution clamp((vix-15)/10, 0, 2) snapped to 0.5-grid. "
                              "Diagnostic-motivated: GBM ranked raw VIX as the dominant "
                              "feature, suggesting the threshold throws away information.")
+    parser.add_argument("--volume-q", dest="volume_q", action="store_true",
+                        default=False,
+                        help="Feed real 5-min bar volume vs 20-bar SMA into the quality "
+                             "scorer, activating criteria #4 (surge >=1.2x, +1) and #9 "
+                             "(climax >=2.0x, +1). Historically both replay AND live pass "
+                             "volume=1.0, so these criteria have never fired anywhere in "
+                             "the sweet-spot pipeline (discovered 2026-07-07). OFF = golden. "
+                             "Live port must mirror replay's no-signal-before-20-bars "
+                             "fallback (ratio=1.0) exactly if promoted.")
+    parser.add_argument("--cascade-vol-confirm-t", type=float, default=0.0,
+                        help="Volume-confirmed high-cascade gate: reject triggers with "
+                             "E >= --cascade-vol-confirm-e whose recent-volume ratio "
+                             "(mean of last 3 bars / day-so-far mean) is below T. "
+                             "0 = disabled (golden). Diagnostic 2026-07-07: median split "
+                             "at ~0.85-1.03 flips SPY-best/QQQ-worst — expect per-symbol arb.")
+    parser.add_argument("--cascade-vol-confirm-e", type=int, default=6,
+                        help="E-score floor at which the volume-confirmation gate applies (default 6).")
     parser.add_argument("--atr-stop", dest="atr_stop_k", type=float, default=0.0,
                         help="ATR-anchored stop: stop = entry ± k × ATR_14, replacing the "
                              "range-anchored 'mid ± 0.10 × OR_width' default. 0 = disabled "
@@ -2130,6 +2172,9 @@ def main():
                               rank_model=_rank_model,
                               rank_top_k=args.rank_top_k,
                               vix_continuous=args.vix_continuous,
+                              volume_q=args.volume_q,
+                              cascade_vol_confirm_t=args.cascade_vol_confirm_t,
+                              cascade_vol_confirm_e=args.cascade_vol_confirm_e,
                               atr_stop_k=args.atr_stop_k,
                               stop_buffer_pct=args.stop_buffer_pct,
                               dte=args.dte,

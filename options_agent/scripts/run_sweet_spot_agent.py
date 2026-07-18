@@ -732,7 +732,6 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
             gainz_rsi_overbought: float = 70.0,
             gainz_rsi_oversold: float = 30.0,
             gainz_min_profit_r: float = 0.3,
-            trade_shares: bool = False,
             contracts: int = 1,
             target_delta: float = 0.50,
             cascade_size_low: int = 3,
@@ -785,7 +784,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                 "ON" if regime_guard else "OFF",
                 f"{pb_ema_fast}/{pb_ema_slow}" if pb_ema else "OFF",
                 bool(trader),
-                "shares" if trade_shares else f"{dte}DTE options (contracts={contracts}, delta={target_delta})")
+                f"{dte}DTE options (contracts={contracts}, delta={target_delta})")
     logger.info("Exit goldens: tiered_stag_early_bar=6 (30min, golden 2026-06-19), tiered_stag_pnl_band=[-0.1, +0.2]R, "
                 "tiered_stag_mfe_skip=0.5R, fallback_stagnation=bar12 (60min, threshold=0.3R), "
                 "stop=mid±0.10×OR_width, decay_target_halflife=8 (40min), decay_target_floor=0.4, time_stop=15:30 ET")
@@ -879,7 +878,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
     #
     # Multi-position aware: iterate ALL unclosed triggers (not just unique OCCs),
     # so a cluster of N same-OCC entries is fully rehydrated as N position_ids.
-    if trader and not trade_shares:
+    if trader:
         try:
             live_positions = {p.symbol: p for p in trader.client.get_all_positions()}
             expected_trade_mode = f"{dte}dte_option"
@@ -1031,7 +1030,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         # ── Options stop/target/time-stop monitoring (underlying-based, since no bracket for options) ──
         # Iterates per position_id. When one position triggers an exit, the entire
         # OCC-fate-cohort closes together via Alpaca's close_position(occ).
-        if not trade_shares and trader and open_options:
+        if trader and open_options:
             try:
                 current_price_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
                 if len(current_price_bars) > 0:
@@ -1371,142 +1370,115 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
 
                     if trader:
                         try:
-                            if trade_shares:
-                                # Legacy: trade shares with bracket order
-                                order = trader.place_sweet_spot_trade(
-                                    symbol=symbol,
-                                    direction=trigger["direction"],
-                                    qty=qty,
-                                    entry=None,  # Market for immediate fill
-                                    stop=trigger["stop"],
-                                    target=trigger["target"],
-                                    time_in_force="day",
-                                )
-                                trigger["order_id"] = order["order_id"]
-                                trigger["trade_mode"] = "shares"
-                                open_directions[symbol] = trigger["direction"]
-                            else:
-                                # {dte}DTE options: fetch chain, pick contract, buy-to-open
-                                from src.utils.alpaca_data import get_dte_chain
-                                opt_type = "call" if "call" in trigger["direction"] else "put"
-                                contract = get_dte_chain(
-                                    symbol, dte=dte, option_type=opt_type,
-                                    target_delta=target_delta,
-                                    spot_price=trigger.get("price"),
-                                )
-                                if contract:
-                                    # Cascade-tier contract sizing
-                                    explosion = trigger.get("explosion", 4)
-                                    if explosion >= 8:
-                                        num_contracts = contracts * cascade_size_high
-                                    elif explosion >= 6:
-                                        num_contracts = contracts * cascade_size_mid
-                                    else:
-                                        num_contracts = contracts * cascade_size_low
-
-                                    # ── Duplicate-order guard ──
-                                    # Before placing, verify Alpaca's reported qty at this OCC matches
-                                    # the SUM of qty across our open positions at this OCC. If Alpaca
-                                    # has more than expected, an out-of-band buy occurred (restart race
-                                    # or parallel agent). Abort to prevent double-buying.
-                                    new_occ = contract["occ_symbol"]
-                                    expected_qty = sum(
-                                        info.get("num_contracts", 0)
-                                        for pid, info in open_options.items()
-                                        if info.get("occ_symbol") == new_occ
-                                    )
-                                    try:
-                                        live_positions_now = {p.symbol: p for p in trader.client.get_all_positions()}
-                                        existing = live_positions_now.get(new_occ)
-                                        existing_qty = int(float(existing.qty)) if existing else 0
-                                    except Exception as e:
-                                        logger.warning("Duplicate-order guard: Alpaca position fetch failed: %s — proceeding with placement", e)
-                                        existing_qty = expected_qty  # assume in sync, allow placement
-                                    if existing_qty > expected_qty:
-                                        logger.warning(
-                                            "✗ %s skip [duplicate_order_guard] OCC %s has %d contracts at Alpaca but in-memory expected %d. "
-                                            "Aborting buy to prevent double-purchase. Investigate stale state or parallel agent.",
-                                            symbol, new_occ, existing_qty, expected_qty)
-                                        # Mark the journaled trigger as discarded so restart-recovery skips it
-                                        trigger["discard"] = True
-                                        trigger["discard_reason"] = "duplicate_order_guard"
-                                        journal_file.write_text(json.dumps(triggers, indent=2, default=str))
-                                        # Roll back the cooldown anchor and daily counters so a clean retry can fire next bar.
-                                        trades_today -= 1
-                                        if trigger.get("is_flip", False):
-                                            flip_trades_today -= 1
-                                        last_trigger = None  # next trigger isn't blocked by this skip
-                                    else:
-                                        order = trader.place_options_trade(
-                                            occ_symbol=new_occ,
-                                            direction=trigger["direction"],
-                                            qty=num_contracts,
-                                            # No limit_price = market order (0DTE needs instant fill)
-                                            time_in_force="day",
-                                        )
-                                        trigger["order_id"] = order["order_id"]
-                                        trigger["occ_symbol"] = new_occ
-                                        trigger["option_strike"] = contract["strike"]
-                                        trigger["option_delta"] = contract["delta"]
-                                        trigger["option_premium"] = contract["mid"]
-                                        trigger["trade_mode"] = f"{dte}dte_option"
-                                        trigger["num_contracts"] = num_contracts
-
-                                        # Synthetic position_id: OCC + entry timestamp. Multiple cluster
-                                        # entries at the same OCC each get their own id.
-                                        entry_ts_now = get_et_now()
-                                        pos_id = f"{new_occ}#{entry_ts_now.isoformat()}"
-
-                                        # Track for stop/target monitoring (underlying-based)
-                                        open_options[pos_id] = {
-                                            "occ_symbol": new_occ,
-                                            "num_contracts": num_contracts,
-                                            "entry_premium": contract["mid"],
-                                            "stop_price": trigger["stop"],
-                                            "target_price": trigger["target"],
-                                            "original_target_dist": abs(trigger["target"] - trigger["entry"]),
-                                            "direction": trigger["direction"],
-                                            "delta": contract["delta"],
-                                            "entry_time": entry_ts_now,
-                                            "entry_underlying": trigger.get("price", trigger["entry"]),
-                                            "max_favorable_excursion": 0.0,  # MFE tracking for stagnation skip
-                                        }
-                                        open_directions[pos_id] = trigger["direction"]
-                                        logger.info("  📝 %dDTE %s order: %s strike=$%.2f Δ=%.2f premium=$%.2f × %d contracts (pos_id=%s)",
-                                                    dte, opt_type.upper(), new_occ,
-                                                    contract["strike"], contract["delta"], contract["mid"],
-                                                    num_contracts, pos_id[-12:])
+                            # Options-only (policy 2026-07-18): this agent trades {dte}DTE options
+                            # exclusively. There is no shares path — a missing chain skips the trade
+                            # rather than buying the underlying. Equity positions carry unbounded
+                            # overnight risk and don't match replay/backtest semantics.
+                            # {dte}DTE options: fetch chain, pick contract, buy-to-open
+                            from src.utils.alpaca_data import get_dte_chain
+                            opt_type = "call" if "call" in trigger["direction"] else "put"
+                            contract = get_dte_chain(
+                                symbol, dte=dte, option_type=opt_type,
+                                target_delta=target_delta,
+                                spot_price=trigger.get("price"),
+                            )
+                            if contract:
+                                # Cascade-tier contract sizing
+                                explosion = trigger.get("explosion", 4)
+                                if explosion >= 8:
+                                    num_contracts = contracts * cascade_size_high
+                                elif explosion >= 6:
+                                    num_contracts = contracts * cascade_size_mid
                                 else:
-                                    # Chain unavailable for the requested DTE.
-                                    # 0DTE: legacy shares-fallback (don't change live 0DTE behavior).
-                                    # >0DTE: skip trade entirely (user policy 2026-06-18 — avoid mixing
-                                    # 0DTE-priced fills into a 1DTE-tagged strategy, and avoid colliding
-                                    # with the 0DTE agent if both are running).
-                                    if dte > 0:
-                                        logger.warning("  ⚠️ No %dDTE contract found — skipping trade (skip-on-no-chain policy)",
-                                                       dte)
-                                        trigger["discard"] = True
-                                        trigger["discard_reason"] = f"no_{dte}dte_chain"
-                                        # Roll back daily counters so a clean retry can fire next bar.
-                                        trades_today -= 1
-                                        if trigger.get("is_flip", False):
-                                            flip_trades_today -= 1
-                                        last_trigger = None
-                                    else:
-                                        logger.warning("  ⚠️ No 0DTE contract found — falling back to shares")
-                                        order = trader.place_sweet_spot_trade(
-                                            symbol=symbol,
-                                            direction=trigger["direction"],
-                                            qty=qty,
-                                            entry=None,
-                                            stop=trigger["stop"],
-                                            target=trigger["target"],
-                                            time_in_force="day",
-                                        )
-                                        trigger["order_id"] = order["order_id"]
-                                        trigger["trade_mode"] = "shares_fallback"
-                                        # Shares fallback: position_id = underlying symbol (one shares position per symbol).
-                                        open_directions[symbol] = trigger["direction"]
+                                    num_contracts = contracts * cascade_size_low
+
+                                # ── Duplicate-order guard ──
+                                # Before placing, verify Alpaca's reported qty at this OCC matches
+                                # the SUM of qty across our open positions at this OCC. If Alpaca
+                                # has more than expected, an out-of-band buy occurred (restart race
+                                # or parallel agent). Abort to prevent double-buying.
+                                new_occ = contract["occ_symbol"]
+                                expected_qty = sum(
+                                    info.get("num_contracts", 0)
+                                    for pid, info in open_options.items()
+                                    if info.get("occ_symbol") == new_occ
+                                )
+                                try:
+                                    live_positions_now = {p.symbol: p for p in trader.client.get_all_positions()}
+                                    existing = live_positions_now.get(new_occ)
+                                    existing_qty = int(float(existing.qty)) if existing else 0
+                                except Exception as e:
+                                    logger.warning("Duplicate-order guard: Alpaca position fetch failed: %s — proceeding with placement", e)
+                                    existing_qty = expected_qty  # assume in sync, allow placement
+                                if existing_qty > expected_qty:
+                                    logger.warning(
+                                        "✗ %s skip [duplicate_order_guard] OCC %s has %d contracts at Alpaca but in-memory expected %d. "
+                                        "Aborting buy to prevent double-purchase. Investigate stale state or parallel agent.",
+                                        symbol, new_occ, existing_qty, expected_qty)
+                                    # Mark the journaled trigger as discarded so restart-recovery skips it
+                                    trigger["discard"] = True
+                                    trigger["discard_reason"] = "duplicate_order_guard"
+                                    journal_file.write_text(json.dumps(triggers, indent=2, default=str))
+                                    # Roll back the cooldown anchor and daily counters so a clean retry can fire next bar.
+                                    trades_today -= 1
+                                    if trigger.get("is_flip", False):
+                                        flip_trades_today -= 1
+                                    last_trigger = None  # next trigger isn't blocked by this skip
+                                else:
+                                    order = trader.place_options_trade(
+                                        occ_symbol=new_occ,
+                                        direction=trigger["direction"],
+                                        qty=num_contracts,
+                                        # No limit_price = market order (0DTE needs instant fill)
+                                        time_in_force="day",
+                                    )
+                                    trigger["order_id"] = order["order_id"]
+                                    trigger["occ_symbol"] = new_occ
+                                    trigger["option_strike"] = contract["strike"]
+                                    trigger["option_delta"] = contract["delta"]
+                                    trigger["option_premium"] = contract["mid"]
+                                    trigger["trade_mode"] = f"{dte}dte_option"
+                                    trigger["num_contracts"] = num_contracts
+
+                                    # Synthetic position_id: OCC + entry timestamp. Multiple cluster
+                                    # entries at the same OCC each get their own id.
+                                    entry_ts_now = get_et_now()
+                                    pos_id = f"{new_occ}#{entry_ts_now.isoformat()}"
+
+                                    # Track for stop/target monitoring (underlying-based)
+                                    open_options[pos_id] = {
+                                        "occ_symbol": new_occ,
+                                        "num_contracts": num_contracts,
+                                        "entry_premium": contract["mid"],
+                                        "stop_price": trigger["stop"],
+                                        "target_price": trigger["target"],
+                                        "original_target_dist": abs(trigger["target"] - trigger["entry"]),
+                                        "direction": trigger["direction"],
+                                        "delta": contract["delta"],
+                                        "entry_time": entry_ts_now,
+                                        "entry_underlying": trigger.get("price", trigger["entry"]),
+                                        "max_favorable_excursion": 0.0,  # MFE tracking for stagnation skip
+                                    }
+                                    open_directions[pos_id] = trigger["direction"]
+                                    logger.info("  📝 %dDTE %s order: %s strike=$%.2f Δ=%.2f premium=$%.2f × %d contracts (pos_id=%s)",
+                                                dte, opt_type.upper(), new_occ,
+                                                contract["strike"], contract["delta"], contract["mid"],
+                                                num_contracts, pos_id[-12:])
+                            else:
+                                # Chain unavailable for the requested DTE — skip the trade entirely
+                                # for ALL DTEs (user policy 2026-07-18). Never fall back to buying
+                                # shares: a missing options chain must not silently turn an options
+                                # strategy into an equity position (shares carry unbounded overnight
+                                # risk and don't match replay/backtest semantics).
+                                logger.warning("  ⚠️ No %dDTE contract found — skipping trade (options-only policy, no shares fallback)",
+                                               dte)
+                                trigger["discard"] = True
+                                trigger["discard_reason"] = f"no_{dte}dte_chain"
+                                # Roll back daily counters so a clean retry can fire next bar.
+                                trades_today -= 1
+                                if trigger.get("is_flip", False):
+                                    flip_trades_today -= 1
+                                last_trigger = None
 
                             journal_file.write_text(json.dumps(triggers, indent=2, default=str))
                             logger.info("  📝 Order placed: %s", trigger.get("order_id", "?")[:12])
@@ -1696,8 +1668,6 @@ def main():
                         help="RSI threshold for Gainz BUY signal (default: 30)")
     parser.add_argument("--gainz-min-profit-r", type=float, default=0.3,
                         help="Min profit as fraction of R to allow Gainz exit (golden: 0.3, 0=disabled)")
-    parser.add_argument("--shares", action="store_true",
-                        help="Trade shares instead of 0DTE options (default: options)")
     parser.add_argument("--contracts", type=int, default=1,
                         help="Number of option contracts per trade (default: 1)")
     parser.add_argument("--target-delta", type=float, default=0.50,
@@ -1750,8 +1720,9 @@ def main():
                         help="Days-to-expiry of the option contract bought at entry. "
                              "0 (default) = same-day expiry, legacy behavior. 1 = next-business-day "
                              "expiry (validated by Phase 2 replay 2026-06-16: SPY PF 1.90→2.28, "
-                             "CALL PF 1.34→1.73). When >0, journal filename is suffixed _{dte}dte; "
-                             "missing chain triggers skip-trade instead of shares fallback.")
+                             "CALL PF 1.34→1.73). When >0, journal filename is suffixed _{dte}dte. "
+                             "A missing chain (any DTE) triggers skip-trade; the agent never falls back "
+                             "to buying shares (options-only policy 2026-07-18).")
     args = parser.parse_args()
 
     paper_trade = not args.no_paper
@@ -1789,7 +1760,6 @@ def main():
                         gainz_rsi_overbought=args.gainz_rsi_overbought,
                         gainz_rsi_oversold=args.gainz_rsi_oversold,
                         gainz_min_profit_r=args.gainz_min_profit_r,
-                        trade_shares=args.shares,
                         contracts=args.contracts,
                         target_delta=args.target_delta,
                         cascade_size_low=args.cascade_size_low,
@@ -1829,7 +1799,6 @@ def main():
                 gainz_rsi_overbought=args.gainz_rsi_overbought,
                 gainz_rsi_oversold=args.gainz_rsi_oversold,
                 gainz_min_profit_r=args.gainz_min_profit_r,
-                trade_shares=args.shares,
                 contracts=args.contracts,
                 target_delta=args.target_delta,
                 cascade_size_low=args.cascade_size_low,

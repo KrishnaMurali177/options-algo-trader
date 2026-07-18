@@ -115,6 +115,7 @@ chmod +x options_agent/scripts/*.linux.sh
   echo "*/30 6-13 * * 1-5 $P/ensure_agents.linux.sh"
   echo "*/10 6-13 * * 1-5 $P/check_agents_health.linux.sh"
   echo "12 7 * * 1-5 $P/check_missed_open.linux.sh"
+  echo "*/15 7-12 * * 1-5 $P/check_missed_open.linux.sh --mode stale"
   echo "12 13 * * 1-5 $P/reconcile_shadow.linux.sh"
 ) | crontab -
 
@@ -125,10 +126,13 @@ crontab -l | grep linux   # verify
 
 `check_missed_open.linux.sh` runs once at **7:12 local (10:12 ET)** and alerts
 Discord if any agent (paper/live/shadow) failed to first-scan by ~10:07 ET — i.e.
-it was down/asleep at the open and silently skipped the morning. This is distinct
-from `check_agents_health` (which only checks the container is *up*, not that it
-actually *scanned*). See `docs/2026-07-16_new_golden_validation_and_parity.md` §3b
-for the incident that motivated it (shadow agents first-scanned 10:58 on 07-15).
+it was down/asleep at the open and silently skipped the morning. The
+`--mode stale` line runs it **every 15 min through the session** and alerts if an
+agent *stopped* scanning mid-day (last scan > 15 min old) — catching a mid-session
+stall, e.g. the 07-17 Ubuntu drop at 11:00 ET that made a live trade un-doubled.
+Both are distinct from `check_agents_health` (which only checks the container is
+*up*, not that it actually *scanned*). See
+`docs/2026-07-16_new_golden_validation_and_parity.md` §3b for the motivating incident.
 
 The daily/weekly Discord reports run via `docker-compose ... send_daily_report.py`
 — copy those two lines from the Mac's crontab if you want them here too; they're

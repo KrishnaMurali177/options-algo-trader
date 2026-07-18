@@ -200,3 +200,6 @@
 - [2026-07-17] Created: options_agent/scripts/report_broker_pnl.py — separate routine that reads actual FILLED orders from Alpaca and posts realized CASH P&L to Discord (EOD/EOW), per-underlying + total, cross-checked against account equity delta (day). Authoritative money view vs the R-multiple exit posts. Account selected by env (.env=paper, .env.live=real money).
 - [2026-07-17] Modified: options_agent/scripts/check_missed_open.py — fix Discord/log newlines (were literal \n).
 - [2026-07-17] Modified: options_agent/scripts/report_broker_pnl.py, check_missed_open.py — add User-Agent header to Discord POST (default urllib UA gets 403 from Cloudflare). Weekly real-money cash post verified live.
+- [2026-07-17] Modified: options_agent/scripts/check_missed_open.py — added --mode stale: alerts if an agent STOPPED scanning mid-session (latest verdict > --max-staleness min old, checked 10:10-15:55 ET). Catches mid-day stalls like the 07-17 Ubuntu drop at 11:00 ET (which made the SPY 745P un-doubled). Separate dedup state per mode. Verified fires on simulated stall.
+- [2026-07-17] Modified: options_agent/scripts/check_missed_open.sh, check_missed_open.linux.sh — pass "$@" through so the same wrapper serves both --mode open and --mode stale.
+- [2026-07-17] Modified: options_agent/docs/UBUNTU_SETUP.md — added the stale-check cron (*/15 during session) + note.

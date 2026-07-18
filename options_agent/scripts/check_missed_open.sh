@@ -24,4 +24,4 @@ fi
 "$DC" --profile live run --rm --no-deps \
     -v "$PROJ_DIR/options_agent/sweet_spot_journal_live:/app/sweet_spot_journal_live" \
     -v "$PROJ_DIR/options_agent/sweet_spot_journal_shadow:/app/sweet_spot_journal_shadow" \
-    agent-spy python scripts/check_missed_open.py >> "$LOG" 2>&1
+    agent-spy python scripts/check_missed_open.py "$@" >> "$LOG" 2>&1

@@ -137,3 +137,30 @@ Updated reads after 3 runs across ~1 month of window drift:
 - **XLF** unchanged: validates but persistently too thin to lean on.
 - Bottom line: if extending live, **IWM and TLT** are the two worth a forward paper run; SLV
   stays rejected; nothing here changes live config.
+
+## ⚠️ CORRECTION — 2026-07-18 (results do NOT survive main's goldens)
+**The IWM/TLT numbers above were produced on this branch (`feature/mag7-single-name-agents`)
+with its OLD golden defaults. They do not hold under `origin/main`'s newer, more-robust
+goldens.** Clean A/B, real-pricing-only, 365d, `origin/main` @ cd21d8e vs this branch, each
+run as-is (whole-config comparison — code + ~6 golden params + data layer all differ; NOT a
+single-cause attribution):
+
+| Symbol | This branch (old goldens) | origin/main (new goldens) |
+|--------|---------------------------|---------------------------|
+| IWM | Sharpe **+2.11** (PF 1.50, WR 54%) | Sharpe **−1.11** (PF 0.81, WR 43%) |
+| TLT | Sharpe **+1.72** (PF 1.75, WR 50%) | Sharpe **−0.18** (PF 0.95, WR 40%) |
+
+Key points:
+- **No per-symbol tuning was ever applied to IWM/TLT** — they run generic SPY/QQQ-derived
+  goldens (same flags as SPY). So this is not IWM/TLT overfitting; it's that the goldens
+  themselves were tuned on SPY/QQQ/AAPL and don't transfer to these ETFs.
+- Main's new goldens are the ones validated as MORE robust (on the symbols they were tuned
+  for). Under those, **IWM and TLT have no edge (negative Sharpe).**
+- An "edge" that only appears under the older, less-robust, non-transferable parameter set —
+  and flips sign when SPY-tuned params change — is **not** a demonstrated edge.
+- **Revised verdict: IWM/TLT are UNPROVEN/negative, not "robust candidates."** The 2.11/1.72
+  figures earlier in this doc should not be trusted in isolation. The running IWM/TLT paper
+  agents (old-golden live code) are a live-data probe only, with a low bar to pull.
+- Earlier drafts of this doc over-attributed the branch-vs-main gap to a "look-ahead bug";
+  that attribution was withdrawn — the branch already fixed its known look-ahead (2ce21d4)
+  and its parity investigation is clean. The gap is a whole-config difference, not one cause.

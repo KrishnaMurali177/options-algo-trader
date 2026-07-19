@@ -207,3 +207,4 @@
 - [2026-07-17] Modified: options_agent/docs/UBUNTU_SETUP.md — stale cron window 7-10 PT (=10-14 ET entry window).
 - [2026-07-17] Modified: options_agent/docs/UBUNTU_SETUP.md — added bind-mount ownership fix to §6: Docker creates logs/ (and other mounted dirs) root-owned, which silently aborts the user-run cron wrappers (set -euo pipefail on the log-write) incl. ensure_agents; chown -R $USER:$USER before installing cron. Diagnosed live on the Ubuntu box.
 - [2026-07-18] Modified: options_agent/docs/2026-06-15_experimental_etf_universe_analysis.md — Added recheck #2 (month-shifted window): SLV overfit 3x confirmed, IWM softened, TLT strengthened into 2nd candidate
+- [2026-07-18] Modified: docker-compose.yml — Added experimental agent-iwm and agent-tlt paper agents (golden defaults; ETF experiment candidates that held out-of-sample)

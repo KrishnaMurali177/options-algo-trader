@@ -156,7 +156,7 @@ services:
   agent-live-spy:
     image: options-algo-trader
     container_name: options-agent-live-spy
-    command: python scripts/run_sweet_spot_agent.py --daemon --symbol SPY --verbose-rejects --contracts 1 --cascade-size-low 1 --cascade-size-mid 1 --cascade-size-high 1 --max-contracts 1
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol SPY --verbose-rejects --contracts 2 --cascade-size-low 1 --cascade-size-mid 1 --cascade-size-high 1 --max-contracts 2
     env_file:
       - options_agent/.env          # shared config (Discord, etc.) + paper keys
       - options_agent/.env.live      # LIVE keys + ALPACA_PAPER=false (overrides the above)
@@ -179,7 +179,7 @@ services:
   agent-live-qqq:
     image: options-algo-trader
     container_name: options-agent-live-qqq
-    command: python scripts/run_sweet_spot_agent.py --daemon --symbol QQQ --verbose-rejects --contracts 1 --cascade-size-low 1 --cascade-size-mid 1 --cascade-size-high 1 --max-contracts 1
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol QQQ --verbose-rejects --contracts 2 --cascade-size-low 1 --cascade-size-mid 1 --cascade-size-high 1 --max-contracts 2
     env_file:
       - options_agent/.env
       - options_agent/.env.live

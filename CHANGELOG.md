@@ -220,3 +220,4 @@
 - [2026-07-20] Modified: options_agent/scripts/report_broker_pnl.py — added --env-file (load alternate account creds, e.g. .env.shadow) so one container can report a different account than its own env.
 - [2026-07-20] Created: options_agent/scripts/report_broker_pnl_shadow.linux.sh — records the SHADOW paper account to a separate perf/performance_shadow.db + shadow_daily_pnl.csv (account-truth, parallel to real-money DB).
 - [2026-07-20] Modified: options_agent/docs/2026-07-20_one_host_realmoney_plan.md — documented --backfill (seed history) + separate shadow performance DB.
+- [2026-07-20] Modified: options_agent/scripts/report_broker_pnl.py — added `fees` column (fees & charges = total_realized gross − today_pnl net equity change; account-truth). Recorded in DB/CSV (backfill + daily), shown in the daily Discord post. Requires DB re-backfill to add the column.

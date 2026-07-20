@@ -131,6 +131,9 @@ def main() -> None:
             acct = trader.get_today_pnl()
             lines.append(f"Account Δ today: {'+' if acct['today_pnl']>=0 else ''}"
                          f"${acct['today_pnl']:,.0f}  (equity ${acct['equity']:,.0f})")
+            fee = _fees(total, acct.get("today_pnl"))
+            if fee is not None:
+                lines.append(f"Fees & charges: ${fee:,.2f}")
         except Exception:
             pass
 
@@ -162,6 +165,7 @@ def main() -> None:
             "buying_power": acct.get("buying_power"),
             "today_pnl": acct.get("today_pnl"),
             "total_realized": round(total, 2),
+            "fees": _fees(total, acct.get("today_pnl")),
             "per_symbol": json.dumps({k: round(v, 2) for k, v in sorted(by_und.items())}),
             "n_fills": entries,
             "winners": winners,
@@ -183,8 +187,19 @@ def _account_no(trader) -> str:
         return ""
 
 
+# total_realized = gross realized cash from fills; today_pnl = net equity change
+# (already net of fees); fees = total_realized - today_pnl = the fees & charges.
 _COLS = ["date", "account", "paper", "equity", "buying_power", "today_pnl",
-         "total_realized", "per_symbol", "n_fills", "winners", "losers", "recorded_at"]
+         "total_realized", "fees", "per_symbol", "n_fills", "winners", "losers", "recorded_at"]
+_REAL = ("equity", "buying_power", "today_pnl", "total_realized", "fees")
+
+
+def _fees(total_realized, today_pnl):
+    """Fees & charges = gross fills − net equity change (account-truth). None if the
+    net (today_pnl) isn't known yet (e.g. today, before the close settles)."""
+    if today_pnl is None:
+        return None
+    return round(round(total_realized, 2) - round(today_pnl, 2), 2)
 
 
 def _persist_sqlite(path: str, row: dict) -> None:
@@ -194,7 +209,7 @@ def _persist_sqlite(path: str, row: dict) -> None:
     try:
         con.execute(
             "CREATE TABLE IF NOT EXISTS daily_pnl ("
-            + ", ".join(f"{c} {'INTEGER' if c in ('paper','n_fills','winners','losers') else 'REAL' if c in ('equity','buying_power','today_pnl','total_realized') else 'TEXT'}" for c in _COLS)
+            + ", ".join(f"{c} {'INTEGER' if c in ('paper','n_fills','winners','losers') else 'REAL' if c in _REAL else 'TEXT'}" for c in _COLS)
             + ", PRIMARY KEY (date, account))")
         placeholders = ", ".join("?" for _ in _COLS)
         updates = ", ".join(f"{c}=excluded.{c}" for c in _COLS if c not in ("date", "account"))
@@ -269,11 +284,14 @@ def _backfill(trader, db: str | None, csv_path: str | None, limit: int) -> None:
         # portfolio-history year is mostly zero-equity days before funding.
         if not occ and not (eq and eq > 0):
             continue
+        total_d = round(sum(occ.values()), 2)
+        tp_d = round(pl, 2) if pl is not None else None
         row = {
             "date": d, "account": acct_no, "paper": paper,
             "equity": eq, "buying_power": None,
-            "today_pnl": round(pl, 2) if pl is not None else None,
-            "total_realized": round(sum(occ.values()), 2),
+            "today_pnl": tp_d,
+            "total_realized": total_d,
+            "fees": _fees(total_d, tp_d),
             "per_symbol": json.dumps({k: round(v, 2) for k, v in sorted(und.items())}),
             "n_fills": days.get(d, {}).get("fills", 0),
             "winners": sum(1 for v in occ.values() if v > 0),

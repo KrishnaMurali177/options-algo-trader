@@ -258,6 +258,10 @@ def _backfill(trader, db: str | None, csv_path: str | None, limit: int) -> None:
         occ = days.get(d, {}).get("occ", {})
         und = days.get(d, {}).get("und", {})
         eq, pl = equity_by.get(d, (None, None))
+        # Skip pre-account / empty days (no trades AND no real equity) — the
+        # portfolio-history year is mostly zero-equity days before funding.
+        if not occ and not (eq and eq > 0):
+            continue
         row = {
             "date": d, "account": acct_no, "paper": paper,
             "equity": eq, "buying_power": None,

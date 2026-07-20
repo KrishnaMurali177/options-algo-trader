@@ -96,6 +96,26 @@ Columns: date, account, paper, equity, buying_power, today_pnl, total_realized,
 per_symbol (JSON), n_fills, winners, losers, recorded_at. This is the authoritative
 account-truth history for future analysis, independent of the trade journals.
 
+**Seed history (one-shot):** `--backfill` imports every historical day — per-day
+realized cash from filled orders + daily equity/P&L from Alpaca portfolio history —
+idempotent on `(date, account)`, so it's safe to re-run:
+```bash
+docker-compose --profile realmoney run --rm --no-deps \
+  -v "$PWD/options_agent/perf:/app/perf" agent-live-spy \
+  python scripts/report_broker_pnl.py --backfill \
+  --db /app/perf/performance.db --csv /app/perf/daily_pnl.csv
+```
+(Pre-funding zero-equity days are skipped.)
+
+**Shadow account tracked separately.** The shadow (NEW-golden, 2nd paper account)
+is recorded to its own `perf/performance_shadow.db` + `shadow_daily_pnl.csv` via
+`report_broker_pnl_shadow.linux.sh` (runs `agent-spy` with `--env-file .env.shadow`,
+since the shadow's own agent mounts main's code without this script). Same schema —
+so the real-money and shadow histories are directly comparable. Cron:
+```
+25 13 * * 1-5  report_broker_pnl_shadow.linux.sh --period day
+```
+
 ## Verify (next session)
 
 - One order per trigger on account 251263287 (no same-second duplicate).

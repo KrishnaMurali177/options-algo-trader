@@ -69,7 +69,14 @@ def main() -> None:
     ap.add_argument("--backfill", action="store_true",
                     help="One-shot: convert ALL historical days (orders + portfolio equity) "
                          "into --db/--csv, then exit. Ignores --period/Discord.")
+    ap.add_argument("--env-file", default=None,
+                    help="Load these account creds first (e.g. /app/.env.shadow) — lets one "
+                         "container report a different account (shadow) than its own env.")
     args = ap.parse_args()
+
+    if args.env_file:
+        from dotenv import load_dotenv
+        load_dotenv(args.env_file, override=True)
 
     from src.utils.alpaca_paper import AlpacaPaperTrader
     trader = AlpacaPaperTrader()

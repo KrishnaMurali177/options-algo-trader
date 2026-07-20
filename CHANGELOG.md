@@ -209,3 +209,4 @@
 - [2026-07-18] Modified: options_agent/docs/2026-06-15_experimental_etf_universe_analysis.md — Added recheck #2 (month-shifted window): SLV overfit 3x confirmed, IWM softened, TLT strengthened into 2nd candidate
 - [2026-07-18] Modified: docker-compose.yml — Added experimental agent-iwm and agent-tlt paper agents (golden defaults; ETF experiment candidates that held out-of-sample)
 - [2026-07-18] Modified: options_agent/docs/2026-06-15_experimental_etf_universe_analysis.md — Correction: IWM/TLT do NOT survive origin/main new goldens (+2.11→−1.11, +1.72→−0.18); revised to UNPROVEN/negative; withdrew look-ahead attribution
+- [2026-07-19] Created: options_agent/scripts/analyze_symbol_fills.py — Ad-hoc per-symbol Alpaca fill stats (filled vs unfilled, mean/max/min return)

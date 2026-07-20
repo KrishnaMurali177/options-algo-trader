@@ -210,3 +210,5 @@
 - [2026-07-18] Modified: docker-compose.yml — Added experimental agent-iwm and agent-tlt paper agents (golden defaults; ETF experiment candidates that held out-of-sample)
 - [2026-07-18] Modified: options_agent/docs/2026-06-15_experimental_etf_universe_analysis.md — Correction: IWM/TLT do NOT survive origin/main new goldens (+2.11→−1.11, +1.72→−0.18); revised to UNPROVEN/negative; withdrew look-ahead attribution
 - [2026-07-19] Created: options_agent/scripts/analyze_symbol_fills.py — Ad-hoc per-symbol Alpaca fill stats (filled vs unfilled, mean/max/min return)
+- [2026-07-20] Modified: options_agent/docs/2026-07-16_new_golden_validation_and_parity.md — added §5: SPY NEW-vs-OLD param-isolated 365d, stacking matrix (stacking ≈ half of P&L; realistic no-stack NEW is +$5,963 not $12,934), cheap-3 finding (+39% over OLD, no porting, beats full-NEW on P&L), decision HOLD (small $ at 1-contract real money vs config-fragmentation risk).
+- [2026-07-20] Created: options_agent/docs/2026-07-20_one_host_realmoney_plan.md — plan to consolidate real money to one host (Ubuntu): removes doubling, max_stops asymmetry, and config sprawl; cutover/rollback steps.

@@ -175,3 +175,48 @@ an uptime/health guard so shadow (and live) don't silently miss mornings.
    (QQQ's 46% / SPY's worst days).
 
 *All analysis was read-only (replays + journal reads). No repo or running-agent changes.*
+
+---
+
+## 5. Addendum (2026-07-20) — SPY NEW-vs-OLD, param-isolated, and the stacking split
+
+Follow-up to decide whether to switch **SPY** real-money from OLD to NEW golden. All runs:
+same engine (`main`/`.worktree-main` replay), 365d, real options, cascade-sized. NEW = defaults;
+OLD = the 5 reverting flags (`--cluster-penalty --rsi-extreme-penalty 0 --tiered-stag-early-bar 8
+--allow-failed-bounce --vwap-slope-override-t 0.7 -k 3 -cmax 0.65`). Stacking toggled with
+`--block-overlap-same-dir` (which mirrors the live feature-branch's `already_open_same_dir` guard).
+
+### The stacking matrix
+| | Stacking ON (`--multi`-style overlap) | Stacking OFF (feature-branch reality) |
+|---|---|---|
+| **NEW** | +$12,934 · PF 1.85 · Sharpe 3.21 · DD 11.1% | +$5,963 · PF 1.51 · Sharpe 2.35 · DD 15.1% |
+| **OLD** | +$11,717 · PF 1.50 · Sharpe 2.23 · DD 17.2% | +$4,943 · PF 1.29 · Sharpe 1.56 · DD 21.5% |
+
+- **Concurrent stacking is ~half the P&L**: NEW −54% (+$12,934→+$5,963), OLD −58% when blocked.
+- **`block_overlap_same_dir` defaults to OFF in the replay** — so any run without the flag has
+  stacking ON. The realistic live number (feature-branch blocks overlap) is the **Stacking-OFF**
+  column: NEW **+$5,963**, not $12,934. (Corrects an earlier mislabel.)
+
+### The "cheap-3" — what's achievable without porting
+The feature-branch agent bakes only 3 of the 5 params (all at OLD): `cluster_penalty=True`,
+`vwap_slope_override=0.7/3/0.65`, tiered-stag hardcoded bar 8. The other two (**rsi-extreme**,
+**failed-bounce**) are **not implemented** here — they'd need porting from main. So "cheap-3" =
+the 3 changeable ones flipped to NEW, the 2 un-portable ones left at OLD:
+
+| Config (365d, no-stack) | P&L | vs OLD | PF | Sharpe | DD |
+|---|---|---|---|---|---|
+| OLD (baseline) | +$4,943 | — | 1.29 | 1.56 | 21.5% |
+| **Cheap-3** (tiered-stag 8→6 + cluster off + vwap off) | **+$6,867** | **+$1,924 (+39%)** | 1.50 | 2.04 | 17.2% |
+| Full NEW (all 5) | +$5,963 | +$1,020 (+21%) | 1.51 | 2.35 | 15.1% |
+
+- **Cheap-3 gives the *most* P&L** (+39% over OLD) with **no porting**. The 2 expensive ports
+  (rsi-extreme + failed-bounce) actually **trim ~$900 P&L to buy risk** (DD 17.2%→15.1%,
+  Sharpe 2.04→2.35) — they're risk filters, not profit drivers, in the no-stack world.
+
+### Decision: HOLD (do not implement now)
+The gain is real but small in context: cascade-sized +$1,924/yr → at real-money **1-contract**
+sizing ≈ **+$500–700/yr on SPY**, on a ~$2.9k account. Against that, SPY-only param flags on the
+already-divergent feature branch — layered on 2-host parallel + shadow + the `max_stops`
+asymmetry — add a **standing misconfiguration hazard on the real-money path**. Not worth it.
+Leave SPY on OLD (already profitable). The cheap-3 is **available if/when the config is
+consolidated** — see `2026-07-20_one_host_realmoney_plan.md`, the higher-leverage simplification.

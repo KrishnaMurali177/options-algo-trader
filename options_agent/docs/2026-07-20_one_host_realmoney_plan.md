@@ -61,6 +61,41 @@ real-money stakes. (Paper also doubles across hosts, but that's cosmetic; see op
 5. *(optional)* **Also single-host the paper agents** for a clean paper A/B — pick one host to
    run the `live` (paper) profile; stop it on the other. Lower priority (paper $ is not real).
 
+## Cron migration (Mac → Ubuntu)
+
+Once real money is on Ubuntu, the Mac's paper/live crons must be cleaned up or they
+**undo the cutover and false-alarm**:
+
+- **Mac — remove** (paper agents are stopped; `ensure_agents` would restart them every
+  30 min, `check_agents_health` would alert them "down", the report crons read a now-stale
+  live journal):
+  ```bash
+  crontab -l | grep -vE 'ensure_agents.sh|check_agents_health.sh|send_daily_report|send_weekly_report' | crontab -
+  ```
+  (Mac real-money stays down on its own — `ensure_agents` only manages the paper profile.)
+- **Ubuntu — the real-money reports now live here.** Installed:
+  ```
+  20 13 * * 1-5  report_broker_pnl.linux.sh --period day    # EOD cash → Discord + DB/CSV
+  5  14 * * 5    report_broker_pnl.linux.sh --period week   # EOW cash → Discord
+  ```
+  These post the real cash P&L **and** persist a durable daily row (see below).
+
+## Daily performance history (durable, not just Discord)
+
+`report_broker_pnl.py --db/--csv` records each day's real-money row — keyed on
+`(date, account)`, upserted so re-runs don't duplicate — to:
+
+- **`options_agent/perf/performance.db`** (SQLite, queryable):
+  ```bash
+  sqlite3 options_agent/perf/performance.db \
+    "SELECT date, total_realized, equity, n_fills, winners, losers FROM daily_pnl ORDER BY date"
+  ```
+- **`options_agent/perf/daily_pnl.csv`** (human/Excel/grep mirror).
+
+Columns: date, account, paper, equity, buying_power, today_pnl, total_realized,
+per_symbol (JSON), n_fills, winners, losers, recorded_at. This is the authoritative
+account-truth history for future analysis, independent of the trade journals.
+
 ## Verify (next session)
 
 - One order per trigger on account 251263287 (no same-second duplicate).

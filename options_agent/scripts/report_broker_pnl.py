@@ -64,12 +64,19 @@ def main() -> None:
                     help="Account tag for the post title (e.g. '🔴 ALPACA · REAL-MONEY')")
     ap.add_argument("--webhook", default=os.environ.get("DISCORD_WEBHOOK_URL", ""))
     ap.add_argument("--limit", type=int, default=500, help="Max recent orders to scan")
-    ap.add_argument("--db", default=None, help="SQLite file to upsert the daily row into (day only)")
-    ap.add_argument("--csv", default=None, help="CSV file to mirror the daily row into (day only)")
+    ap.add_argument("--db", default=None, help="SQLite file to upsert the daily row into")
+    ap.add_argument("--csv", default=None, help="CSV file to mirror the daily row into")
+    ap.add_argument("--backfill", action="store_true",
+                    help="One-shot: convert ALL historical days (orders + portfolio equity) "
+                         "into --db/--csv, then exit. Ignores --period/Discord.")
     args = ap.parse_args()
 
     from src.utils.alpaca_paper import AlpacaPaperTrader
     trader = AlpacaPaperTrader()
+
+    if args.backfill:
+        _backfill(trader, args.db, args.csv, args.limit)
+        return
 
     now = _et_now()
     today = now.strftime("%Y-%m-%d")
@@ -203,12 +210,72 @@ def _persist_csv(path: str, row: dict) -> None:
         with p.open() as f:
             existing = [r for r in csv.DictReader(f)
                         if not (r.get("date") == row["date"] and r.get("account") == str(row["account"]))]
+    rows = existing + [row]
+    rows.sort(key=lambda r: (str(r.get("date")), str(r.get("account"))))
     with p.open("w", newline="") as f:
         w = csv.DictWriter(f, fieldnames=_COLS)
         w.writeheader()
-        for r in existing:
+        for r in rows:
             w.writerow(r)
-        w.writerow(row)
+
+
+def _backfill(trader, db: str | None, csv_path: str | None, limit: int) -> None:
+    """One-shot history import: per-day realized cash (from orders) + daily equity/
+    P&L (from Alpaca portfolio history), upserted into the DB/CSV. Idempotent on
+    (date, account) — safe to re-run."""
+    import datetime as _dt
+    from collections import defaultdict
+
+    orders = [o for o in trader.get_orders("all", limit) if o.get("filled_price") is not None]
+    days: dict[str, dict] = defaultdict(lambda: {"occ": defaultdict(float), "und": defaultdict(float), "fills": 0})
+    for o in orders:
+        d = (o.get("submitted_at") or "")[:10]
+        if not d:
+            continue
+        sym = o["symbol"]
+        is_opt = len(sym) > 6
+        mult = 100 if is_opt else 1
+        signed = (o["filled_price"] if o["side"] == "sell" else -o["filled_price"]) * int(o["qty"]) * mult
+        days[d]["occ"][sym] += signed
+        days[d]["und"][sym[:-15] if is_opt and len(sym) > 15 else sym] += signed
+        if o["side"] == "buy":
+            days[d]["fills"] += 1
+
+    equity_by: dict[str, tuple] = {}
+    try:
+        from alpaca.trading.requests import GetPortfolioHistoryRequest
+        ph = trader.client.get_portfolio_history(GetPortfolioHistoryRequest(period="1A", timeframe="1D"))
+        for ts, eq, pl in zip(ph.timestamp, ph.equity, ph.profit_loss or [None] * len(ph.timestamp)):
+            equity_by[_dt.datetime.fromtimestamp(ts).strftime("%Y-%m-%d")] = (eq, pl)
+    except Exception as e:
+        print(f"portfolio history unavailable ({e}) — equity/today_pnl will be blank")
+
+    acct_no = _account_no(trader)
+    paper = int(bool(getattr(trader, "paper", True)))
+    recorded = _et_now().isoformat(timespec="seconds")
+    n = 0
+    for d in sorted(set(days) | set(equity_by)):
+        occ = days.get(d, {}).get("occ", {})
+        und = days.get(d, {}).get("und", {})
+        eq, pl = equity_by.get(d, (None, None))
+        row = {
+            "date": d, "account": acct_no, "paper": paper,
+            "equity": eq, "buying_power": None,
+            "today_pnl": round(pl, 2) if pl is not None else None,
+            "total_realized": round(sum(occ.values()), 2),
+            "per_symbol": json.dumps({k: round(v, 2) for k, v in sorted(und.items())}),
+            "n_fills": days.get(d, {}).get("fills", 0),
+            "winners": sum(1 for v in occ.values() if v > 0),
+            "losers": sum(1 for v in occ.values() if v < 0),
+            "recorded_at": recorded,
+        }
+        if db:
+            _persist_sqlite(db, row)
+        if csv_path:
+            _persist_csv(csv_path, row)
+        n += 1
+    print(f"Backfilled {n} day(s) → db={db or '-'} csv={csv_path or '-'} "
+          f"({len(orders)} fills scanned, account {acct_no})")
 
 
 if __name__ == "__main__":

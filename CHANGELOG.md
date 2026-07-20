@@ -1,5 +1,7 @@
 # Changelog
 
+- [2026-07-20] Modified: options_agent/docs/2026-07-20_one_host_realmoney_plan.md — Added the compare_perf.linux.sh cron line (35 13 * * 1-5, 10 min after the shadow report) alongside the shadow report entry, with a note on the perf_compare.log snapshot.
+- [2026-07-20] Modified: options_agent/scripts/compare_perf.linux.sh — Made cron-friendly: timestamped banner + tee to logs/perf_compare.log (still prints to stdout for interactive runs), so a daily cron leaves a dated real-vs-shadow record.
 - [2026-07-20] Created: options_agent/scripts/compare_perf.linux.sh — Linux wrapper for compare_perf.py; mounts perf/ and runs the real-vs-shadow table via agent-spy (read-only, no Discord/DB writes), extra args pass through.
 - [2026-07-20] Created: options_agent/scripts/compare_perf.py — Reads both perf DBs (real performance.db + shadow performance_shadow.db) and prints a side-by-side daily P&L table with per-day edge (shadow − real) and running cumulatives, so the real-vs-shadow comparison no longer needs two hand-run SQLite queries.
 - [2026-07-11] Modified: options_agent/scripts/send_daily_report.py — JOURNAL_DIR now overridable via env (mirrors send_weekly_report.py) so a live daily cron can report the live journal.

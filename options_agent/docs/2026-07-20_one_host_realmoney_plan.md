@@ -114,7 +114,13 @@ since the shadow's own agent mounts main's code without this script). Same schem
 so the real-money and shadow histories are directly comparable. Cron:
 ```
 25 13 * * 1-5  report_broker_pnl_shadow.linux.sh --period day
+35 13 * * 1-5  compare_perf.linux.sh                          # real-vs-shadow table → perf_compare.log
 ```
+`compare_perf.linux.sh` runs 10 min after the shadow report (once both DBs hold
+the day's row), reading `performance.db` + `performance_shadow.db` and appending a
+timestamped side-by-side table (per-day edge + cumulatives) to
+`logs/perf_compare.log` — no Discord, no writes. Run it by hand anytime, e.g.
+`compare_perf.linux.sh --metric total_realized`.
 
 ## Verify (next session)
 

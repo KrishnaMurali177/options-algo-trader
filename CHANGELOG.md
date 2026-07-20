@@ -1,5 +1,7 @@
 # Changelog
 
+- [2026-07-20] Created: options_agent/scripts/compare_perf.linux.sh — Linux wrapper for compare_perf.py; mounts perf/ and runs the real-vs-shadow table via agent-spy (read-only, no Discord/DB writes), extra args pass through.
+- [2026-07-20] Created: options_agent/scripts/compare_perf.py — Reads both perf DBs (real performance.db + shadow performance_shadow.db) and prints a side-by-side daily P&L table with per-day edge (shadow − real) and running cumulatives, so the real-vs-shadow comparison no longer needs two hand-run SQLite queries.
 - [2026-07-11] Modified: options_agent/scripts/send_daily_report.py — JOURNAL_DIR now overridable via env (mirrors send_weekly_report.py) so a live daily cron can report the live journal.
 - [2026-07-10] Modified: options_agent/scripts/run_sweet_spot_agent.py — _verify_closes_against_broker now reconciles BOTH directions: a journal-open trigger no longer held on the broker (closed outside the agent) is stamped closed_externally with the real Alpaca sell fill and persisted to the journal, so the on-disk record + dashboard reflect broker truth (not just the report).
 - [2026-07-10] Modified: options_agent/src/utils/alpaca_paper.py — Added get_closing_fill(occ) that pulls the actual sell-to-close fill from Alpaca order history, so positions closed outside the agent (e.g. manually on the broker website) can be reconciled to broker truth.

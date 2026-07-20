@@ -64,6 +64,8 @@ def main() -> None:
                     help="Account tag for the post title (e.g. '🔴 ALPACA · REAL-MONEY')")
     ap.add_argument("--webhook", default=os.environ.get("DISCORD_WEBHOOK_URL", ""))
     ap.add_argument("--limit", type=int, default=500, help="Max recent orders to scan")
+    ap.add_argument("--db", default=None, help="SQLite file to upsert the daily row into (day only)")
+    ap.add_argument("--csv", default=None, help="CSV file to mirror the daily row into (day only)")
     args = ap.parse_args()
 
     from src.utils.alpaca_paper import AlpacaPaperTrader
@@ -131,6 +133,82 @@ def main() -> None:
             print(f"Discord post failed: {e}")
     else:
         print("(no DISCORD_WEBHOOK_URL — printed only)")
+
+    # Durable history (day only) — SQLite (queryable) + CSV mirror (grep/Excel).
+    if args.period == "day" and (args.db or args.csv):
+        try:
+            acct = trader.get_today_pnl()
+        except Exception:
+            acct = {"equity": None, "buying_power": None, "today_pnl": None}
+        row = {
+            "date": today,
+            "account": getattr(trader, "account_number", "") or _account_no(trader),
+            "paper": int(bool(getattr(trader, "paper", True))),
+            "equity": acct.get("equity"),
+            "buying_power": acct.get("buying_power"),
+            "today_pnl": acct.get("today_pnl"),
+            "total_realized": round(total, 2),
+            "per_symbol": json.dumps({k: round(v, 2) for k, v in sorted(by_und.items())}),
+            "n_fills": entries,
+            "winners": winners,
+            "losers": losers,
+            "recorded_at": _et_now().isoformat(timespec="seconds"),
+        }
+        if args.db:
+            _persist_sqlite(args.db, row)
+            print(f"Recorded to DB: {args.db}")
+        if args.csv:
+            _persist_csv(args.csv, row)
+            print(f"Recorded to CSV: {args.csv}")
+
+
+def _account_no(trader) -> str:
+    try:
+        return str(trader.client.get_account().account_number)
+    except Exception:
+        return ""
+
+
+_COLS = ["date", "account", "paper", "equity", "buying_power", "today_pnl",
+         "total_realized", "per_symbol", "n_fills", "winners", "losers", "recorded_at"]
+
+
+def _persist_sqlite(path: str, row: dict) -> None:
+    import sqlite3
+    Path(path).parent.mkdir(parents=True, exist_ok=True)
+    con = sqlite3.connect(path)
+    try:
+        con.execute(
+            "CREATE TABLE IF NOT EXISTS daily_pnl ("
+            + ", ".join(f"{c} {'INTEGER' if c in ('paper','n_fills','winners','losers') else 'REAL' if c in ('equity','buying_power','today_pnl','total_realized') else 'TEXT'}" for c in _COLS)
+            + ", PRIMARY KEY (date, account))")
+        placeholders = ", ".join("?" for _ in _COLS)
+        updates = ", ".join(f"{c}=excluded.{c}" for c in _COLS if c not in ("date", "account"))
+        con.execute(
+            f"INSERT INTO daily_pnl ({', '.join(_COLS)}) VALUES ({placeholders}) "
+            f"ON CONFLICT(date, account) DO UPDATE SET {updates}",
+            [row[c] for c in _COLS])
+        con.commit()
+    finally:
+        con.close()
+
+
+def _persist_csv(path: str, row: dict) -> None:
+    import csv
+    p = Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    # De-dup on (date, account): drop any existing row for the same key, then append.
+    existing = []
+    if p.exists():
+        with p.open() as f:
+            existing = [r for r in csv.DictReader(f)
+                        if not (r.get("date") == row["date"] and r.get("account") == str(row["account"]))]
+    with p.open("w", newline="") as f:
+        w = csv.DictWriter(f, fieldnames=_COLS)
+        w.writeheader()
+        for r in existing:
+            w.writerow(r)
+        w.writerow(row)
 
 
 if __name__ == "__main__":

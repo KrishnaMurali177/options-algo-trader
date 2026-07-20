@@ -35,3 +35,6 @@ client_secret*.json
 
 # Data cache
 options_agent/data_cache/
+
+# Real-money performance history (SQLite/CSV; account-truth data — never commit)
+options_agent/perf/

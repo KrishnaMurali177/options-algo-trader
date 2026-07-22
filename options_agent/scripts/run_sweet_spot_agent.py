@@ -1820,6 +1820,19 @@ def main():
 
     paper_trade = not args.no_paper
 
+    # ── KILL-SWITCH: live real-money QQQ trading is DISABLED ───────────────────
+    # Disabled 2026-07-22: the live QQQ agent lost track of a real-money open put
+    # (state/journal reconcile bug) and was pulled by hand. This guard blocks ONLY
+    # the real-money QQQ agent (ALPACA_PAPER=false + symbol QQQ) — paper QQQ and
+    # live SPY are untouched. It fails closed on EVERY start/restart, so a manual
+    # `docker-compose --profile realmoney up` cannot silently resume QQQ trades.
+    # Re-enable by deleting this block once the position-tracking bug is fixed.
+    _live = os.environ.get("ALPACA_PAPER", "true").strip().lower() in ("false", "0", "no")
+    if args.symbol.upper() == "QQQ" and _live:
+        logger.error("🛑 KILL-SWITCH: live real-money QQQ trading is DISABLED "
+                     "(state-tracking bug, 2026-07-22). Refusing to trade — exiting.")
+        sys.exit(1)
+
     if args.daemon:
         logger.info("Starting in daemon mode — will run every trading day")
         while True:

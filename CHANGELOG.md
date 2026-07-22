@@ -226,3 +226,4 @@
 - [2026-07-20] Modified: options_agent/docs/2026-07-20_one_host_realmoney_plan.md — documented --backfill (seed history) + separate shadow performance DB.
 - [2026-07-20] Modified: options_agent/scripts/report_broker_pnl.py — added `fees` column (fees & charges = total_realized gross − today_pnl net equity change; account-truth). Recorded in DB/CSV (backfill + daily), shown in the daily Discord post. Requires DB re-backfill to add the column.
 - [2026-07-22] Modified: options_agent/scripts/run_sweet_spot_agent.py — Added kill-switch: live real-money QQQ (ALPACA_PAPER=false) refuses to trade (state-tracking bug); paper QQQ + live SPY unaffected
+- [2026-07-22] Reverted: options_agent/scripts/run_sweet_spot_agent.py — Removed live QQQ kill-switch per request

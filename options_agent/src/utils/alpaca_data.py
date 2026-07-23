@@ -149,13 +149,26 @@ def fetch_bars(
     max_age_hours = 1 / 60 if days_back <= 5 else 12
 
     if not force_refresh and _is_cache_fresh(cache, max_age_hours=max_age_hours):
-        logger.info("Loading cached %s %s data (%d days) from %s", symbol, interval, days_back, cache)
-        df = pd.read_parquet(cache)
-        df.index = pd.to_datetime(df.index)
-        if df.index.tz is None:
-            df.index = df.index.tz_localize("UTC")
-        df.index = df.index.tz_convert("America/New_York")
-        return df
+        # A cross-process race can catch a 0-byte / half-written Parquet file
+        # (0DTE and 1DTE agents share cache paths and rewrite them every loop).
+        # Treat a corrupt read as a cache-miss: delete and fall through to refetch,
+        # rather than letting ArrowInvalid propagate and crash the agent.
+        try:
+            logger.info("Loading cached %s %s data (%d days) from %s", symbol, interval, days_back, cache)
+            df = pd.read_parquet(cache)
+            df.index = pd.to_datetime(df.index)
+            if df.index.tz is None:
+                df.index = df.index.tz_localize("UTC")
+            df.index = df.index.tz_convert("America/New_York")
+            return df
+        except Exception as e:
+            logger.warning(
+                "Corrupt/unreadable cache %s (%s) — deleting and refetching.", cache, e
+            )
+            try:
+                cache.unlink()
+            except OSError:
+                pass
 
     # Map interval string to Alpaca TimeFrame
     tf_map = {
@@ -227,8 +240,20 @@ def fetch_bars(
     # point and skew the live agent's gates vs. the replay's closed-bar view.
     df = _drop_partial_trailing_bar(df, interval)
 
-    # Cache to Parquet
-    df.to_parquet(cache)
+    # Cache to Parquet atomically: write to a unique temp file in the same
+    # directory, then os.replace() into place. os.replace is atomic on both
+    # Windows and POSIX, so a concurrent reader (0DTE vs 1DTE agent sharing
+    # this path) never sees a 0-byte / half-written file.
+    tmp = cache.with_suffix(f".parquet.tmp.{os.getpid()}")
+    try:
+        df.to_parquet(tmp)
+        os.replace(tmp, cache)
+    finally:
+        if tmp.exists():
+            try:
+                tmp.unlink()
+            except OSError:
+                pass
     logger.info(
         "Cached %d %s bars for %s (%s → %s) at %s",
         len(df), interval, symbol,

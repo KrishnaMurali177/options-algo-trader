@@ -239,7 +239,7 @@ def _check_gainz_exit(underlying_symbol: str, direction: str, body_ratio: float,
             return True
         return False
     except Exception as e:
-        logger.warning("Gainz exit check failed for %s: %s", symbol, e)
+        logger.warning("Gainz exit check failed for %s: %s", underlying_symbol, e)
         return False
 
 # ── Setup ──
@@ -1035,6 +1035,17 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                 current_price_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
                 if len(current_price_bars) > 0:
                     underlying_price = float(current_price_bars["Close"].iloc[-1])
+                    # Intrabar extremes of the last completed bar. Replay fires a
+                    # stop the moment a bar's high/low TOUCHES the stop level
+                    # (replay_sweet_spot.py:1160/1165 use fl<=stop / fh>=stop),
+                    # not when the bar CLOSES beyond it. Checking Close-only made
+                    # live detect stops up to a full bar late — which starved the
+                    # max_stops_per_day halt and let same-dir entries stack into a
+                    # reversal before the first stop registered (see 2026-05-29:
+                    # replay halted at 1 stop / -$111, live took 3 / -$474).
+                    # Use these for the stop comparison to match replay sensitivity.
+                    bar_high = float(current_price_bars["High"].iloc[-1])
+                    bar_low = float(current_price_bars["Low"].iloc[-1])
                     for pos_id, opt_info in list(open_options.items()):
                         if pos_id not in open_options:
                             continue  # already closed earlier this iteration via OCC cohort
@@ -1069,15 +1080,19 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                 else:
                                     effective_target = entry_underlying - decayed_dist
 
+                        # Stop uses the bar's intrabar extreme (touch = stop, replay
+                        # parity); target/decay stays on Close, matching replay's
+                        # decay-aware-targets path (fh/fl target check is gated behind
+                        # `not decay_aware_targets`, which is OFF in the golden config).
                         if "call" in opt_info["direction"]:
-                            if underlying_price <= opt_info["stop_price"]:
+                            if bar_low <= opt_info["stop_price"]:
                                 should_close = True
                                 close_reason = "stop"
                             elif underlying_price >= effective_target:
                                 should_close = True
                                 close_reason = "decay_target"
                         else:  # put
-                            if underlying_price >= opt_info["stop_price"]:
+                            if bar_high >= opt_info["stop_price"]:
                                 should_close = True
                                 close_reason = "stop"
                             elif underlying_price <= effective_target:
@@ -1484,7 +1499,30 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             logger.info("  📝 Order placed: %s", trigger.get("order_id", "?")[:12])
                             notifier.notify_trade_entry(trigger)
                         except Exception as e:
+                            # Order placement raised (e.g. 40310000 insufficient
+                            # options buying power — the 07-07 blackout). This used
+                            # to be a silent log line, so 12 failed orders went
+                            # unnoticed for 9 days. Mark the trigger as a FAILED
+                            # order (no order_id) and hard-alert so it's caught same day.
                             logger.error("  ⚠️ Order failed: %s", e)
+                            trigger["order_failed"] = True
+                            trigger["order_error"] = str(e)
+                            try:
+                                journal_file.write_text(json.dumps(triggers, indent=2, default=str))
+                            except Exception:
+                                pass
+                            try:
+                                notifier.notify_alert(
+                                    f"{symbol} ORDER PLACEMENT FAILED",
+                                    f"A {trigger.get('direction', '?')} order failed at "
+                                    f"{get_et_now().strftime('%H:%M:%S ET')}: `{e}`. "
+                                    "No position was opened. If this is a buying-power "
+                                    "error, check the account for an orphaned equity "
+                                    "position poisoning options buying power.",
+                                    level="critical",
+                                )
+                            except Exception:
+                                pass
 
         # ── 30-min status update (SPY agent only to avoid duplicates) ──
         if symbol == "SPY":

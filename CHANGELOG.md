@@ -227,3 +227,10 @@
 - [2026-07-20] Modified: options_agent/scripts/report_broker_pnl.py — added `fees` column (fees & charges = total_realized gross − today_pnl net equity change; account-truth). Recorded in DB/CSV (backfill + daily), shown in the daily Discord post. Requires DB re-backfill to add the column.
 - [2026-07-22] Modified: options_agent/scripts/run_sweet_spot_agent.py — Added kill-switch: live real-money QQQ (ALPACA_PAPER=false) refuses to trade (state-tracking bug); paper QQQ + live SPY unaffected
 - [2026-07-22] Reverted: options_agent/scripts/run_sweet_spot_agent.py — Removed live QQQ kill-switch per request
+- [2026-07-26] Created: options_agent/docs/2026-07-26_fund_performance_since_inception.md — Weekly fund performance report (paper +$9,686 / live +$99), loss-vs-gain-week deep dive
+- [2026-07-26] Modified: options_agent/docs/2026-07-26_fund_performance_since_inception.md — Renormalized all P&L to flat 2 contracts (removed duplication); added paper+live equity-curve charts
+- [2026-07-27] Created: options_agent/logs/live_equity_1contract_2026-07.svg — live real-money equity curve normalized to 1 contract vs actual (2x) sizing, 07-01→07-27.
+- [2026-07-27] Created: options_agent/logs/live_equity_1contract_2026-07.png — rasterized PNG of the 1-contract equity chart.
+- [2026-07-29] Modified: ~/.claude/CLAUDE.md — Added live trading box SSH (rohith@10.0.0.54) + repo path
+- [2026-07-29] Created: memory/reference_live_box.md — Box SSH host & repo path for live-agent diagnosis
+- [2026-07-29] Modified: ~/.claude/settings.json — Added Bash allow rules for ssh rohith@10.0.0.54 (no prompt for live box)

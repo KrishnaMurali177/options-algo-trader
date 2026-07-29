@@ -165,6 +165,7 @@ services:
       - AGENT_SYMBOL=SPY
       - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal_live
       - DISCORD_TAG=🔴 ALPACA · ${HOST_LABEL:-REAL-MONEY}   # host label via root .env (HOST_LABEL=MAC/UBUNTU); default REAL-MONEY
+      - DISCORD_WEBHOOK_URL=      # LIVE notifications OFF — overrides shared .env; avoids tempting manual intervention on live positions
     volumes:
       - ./options_agent/logs:/app/logs
       - ./options_agent/sweet_spot_journal_live:/app/sweet_spot_journal_live
@@ -188,6 +189,7 @@ services:
       - AGENT_SYMBOL=QQQ
       - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal_live
       - DISCORD_TAG=🔴 ALPACA · ${HOST_LABEL:-REAL-MONEY}   # host label via root .env (HOST_LABEL=MAC/UBUNTU); default REAL-MONEY
+      - DISCORD_WEBHOOK_URL=      # LIVE notifications OFF — overrides shared .env; avoids tempting manual intervention on live positions
     volumes:
       - ./options_agent/logs:/app/logs
       - ./options_agent/sweet_spot_journal_live:/app/sweet_spot_journal_live

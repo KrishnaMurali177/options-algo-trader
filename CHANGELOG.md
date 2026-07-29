@@ -234,3 +234,5 @@
 - [2026-07-29] Modified: ~/.claude/CLAUDE.md — Added live trading box SSH (rohith@10.0.0.54) + repo path
 - [2026-07-29] Created: memory/reference_live_box.md — Box SSH host & repo path for live-agent diagnosis
 - [2026-07-29] Modified: ~/.claude/settings.json — Added Bash allow rules for ssh rohith@10.0.0.54 (no prompt for live box)
+- [2026-07-29] Created: options_agent/docs/2026-07-26_fund_performance_since_inception.md — Weekly fund performance report, normalized to 2 contracts, with equity curves
+- [2026-07-29] Created: options_agent/docs/manual_intervention_cost_log.md — Log of manual live-intervention costs vs paper counterfactual (07-29 SPY 734P ~-$170)

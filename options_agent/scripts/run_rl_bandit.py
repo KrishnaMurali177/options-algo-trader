@@ -42,6 +42,10 @@ ALL_SYMBOLS = ["SPY", "QQQ", "IWM", "DIA", "GLD", "TLT", "SLV", "USO",
 
 HEADLINE_SYMBOLS = ["SPY", "QQQ"]
 
+#: Symbols with a genuine daily 0DTE listing. Everything else lists 0DTE only on
+#: weekly expiries (measured: EEM 58/251 sessions, HYG 52/251, AMZN 103/251).
+DAILY_0DTE_SYMBOLS = ["SPY", "QQQ", "IWM"]
+
 
 def _resolve_symbols(spec: str) -> list[str]:
     if spec == "all":
@@ -128,12 +132,24 @@ def cmd_evaluate(args) -> int:
     cuts: list[tuple[str, pd.DataFrame]] = [
         ("ALL SYMBOLS (pooled)", df),
         ("HEADLINE: SPY + QQQ", df[df.symbol.isin(HEADLINE_SYMBOLS)]),
+        # The only symbols with a genuine daily 0DTE listing, hence the only ones
+        # with dense coverage. This is the meaningful robustness split: if a
+        # result holds pooled but dies here, it is being carried by weekly-expiry
+        # names with ~1/4 the sessions.
+        ("DAILY-0DTE SYMBOLS (SPY/QQQ/IWM)", df[df.symbol.isin(DAILY_0DTE_SYMBOLS)]),
     ]
-    # Real-priced-only cut: keep sessions where no arm needed a synth fallback.
-    synth_sessions = (df.groupby(["symbol", "date"])["n_synth"].sum() > 0)
-    bad = set(synth_sessions[synth_sessions].index)
-    real_only = df[~df.set_index(["symbol", "date"]).index.isin(bad)]
-    cuts.append(("REAL-PRICED SESSIONS ONLY", real_only))
+    # A synth-vs-real cut is only informative when synth trades exist; under
+    # --require-real-options (the default) there are none, so report and skip
+    # rather than printing a silent duplicate of the pooled result.
+    n_synth = int(df["n_synth"].sum())
+    if n_synth:
+        synth_sessions = (df.groupby(["symbol", "date"])["n_synth"].sum() > 0)
+        bad = set(synth_sessions[synth_sessions].index)
+        cuts.append(("REAL-PRICED SESSIONS ONLY",
+                     df[~df.set_index(["symbol", "date"]).index.isin(bad)]))
+    else:
+        print("(no synth-priced trades in this dataset — real-only cut would "
+              "duplicate the pooled result, skipping)")
 
     chunks = []
     for label, sub in cuts:

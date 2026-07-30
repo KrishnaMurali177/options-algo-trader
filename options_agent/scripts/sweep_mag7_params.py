@@ -40,7 +40,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from scripts.replay_sweet_spot import build_parser, replay_day
+from scripts.replay_sweet_spot import build_parser, replay_day, resolve_day_vix
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger(__name__)
@@ -96,25 +96,15 @@ def run_days(args, df: pd.DataFrame, trading_days: list[date],
         else:
             prior_bars = None
 
-        day_vix = vix_map.get(day, 20.0)
-        if day_vix == 20.0 and vix_map:
-            for prev_day in reversed(full_days[:idx]):
-                if prev_day in vix_map:
-                    day_vix = vix_map[prev_day]
-                    break
+        day_vix, prev_vix = resolve_day_vix(vix_map, full_days, idx,
+                                            getattr(args, "vix_lag", 1))
 
         if args.vix_max > 0 and day_vix > args.vix_max:
             continue
-        if args.vix_spike_pct > 0 and idx > 0:
-            prev_vix = None
-            for prev_day in reversed(full_days[:idx]):
-                if prev_day in vix_map:
-                    prev_vix = vix_map[prev_day]
-                    break
-            if prev_vix and prev_vix > 0:
-                spike_pct = (day_vix - prev_vix) / prev_vix * 100
-                if spike_pct > args.vix_spike_pct:
-                    continue
+        if args.vix_spike_pct > 0 and prev_vix and prev_vix > 0:
+            spike_pct = (day_vix - prev_vix) / prev_vix * 100
+            if spike_pct > args.vix_spike_pct:
+                continue
 
         triggers = replay_day(day_bars, day, max_chop=args.max_chop,
                               min_chop=args.min_chop,

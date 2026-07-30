@@ -61,21 +61,35 @@ def cmd_build_dataset(args) -> int:
                        require_real_options=not args.allow_synth,
                        workers=args.workers, prewarm=args.prewarm, out_path=out)
 
-    print(f"\nRows: {len(df):,}  sessions: {df[['symbol', 'date']].drop_duplicates().shape[0]:,}"
-          f"  symbols: {df.symbol.nunique()}")
-    print(f"Written: {out}\n")
     traded = df[df.arm != presets.SIT_OUT]
-    print("Per-arm totals (all symbols, in-sample — NOT a result):")
-    print(traded.groupby("arm").agg(
-        days=("reward", "size"), total_R=("reward", "sum"),
-        mean_R=("reward", "mean"), trades=("n_trades", "sum"),
-        real=("n_real", "sum"), synth=("n_synth", "sum"),
-        dollars=("dollars_sized", "sum"),
-    ).round(2).to_string())
-    print("\nReal-pricing coverage by symbol:")
     cov = traded.groupby("symbol").agg(real=("n_real", "sum"), synth=("n_synth", "sum"))
     cov["real_pct"] = (cov.real / (cov.real + cov.synth).replace(0, pd.NA) * 100).round(1)
-    print(cov.to_string())
+
+    lines = [
+        f"Rows: {len(df):,}  sessions: {df[['symbol', 'date']].drop_duplicates().shape[0]:,}"
+        f"  symbols: {df.symbol.nunique()}",
+        f"Date range: {df.date.min()} → {df.date.max()}",
+        f"Written: {out}",
+        "",
+        "Per-arm totals (all symbols, IN-SAMPLE — NOT a result):",
+        traded.groupby("arm").agg(
+            days=("reward", "size"), total_R=("reward", "sum"),
+            mean_R=("reward", "mean"), trades=("n_trades", "sum"),
+            real=("n_real", "sum"), synth=("n_synth", "sum"),
+            dollars=("dollars_sized", "sum"),
+        ).round(2).to_string(),
+        "",
+        "Real-pricing coverage by symbol:",
+        cov.to_string(),
+    ]
+    text = "\n".join(lines)
+    print("\n" + text)
+
+    # Persist beside the parquet: these builds run for tens of minutes and a
+    # dropped SSH session should not cost us the summary.
+    side = out.with_suffix(".summary.txt")
+    side.write_text(text + "\n")
+    print(f"\nSummary also written: {side}")
     return 0
 
 

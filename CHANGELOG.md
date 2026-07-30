@@ -239,3 +239,4 @@
 - [2026-07-29] Created: options_agent/src/rl/evaluate.py — purged expanding-window monthly walk-forward with a 5-day embargo; scores bandit vs golden_always, best_fixed_arm (hindsight) and oracle; strict verdict() requiring the bandit to beat BOTH golden and the best static arm.
 - [2026-07-29] Created: options_agent/scripts/run_rl_bandit.py — CLI: build-dataset / evaluate / arms.
 - [2026-07-29] Created: options_agent/tests/test_rl_bandit.py — 27 tests; the load-bearing ones NaN-out and 100x-corrupt all post-10:00 bars and assert the context vector is byte-identical.
+- [2026-07-29] Modified: options_agent/scripts/run_rl_bandit.py — build-dataset now also writes its summary to <out>.summary.txt; multi-symbol builds run for tens of minutes and a dropped SSH session was losing the printed summary.

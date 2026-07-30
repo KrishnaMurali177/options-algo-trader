@@ -213,6 +213,55 @@ def test_drop_incomplete_days():
     assert len(_drop_incomplete_days(rows, expected=2)) == 2
 
 
+# ── no-opportunity sessions ──────────────────────────────────────────────
+def _long_rows(date_str: str, symbol: str, trades_per_arm: dict[str, int]):
+    """Build long-format dataset rows for one symbol-day."""
+    out = []
+    for arm in presets.ARM_NAMES:
+        n = 0 if arm == presets.SIT_OUT else trades_per_arm.get(arm, 0)
+        out.append({
+            "date": date_str, "symbol": symbol, "arm": arm,
+            "reward": 0.5 if n else 0.0, "n_trades": n, "n_real": n, "n_synth": 0,
+            "dollars_sized": 0.0, "raw_reward": 0.0, "vix_used": 17.0,
+            **{f"f_{name}": 1.0 for name in FEATURE_NAMES},
+        })
+    return out
+
+
+def test_no_opportunity_mask_flags_only_dead_sessions():
+    from src.rl.dataset import no_opportunity_mask
+
+    rows = (_long_rows("2026-06-01", "EEM", {})                 # no 0DTE: dead
+            + _long_rows("2026-06-02", "EEM", {"golden": 2}))   # tradable
+    mask = no_opportunity_mask(pd.DataFrame(rows))
+    assert mask[("2026-06-01", "EEM")]
+    assert not mask[("2026-06-02", "EEM")]
+
+
+def test_to_matrices_drops_no_opportunity_sessions():
+    from src.rl.dataset import to_matrices
+
+    rows = []
+    for d in range(1, 6):
+        rows += _long_rows(f"2026-06-0{d}", "EEM", {})            # 5 dead
+    rows += _long_rows("2026-06-10", "SPY", {"golden": 1})        # 1 live
+    df = pd.DataFrame(rows)
+
+    X, R, keys = to_matrices(df, drop_no_opportunity=True)
+    assert len(keys) == 1 and keys.iloc[0]["symbol"] == "SPY"
+
+    X2, R2, keys2 = to_matrices(df, drop_no_opportunity=False)
+    assert len(keys2) == 6, "opt-out must keep coverage rows for auditing"
+
+
+def test_to_matrices_raises_when_everything_is_dead():
+    from src.rl.dataset import to_matrices
+
+    df = pd.DataFrame(_long_rows("2026-06-01", "EEM", {}))
+    with pytest.raises(ValueError, match="no usable sessions"):
+        to_matrices(df, drop_no_opportunity=True)
+
+
 # ── bandit learning ──────────────────────────────────────────────────────
 def _synthetic_problem(n: int = 4000, seed: int = 0):
     """Two-feature contexts where the best of 3 arms flips on feature 1."""

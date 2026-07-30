@@ -240,3 +240,6 @@
 - [2026-07-29] Created: options_agent/scripts/run_rl_bandit.py — CLI: build-dataset / evaluate / arms.
 - [2026-07-29] Created: options_agent/tests/test_rl_bandit.py — 27 tests; the load-bearing ones NaN-out and 100x-corrupt all post-10:00 bars and assert the context vector is byte-identical.
 - [2026-07-29] Modified: options_agent/scripts/run_rl_bandit.py — build-dataset now also writes its summary to <out>.summary.txt; multi-symbol builds run for tens of minutes and a dropped SSH session was losing the printed summary.
+- [2026-07-29] Modified: options_agent/src/rl/dataset.py — added no_opportunity_mask() + to_matrices(drop_no_opportunity=True): excludes symbol-days where NO arm could trade (no 0DTE listing, or all gates rejected). Measured 58/251 sessions with 0DTE for EEM and 52/251 for HYG, so these tie every arm at 0.0 and would flatter the controller's apparent sit-out skill.
+- [2026-07-29] Modified: options_agent/tests/test_rl_bandit.py — 4 tests for the no-opportunity filter (flagging, dropping, opt-out for auditing, all-dead error).
+- [2026-07-29] Modified: options_agent/scripts/run_rl_bandit.py — evaluate now reports usable-vs-total sessions and how many were dropped as untradable.

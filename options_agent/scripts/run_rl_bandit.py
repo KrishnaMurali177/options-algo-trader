@@ -94,13 +94,17 @@ def cmd_build_dataset(args) -> int:
 
 
 def _report(df: pd.DataFrame, label: str, args) -> tuple[str, pd.DataFrame]:
+    all_sessions = df[["symbol", "date"]].drop_duplicates().shape[0]
     X, R, keys = to_matrices(df)
+    dead = all_sessions - len(keys)
     per_day, folds = walk_forward(X, R, keys, model_kind=args.model,
                                   alpha=args.alpha, seed=args.seed)
     summary = summarize(per_day)
     lines = [f"\n{'=' * 72}", f"{label}  (model={args.model}, alpha={args.alpha})",
              f"{'=' * 72}",
-             f"sessions={len(keys):,}  test days={len(per_day):,}  folds={len(folds)}"]
+             f"sessions={len(keys):,} usable of {all_sessions:,}"
+             f" ({dead:,} dropped: no arm could trade — no 0DTE listing or all gates rejected)",
+             f"test days={len(per_day):,}  folds={len(folds)}"]
     if summary.empty:
         lines.append("No test folds — not enough history for a walk-forward split.")
         return "\n".join(lines), summary

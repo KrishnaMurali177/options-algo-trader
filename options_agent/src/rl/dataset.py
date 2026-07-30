@@ -290,12 +290,39 @@ def build_dataset(symbols: list[str], days: int = 365, vix_lag: int = 1,
     return df
 
 
-def to_matrices(df: pd.DataFrame, arm_names: list[str] | None = None
+def no_opportunity_mask(df: pd.DataFrame) -> pd.Series:
+    """Symbol-days where no arm could trade at all, indexed by (date, symbol).
+
+    Two causes, both meaning "not a real decision":
+
+    * the symbol had no 0DTE listing that session (most days for single names —
+      measured 58/251 for EEM, 52/251 for HYG), so under
+      ``require_real_options`` every trigger is dropped;
+    * every arm's gates rejected the whole day.
+
+    Either way all arms score exactly 0.0 and are tied with ``sit_out``, so the
+    row carries no information about which arm to pick. Worse, keeping them
+    flatters the controller: it inflates the share of days it appears to
+    "correctly sit out" when in fact nothing was on offer. They are kept in the
+    stored dataset (they are facts about coverage) but excluded from training
+    and evaluation.
+    """
+    traded = df[df.arm != presets.SIT_OUT]
+    per_day = traded.groupby(["date", "symbol"])["n_trades"].sum()
+    return per_day == 0
+
+
+def to_matrices(df: pd.DataFrame, arm_names: list[str] | None = None,
+                drop_no_opportunity: bool = True
                 ) -> tuple[np.ndarray, np.ndarray, pd.DataFrame]:
     """Long dataset -> (X contexts, R full-feedback rewards, key frame).
 
     Returns ``X`` (n_days, n_features), ``R`` (n_days, n_arms) and a key frame
     carrying symbol/date per row so evaluation can split chronologically.
+
+    ``drop_no_opportunity`` removes sessions where no arm could trade — see
+    :func:`no_opportunity_mask`. Leave it on unless you are specifically
+    measuring coverage.
     """
     arm_names = arm_names or presets.ARM_NAMES
     feat_cols = [f"f_{n}" for n in FEATURE_NAMES]
@@ -309,6 +336,18 @@ def to_matrices(df: pd.DataFrame, arm_names: list[str] | None = None
     if absent:
         raise KeyError(f"dataset has no rows for arms: {absent}")
     wide = wide[arm_names].dropna()
+
+    if drop_no_opportunity:
+        dead = no_opportunity_mask(df)
+        dead = dead[dead].index
+        before = len(wide)
+        wide = wide.drop(index=[i for i in dead if i in wide.index])
+        dropped = before - len(wide)
+        if dropped:
+            logger.info("dropped %d/%d sessions with no tradable opportunity (%.1f%%)",
+                        dropped, before, dropped / before * 100)
+    if wide.empty:
+        raise ValueError("no usable sessions left after filtering")
 
     ctx = (df.drop_duplicates(["date", "symbol"])
              .set_index(["date", "symbol"])[feat_cols])

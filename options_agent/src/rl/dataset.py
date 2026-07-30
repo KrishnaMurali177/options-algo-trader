@@ -110,7 +110,8 @@ def prewarm_chains(symbol: str, df: pd.DataFrame, trading_days: list[date]) -> d
 def build_symbol(symbol: str, days: int = 365, vix_lag: int = 1,
                  require_real_options: bool = True,
                  arms: list[str] | None = None,
-                 prewarm: bool = False) -> list[dict]:
+                 prewarm: bool = False,
+                 slippage: float = 0.0) -> list[dict]:
     """Replay every arm over every session for one symbol. Returns long-format rows."""
     # Imported here, not at module scope: these pull in the whole replay stack,
     # and under multiprocessing we want each worker to do it in its own process.
@@ -137,6 +138,11 @@ def build_symbol(symbol: str, days: int = 365, vix_lag: int = 1,
 
     # Golden defaults, exactly as the existing sweep derives them.
     base_args = build_parser().parse_args([])
+    # --slippage defaults to 0.0 in the replay parser, i.e. free execution. That
+    # systematically favours arms that trade more often (permissive fires ~57%
+    # more than golden), so any cross-arm conclusion has to be re-checked at a
+    # realistic round-trip cost.
+    base_args.slippage = float(slippage)
     base = _replay_kwargs(base_args, symbol, require_real_options)
 
     # One cache per symbol, shared across arms. Safe only because
@@ -238,11 +244,11 @@ def _replay_kwargs(args, symbol: str, require_real_options: bool) -> dict:
 
 
 def _worker(payload: tuple) -> list[dict]:
-    symbol, days, vix_lag, require_real, arms, prewarm = payload
+    symbol, days, vix_lag, require_real, arms, prewarm, slippage = payload
     try:
         return build_symbol(symbol, days=days, vix_lag=vix_lag,
                             require_real_options=require_real, arms=arms,
-                            prewarm=prewarm)
+                            prewarm=prewarm, slippage=slippage)
     except Exception as e:                      # never let one symbol kill a build
         logger.exception("symbol %s failed: %s", symbol, e)
         return []
@@ -262,11 +268,13 @@ def build_dataset(symbols: list[str], days: int = 365, vix_lag: int = 1,
                   arms: list[str] | None = None,
                   workers: int | None = None,
                   prewarm: bool = False,
+                  slippage: float = 0.0,
                   out_path: str | Path | None = None) -> pd.DataFrame:
     """Build across symbols (parallel by symbol) and optionally persist."""
     presets.validate_arms()
     workers = workers or default_workers()
-    payloads = [(s, days, vix_lag, require_real_options, arms, prewarm) for s in symbols]
+    payloads = [(s, days, vix_lag, require_real_options, arms, prewarm, slippage)
+                for s in symbols]
 
     if workers == 1 or len(symbols) == 1:
         chunks = [_worker(p) for p in payloads]

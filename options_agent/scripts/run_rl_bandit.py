@@ -59,7 +59,8 @@ def cmd_build_dataset(args) -> int:
                 args.workers or default_workers())
     df = build_dataset(symbols, days=args.days, vix_lag=args.vix_lag,
                        require_real_options=not args.allow_synth,
-                       workers=args.workers, prewarm=args.prewarm, out_path=out)
+                       workers=args.workers, prewarm=args.prewarm,
+                       slippage=args.slippage, out_path=out)
 
     traded = df[df.arm != presets.SIT_OUT]
     cov = traded.groupby("symbol").agg(real=("n_real", "sum"), synth=("n_synth", "sum"))
@@ -186,6 +187,11 @@ def main() -> int:
     b.add_argument("--workers", type=int, default=None,
                    help=f"parallel symbols (default {default_workers()}, capped to "
                         "leave cores for the live agents)")
+    b.add_argument("--slippage", type=float, default=0.0,
+                   help="per-contract round-trip cost in premium points, deducted "
+                        "by replay_day. The replay default is 0.0 (free execution), "
+                        "which flatters arms that trade more often — re-check any "
+                        "cross-arm conclusion at 0.03-0.05.")
     b.add_argument("--out", default=None)
     b.set_defaults(func=cmd_build_dataset)
 

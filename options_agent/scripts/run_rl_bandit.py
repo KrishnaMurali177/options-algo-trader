@@ -174,6 +174,63 @@ def cmd_evaluate(args) -> int:
     return 0
 
 
+def cmd_arm_stats(args) -> int:
+    """Static per-arm comparison with a paired significance test.
+
+    This is the question the walk-forward answers only indirectly: forget the
+    controller, is any single arm actually better than golden, and is the
+    difference distinguishable from noise? Uses a paired test because every arm
+    is scored on the *same* sessions (full feedback), which is far more powerful
+    than comparing two independent samples.
+    """
+    import numpy as np
+
+    df = pd.read_parquet(args.dataset)
+    df["date"] = pd.to_datetime(df["date"]).dt.date
+
+    groups: list[tuple[str, list[str]]] = [
+        ("ALL", sorted(df.symbol.unique())),
+        ("SPY+QQQ", HEADLINE_SYMBOLS),
+        ("SPY/QQQ/IWM", DAILY_0DTE_SYMBOLS),
+        ("single names", [s for s in df.symbol.unique()
+                          if s in {"MSFT", "AAPL", "NVDA", "TSLA", "META", "AMZN", "GOOGL"}]),
+    ]
+    lines = [f"Dataset: {args.dataset}",
+             "Paired per-session comparison vs the golden arm.",
+             "t is a paired t-stat on the per-session reward difference;",
+             "|t| > ~2 is the usual bar, and it is a weak bar on financial data.",
+             ""]
+    for label, syms in groups:
+        sub = df[df.symbol.isin(syms)]
+        if sub.empty:
+            continue
+        try:
+            _, R, keys = to_matrices(sub)
+        except ValueError:
+            continue
+        W = pd.DataFrame(R, columns=presets.ARM_NAMES)
+        gold = W["golden"].to_numpy()
+        lines.append(f"── {label}  ({len(syms)} symbols, {len(W):,} usable sessions)")
+        for arm in presets.ARM_NAMES:
+            if arm == "golden":
+                lines.append(f"   {arm:<11} {W[arm].sum():+9.1f}R   (reference)")
+                continue
+            d = W[arm].to_numpy() - gold
+            sd = d.std(ddof=1)
+            t = d.mean() / (sd / np.sqrt(len(d))) if sd > 1e-12 else float("nan")
+            months = pd.PeriodIndex(pd.to_datetime(keys["date"]), freq="M")
+            by_m = pd.Series(d).groupby(months).sum()
+            lines.append(f"   {arm:<11} {W[arm].sum():+9.1f}R   edge={d.sum():+8.1f}R"
+                         f"   t={t:+5.2f}   beat golden in {(by_m > 0).sum()}/{len(by_m)} months")
+        lines.append("")
+    text = "\n".join(lines)
+    print(text)
+    if args.out:
+        Path(args.out).write_text(text + "\n")
+        print(f"Written: {args.out}")
+    return 0
+
+
 def cmd_arms(args) -> int:
     presets.validate_arms()
     print("Arms (deltas over golden defaults):")
@@ -219,6 +276,12 @@ def main() -> int:
     e.add_argument("--seed", type=int, default=0)
     e.add_argument("--out", default=None, help="write a markdown report here")
     e.set_defaults(func=cmd_evaluate)
+
+    st = sub.add_parser("arm-stats",
+                        help="static per-arm comparison vs golden with a paired t-test")
+    st.add_argument("--dataset", required=True)
+    st.add_argument("--out", default=None)
+    st.set_defaults(func=cmd_arm_stats)
 
     a = sub.add_parser("arms", help="print the arm table and check invariants")
     a.set_defaults(func=cmd_arms)

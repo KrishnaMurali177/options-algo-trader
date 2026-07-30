@@ -1304,7 +1304,7 @@ def build_parser():
                         help="Contracts for E 8+ tier (default: 3)")
     parser.add_argument("--dynamic-or", action="store_true", default=True,
                         help="Enable dynamic opening range (30-min quick OR + 10:00 scan-start when "
-                             "the 10:00 bar already broke >50% of the 30-min range beyond the boundary). "
+                             "the 10:00 bar already broke >50%% of the 30-min range beyond the boundary). "
                              "GOLDEN (2026-05-23): re-tested post cluster-penalty/max-trades=4/cooldown=1/"
                              "VWAP-slope-override goldens. 730d clean sweep both symbols (SPY Calmar "
                              "42.20→43.77, QQQ Sharpe 3.33→3.47); QQQ 365d Sharpe +0.15.")

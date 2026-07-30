@@ -8,6 +8,7 @@ services:
     env_file:
       - options_agent/.env
     volumes:
+      - ./options_agent/dashboard:/app/dashboard   # live dashboard code (no rebuild needed)
       - ./options_agent/logs:/app/logs
       - ./options_agent/sweet_spot_journal:/app/sweet_spot_journal
       - ./options_agent/backtest_results:/app/backtest_results

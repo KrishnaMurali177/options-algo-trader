@@ -1,0 +1,41 @@
+# Isolated compose stack for RL / backtest work.
+#
+# Deliberately SEPARATE from docker-compose.yml so RL runs can never disturb the
+# live trading stack:
+#   - own compose project name (pass `-p rl`), so `docker-compose` here never
+#     considers the live containers part of its stack
+#   - NO `container_name:` keys — the live stack pins explicit names
+#     (options-agent-live-spy, options-dashboard, …) and reusing them would let
+#     compose adopt or recreate a live container
+#   - no `restart:` policy and no ports; these are one-off `run --rm` jobs
+#   - reuses the already-built `options-algo-trader` image (no `build:`), so
+#     nothing is rebuilt out from under the running agents
+#
+# Usage (from the RL worktree, never from the live clone):
+#   docker-compose -p rl -f docker-compose.rl.yml run --rm rl python scripts/...
+services:
+  rl:
+    image: options-algo-trader
+    env_file:
+      - options_agent/.env
+    environment:
+      - PYTHONUNBUFFERED=1
+      # Keep BLAS single-threaded; parallelism is at the symbol level and we do
+      # not want to contend with the live agents for cores.
+      - OMP_NUM_THREADS=1
+      - OPENBLAS_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+    volumes:
+      # Shared caches (append-only in practice: option chains/bars are added on
+      # miss, never rewritten) so we don't re-download a year of data.
+      - ./options_agent/data_cache:/app/data_cache
+      # Live code mounts — iterate without rebuilding the image.
+      - ./options_agent/scripts:/app/scripts:ro
+      - ./options_agent/src:/app/src:ro
+      - ./options_agent/config:/app/config:ro
+      # tests/ is NOT mounted by the live services; mount it so pytest can see
+      # new test files without an image rebuild.
+      - ./options_agent/tests:/app/tests:ro
+      # RL artifacts + reports (writable, and outside any live path).
+      - ./options_agent/rl_runs:/app/rl_runs
+      - ./options_agent/docs:/app/docs

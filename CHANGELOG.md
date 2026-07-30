@@ -229,3 +229,4 @@
 - [2026-07-22] Reverted: options_agent/scripts/run_sweet_spot_agent.py — Removed live QQQ kill-switch per request
 - [2026-07-29] Modified: options_agent/scripts/replay_sweet_spot.py — Fixed VIX lookahead: added `resolve_day_vix()` + `--vix-lag N` (default 1) so the whole-day sit-out gate and MarketIndicators.vix use the PRIOR session's ^VIX close instead of today's settled close (unknowable at the 10:30 scan). `--vix-lag 0` reproduces pre-fix runs.
 - [2026-07-29] Modified: options_agent/scripts/sweep_mag7_params.py — Use the shared `resolve_day_vix()` helper so the sweep inherits the same VIX lag semantics (was a verbatim copy of the look-ahead logic).
+- [2026-07-29] Created: docker-compose.rl.yml — isolated compose stack (`-p rl`) for RL/backtest jobs; no container_name keys, no build, no restart policy, so it cannot adopt/recreate or rebuild the live trading containers. Mounts data_cache + scripts/src/config/tests read-only-ish plus writable rl_runs/docs.

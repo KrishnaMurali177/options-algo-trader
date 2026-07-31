@@ -1,6 +1,6 @@
-"""Fund Performance — interactive time-range view of the paper track record.
+"""Fund Performance — interactive time-range view, paper + live overlay.
 Normalized to a flat 2 contracts/position. Periods: 1W / 1M / 3M / 6M / YTD / All / Custom.
-"""
+Live keys read from mounted /app/.env.live (paper connection untouched)."""
 from __future__ import annotations
 
 import os
@@ -24,21 +24,44 @@ except Exception:
 
 st.set_page_config(page_title="Fund Performance", layout="wide")
 st.title("📈 Fund Performance")
-st.caption("Paper track record · normalized to a flat **2 contracts/position** "
-           "(strips duplication & lot-size differences).")
+st.caption("Normalized to a flat **2 contracts/position** (strips duplication & lot-size differences).")
+
+EMPTY = pd.DataFrame(columns=["date", "symbol", "dir", "strike", "pnl", "win"])
 
 
-@st.cache_data(ttl=600, show_spinner="Loading trades from Alpaca…")
-def load_trades() -> pd.DataFrame:
-    from src.utils.alpaca_paper import AlpacaPaperTrader
+def _live_keys():
+    k = s = None
+    try:
+        for ln in open("/app/.env.live"):
+            ln = ln.strip()
+            if ln.startswith("ALPACA_API_KEY="):
+                k = ln.split("=", 1)[1].strip().strip('"').strip("'")
+            elif ln.startswith("ALPACA_SECRET_KEY="):
+                s = ln.split("=", 1)[1].strip().strip('"').strip("'")
+    except Exception:
+        return None
+    return (k, s) if k and s else None
+
+
+@st.cache_data(ttl=600, show_spinner="Loading trades…")
+def load_trades(account: str) -> pd.DataFrame:
+    from alpaca.trading.client import TradingClient
     from alpaca.trading.requests import GetOrdersRequest
     from alpaca.trading.enums import QueryOrderStatus
 
-    t = AlpacaPaperTrader()
+    if account == "paper":
+        from src.utils.alpaca_paper import AlpacaPaperTrader
+        client = AlpacaPaperTrader().client
+    else:
+        keys = _live_keys()
+        if not keys:
+            return EMPTY.copy()
+        client = TradingClient(keys[0], keys[1], paper=False)
+
     out, seen, until = [], set(), None
     while True:
-        b = t.client.get_orders(GetOrdersRequest(status=QueryOrderStatus.ALL, limit=500,
-                                                 direction="desc", until=until))
+        b = client.get_orders(GetOrdersRequest(status=QueryOrderStatus.ALL, limit=500,
+                                               direction="desc", until=until))
         if not b:
             break
         nn = 0
@@ -50,8 +73,8 @@ def load_trades() -> pd.DataFrame:
         if nn == 0 or len(b) < 500:
             break
 
-    def und(s):
-        return s[:-15] if len(s) > 15 else s
+    def und(x):
+        return x[:-15] if len(x) > 15 else x
 
     pos = defaultdict(lambda: {"bc": 0.0, "bq": 0, "sc": 0.0, "sq": 0, "u": None, "cp": None, "k": None})
     for o in out:
@@ -78,85 +101,92 @@ def load_trades() -> pd.DataFrame:
     if len(df):
         df["win"] = df["pnl"] > 0
         df = df.sort_values("date").reset_index(drop=True)
-    return df
+    return df if len(df) else EMPTY.copy()
 
 
-df = load_trades()
-if df.empty:
-    st.warning("No trades found on the account.")
+df_p = load_trades("paper")
+df_l = load_trades("live")
+has_live = not df_l.empty
+if df_p.empty and not has_live:
+    st.warning("No trades found.")
     st.stop()
 
 today = (datetime.now(ET).date() if ET else date.today())
-first = df["date"].min()
+first = df_p["date"].min() if not df_p.empty else df_l["date"].min()
 
-top = st.columns([3, 1])
-period = top[0].radio("Period", ["1W", "1M", "3M", "6M", "YTD", "All", "Custom"],
-                      horizontal=True, index=2)
-if top[1].button("🔄 Refresh data"):
+c = st.columns([2, 2, 1])
+period = c[0].radio("Period", ["1W", "1M", "3M", "6M", "YTD", "All", "Custom"], horizontal=True, index=2)
+view = c[1].radio("Account", ["Paper", "Live", "Both"] if has_live else ["Paper"],
+                  horizontal=True, index=(2 if has_live else 0))
+if c[2].button("🔄 Refresh"):
     load_trades.clear()
     st.rerun()
 
 if period == "Custom":
-    c1, c2 = st.columns(2)
-    start = c1.date_input("Start", value=first, min_value=first, max_value=today)
-    end = c2.date_input("End", value=today, min_value=first, max_value=today)
+    cc = st.columns(2)
+    start = cc[0].date_input("Start", value=first, min_value=first, max_value=today)
+    end = cc[1].date_input("End", value=today, min_value=first, max_value=today)
 else:
     end = today
-    start = {
-        "1W": today - timedelta(days=7),
-        "1M": today - timedelta(days=30),
-        "3M": today - timedelta(days=91),
-        "6M": today - timedelta(days=182),
-        "YTD": date(today.year, 1, 1),
-        "All": first,
-    }[period]
+    start = {"1W": today - timedelta(days=7), "1M": today - timedelta(days=30),
+             "3M": today - timedelta(days=91), "6M": today - timedelta(days=182),
+             "YTD": date(today.year, 1, 1), "All": first}[period]
 
-d = df[(df["date"] >= start) & (df["date"] <= end)].copy()
-st.caption(f"**{start} → {end}** · {len(d)} trades")
-if d.empty:
-    st.info("No trades in this range.")
-    st.stop()
 
-daily = d.groupby("date")["pnl"].sum().sort_index()
-cum = daily.cumsum()
-mdd = float((cum - cum.cummax()).min())
-net = float(d["pnl"].sum())
-wr = float(d["win"].mean() * 100)
+def clip(df):
+    return df[(df["date"] >= start) & (df["date"] <= end)].copy() if len(df) else df
 
-k = st.columns(6)
-k[0].metric("Net P&L (2ct)", f"${net:,.0f}")
-k[1].metric("Trades", f"{len(d)}")
-k[2].metric("Win rate", f"{wr:.0f}%")
-k[3].metric("Avg / trade", f"${net / len(d):,.0f}")
-k[4].metric("Best day", f"${daily.max():,.0f}")
-k[5].metric("Max drawdown", f"${mdd:,.0f}")
 
-# Equity curve with range slider
+dp, dl = clip(df_p), clip(df_l)
+st.caption(f"**{start} → {end}**")
+
+# KPIs for the selected view (Live if Live, else Paper baseline)
+primary = dl if view == "Live" else dp
+plabel = "Live (real money)" if view == "Live" else "Paper"
+if primary.empty:
+    st.info(f"No {plabel} trades in this range.")
+else:
+    daily = primary.groupby("date")["pnl"].sum().sort_index()
+    cumser = daily.cumsum()
+    net = float(primary["pnl"].sum())
+    k = st.columns(6)
+    k[0].metric(f"{plabel} · Net P&L", f"${net:,.0f}")
+    k[1].metric("Trades", f"{len(primary)}")
+    k[2].metric("Win rate", f"{primary['win'].mean() * 100:.0f}%")
+    k[3].metric("Avg / trade", f"${net / len(primary):,.0f}")
+    k[4].metric("Best day", f"${daily.max():,.0f}")
+    k[5].metric("Max drawdown", f"${float((cumser - cumser.cummax()).min()):,.0f}")
+    if view == "Both" and not dl.empty:
+        lnet = float(dl["pnl"].sum())
+        st.caption(f"🔴 **Live** in range: net **${lnet:,.0f}** · win rate {dl['win'].mean()*100:.0f}% · "
+                   f"intervention cost (paper − live) = **${net - lnet:,.0f}**")
+
+# Equity curve overlay
 fig = go.Figure()
-fig.add_trace(go.Scatter(x=cum.index, y=cum.values, mode="lines", name="Cumulative P&L",
-                         fill="tozeroy", line=dict(color="#2e7d32", width=2)))
+if view in ("Paper", "Both") and not dp.empty:
+    cp = dp.groupby("date")["pnl"].sum().sort_index().cumsum()
+    fig.add_trace(go.Scatter(x=cp.index, y=cp.values, name="Paper (untouched)",
+                             mode="lines", line=dict(color="#2e7d32", width=2)))
+if view in ("Live", "Both") and not dl.empty:
+    cl = dl.groupby("date")["pnl"].sum().sort_index().cumsum()
+    fig.add_trace(go.Scatter(x=cl.index, y=cl.values, name="Live (real money)",
+                             mode="lines", line=dict(color="#c62828", width=2)))
 fig.update_layout(title="Cumulative P&L (2ct)", height=400, margin=dict(t=40, b=10),
-                  xaxis=dict(rangeslider=dict(visible=True)))
+                  hovermode="x unified", xaxis=dict(rangeslider=dict(visible=True)))
 st.plotly_chart(fig, use_container_width=True)
 
-# Weekly bars
-d["week"] = pd.to_datetime(d["date"]).dt.to_period("W").apply(lambda p: p.start_time.date())
-wk = d.groupby("week")["pnl"].sum()
-figw = go.Figure(go.Bar(x=[str(x) for x in wk.index], y=wk.values,
-                        marker_color=["#2e7d32" if v >= 0 else "#c62828" for v in wk.values]))
-figw.update_layout(title="Weekly P&L (2ct)", height=320, margin=dict(t=40, b=10))
-st.plotly_chart(figw, use_container_width=True)
+# Weekly bars + per-symbol for the primary view
+if not primary.empty:
+    primary["week"] = pd.to_datetime(primary["date"]).dt.to_period("W").apply(lambda p: p.start_time.date())
+    wk = primary.groupby("week")["pnl"].sum()
+    figw = go.Figure(go.Bar(x=[str(x) for x in wk.index], y=wk.values,
+                            marker_color=["#2e7d32" if v >= 0 else "#c62828" for v in wk.values]))
+    figw.update_layout(title=f"Weekly P&L — {plabel} (2ct)", height=320, margin=dict(t=40, b=10))
+    st.plotly_chart(figw, use_container_width=True)
 
-# Per-symbol
-g = (d.groupby("symbol")
-     .agg(trades=("pnl", "size"), win_rate=("win", "mean"), pnl=("pnl", "sum"))
-     .reset_index())
-g["win_rate"] = (g["win_rate"] * 100).round(0).astype(int).astype(str) + "%"
-g["pnl"] = g["pnl"].round(0)
-g = g.sort_values("pnl", ascending=False)
-st.subheader("By symbol")
-st.dataframe(g, use_container_width=True, hide_index=True)
-
-with st.expander("Daily P&L table"):
-    st.dataframe(daily.reset_index().rename(columns={"pnl": "P&L (2ct)"}),
-                 use_container_width=True, hide_index=True)
+    g = (primary.groupby("symbol")
+         .agg(trades=("pnl", "size"), win_rate=("win", "mean"), pnl=("pnl", "sum")).reset_index())
+    g["win_rate"] = (g["win_rate"] * 100).round(0).astype(int).astype(str) + "%"
+    g["pnl"] = g["pnl"].round(0)
+    st.subheader(f"By symbol — {plabel}")
+    st.dataframe(g.sort_values("pnl", ascending=False), use_container_width=True, hide_index=True)

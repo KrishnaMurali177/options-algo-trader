@@ -236,3 +236,5 @@
 - [2026-07-29] Modified: ~/.claude/settings.json — Added Bash allow rules for ssh rohith@10.0.0.54 (no prompt for live box)
 - [2026-07-30] Created: options_agent/dashboard/pages/2_Fund_Performance.py — Interactive fund performance page (1W/1M/3M/6M/YTD/All/Custom range, equity curve, weekly bars, per-symbol), normalized 2ct
 - [2026-07-30] Modified: docker-compose.yml — Mount dashboard code into container (live edits, no rebuild)
+- [2026-07-31] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — Added live (real-money) overlay: Paper/Live/Both toggle, dual equity curves, per-period intervention-cost readout
+- [2026-07-31] Modified: docker-compose.yml — Mount .env.live (ro) into dashboard for live overlay

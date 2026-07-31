@@ -238,3 +238,4 @@
 - [2026-07-30] Modified: docker-compose.yml — Mount dashboard code into container (live edits, no rebuild)
 - [2026-07-31] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — Added live (real-money) overlay: Paper/Live/Both toggle, dual equity curves, per-period intervention-cost readout
 - [2026-07-31] Modified: docker-compose.yml — Mount .env.live (ro) into dashboard for live overlay
+- [2026-07-31] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — Both mode: compare matched symbols (SPY/QQQ) clamped to live inception so intervention cost is apples-to-apples (-$31, matches ledger)

@@ -133,16 +133,27 @@ else:
              "YTD": date(today.year, 1, 1), "All": first}[period]
 
 
+live_start = df_l["date"].min() if not df_l.empty else None
+# In "Both", clamp to where BOTH were live (matched TIME window) for a fair comparison.
+eff_start = max(start, live_start) if (view == "Both" and live_start) else start
+
+
 def clip(df):
-    return df[(df["date"] >= start) & (df["date"] <= end)].copy() if len(df) else df
+    return df[(df["date"] >= eff_start) & (df["date"] <= end)].copy() if len(df) else df
 
 
 dp, dl = clip(df_p), clip(df_l)
-st.caption(f"**{start} → {end}**")
+lsyms = sorted(dl["symbol"].unique()) if not dl.empty else []
+# In "Both", compare paper on the SAME symbols live trades (SPY/QQQ) — apples-to-apples.
+dp_view = dp[dp["symbol"].isin(lsyms)].copy() if (view == "Both" and lsyms) else dp
+_rng = f"**{eff_start} → {end}**"
+if view == "Both" and lsyms:
+    _rng += f" · matched **{', '.join(lsyms)}** since live inception (select *Paper* for the full fund)"
+st.caption(_rng)
 
-# KPIs for the selected view (Live if Live, else Paper baseline)
-primary = dl if view == "Live" else dp
-plabel = "Live (real money)" if view == "Live" else "Paper"
+# KPIs for the selected view (Live if Live, else Paper)
+primary = dl if view == "Live" else dp_view
+plabel = "Live (real money)" if view == "Live" else ("Paper · SPY/QQQ" if view == "Both" else "Paper")
 if primary.empty:
     st.info(f"No {plabel} trades in this range.")
 else:
@@ -158,14 +169,16 @@ else:
     k[5].metric("Max drawdown", f"${float((cumser - cumser.cummax()).min()):,.0f}")
     if view == "Both" and not dl.empty:
         lnet = float(dl["pnl"].sum())
-        st.caption(f"🔴 **Live** in range: net **${lnet:,.0f}** · win rate {dl['win'].mean()*100:.0f}% · "
-                   f"intervention cost (paper − live) = **${net - lnet:,.0f}**")
+        st.caption(f"🔴 **Live** (real money): net **${lnet:,.0f}** · WR {dl['win'].mean()*100:.0f}%  |  "
+                   f"🟢 **Paper** (same symbols): net **${net:,.0f}**  |  "
+                   f"**intervention/divergence cost (paper − live) = ${net - lnet:,.0f}**")
 
 # Equity curve overlay
 fig = go.Figure()
-if view in ("Paper", "Both") and not dp.empty:
-    cp = dp.groupby("date")["pnl"].sum().sort_index().cumsum()
-    fig.add_trace(go.Scatter(x=cp.index, y=cp.values, name="Paper (untouched)",
+if view in ("Paper", "Both") and not dp_view.empty:
+    cp = dp_view.groupby("date")["pnl"].sum().sort_index().cumsum()
+    _pname = "Paper · SPY/QQQ (untouched)" if view == "Both" else "Paper (untouched)"
+    fig.add_trace(go.Scatter(x=cp.index, y=cp.values, name=_pname,
                              mode="lines", line=dict(color="#2e7d32", width=2)))
 if view in ("Live", "Both") and not dl.empty:
     cl = dl.groupby("date")["pnl"].sum().sort_index().cumsum()

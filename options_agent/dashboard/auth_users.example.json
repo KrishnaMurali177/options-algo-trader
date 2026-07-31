@@ -1,0 +1,14 @@
+{
+  "_comment": "Template only. Copy to auth_users.json (gitignored) and populate with `python dashboard/make_user.py <username>`. Never commit real hashes or the cookie_secret.",
+  "cookie_secret": "GENERATE_WITH_secrets.token_hex(32)",
+  "session_ttl_minutes": 480,
+  "users": {
+    "example_user": {
+      "display": "Example User",
+      "role": "member",
+      "salt": "00000000000000000000000000000000",
+      "iterations": 240000,
+      "hash": "REPLACE_ME_pbkdf2_hmac_sha256_hex"
+    }
+  }
+}

@@ -1,5 +1,12 @@
 # Changelog
 
+- [2026-07-31] Created: options_agent/dashboard/_auth.py — Dependency-free contributor login gate (PBKDF2-HMAC-SHA256, per-user salt, fail-closed require_auth()); stdlib-only to avoid rebuilding the shared agent image. Stashes identity in st.session_state["auth_user"] for future per-user isolation.
+- [2026-07-31] Created: options_agent/dashboard/make_user.py — CLI to add/reset a dashboard login (getpass prompt, fresh salt, PBKDF2 hash; writes gitignored auth_users.json, chmod 0600).
+- [2026-07-31] Created: options_agent/dashboard/auth_users.example.json — Template for the auth config (never commit real hashes/cookie_secret).
+- [2026-07-31] Created: options_agent/dashboard/AUTH_README.md — Auth setup, Tailscale hosting, threat model, and step-2 (per-user credential isolation) roadmap.
+- [2026-07-31] Modified: options_agent/dashboard/app.py — Added require_auth() gate immediately after st.set_page_config().
+- [2026-07-31] Modified: .gitignore — Ignore options_agent/dashboard/auth_users.json (PBKDF2 hashes + cookie secret).
+
 - [2026-07-06] Created: options_agent/src/utils/broker.py — get_trader() factory selecting execution backend via BROKER env (default alpaca; public → Public.com). Execution-only switch; market data/0DTE chain stay on Alpaca.
 - [2026-07-06] Created: options_agent/src/utils/public_broker.py — PublicTrader: 0DTE single-leg option execution on Public.com via publicdotcom-py, mirroring AlpacaPaperTrader interface/return-shapes. PUBLIC_DRY_RUN (default true) routes orders through Public's preflight (validated+logged, not placed) since Public has no paper env. Option quotes delegate to Alpaca data. Some response-field mappings flagged # CONFIRM (need live-account validation).
 - [2026-07-06] Created: options_agent/.env.public.example — Template for Public.com creds (PUBLIC_API_SECRET_KEY/PUBLIC_ACCOUNT_NUMBER), BROKER=public, PUBLIC_DRY_RUN=true.

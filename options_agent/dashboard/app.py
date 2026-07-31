@@ -59,6 +59,10 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+# ── Contributor auth gate (see dashboard/_auth.py) ──
+from _auth import require_auth  # noqa: E402
+require_auth()
+
 # ── Swiss Luxury Theme CSS ────────────────────────────────────────
 st.markdown("""
 <style>

@@ -17,5 +17,8 @@ gmail_credentials.json
 gmail_token.json
 client_secret*.json
 
+# Dashboard auth (PBKDF2 hashes + cookie secret) — never commit real creds
+options_agent/dashboard/auth_users.json
+
 # Data cache
 options_agent/data_cache/

@@ -184,7 +184,7 @@ def _inject_chrome_css() -> None:
     st.markdown(
         "<style>"
         '[data-testid="stToolbar"],[data-testid="stDecoration"],'
-        "#MainMenu,footer{display:none !important;}"
+        '[data-testid="stHeader"],#MainMenu,footer{display:none !important;}'
         "</style>",
         unsafe_allow_html=True,
     )
@@ -204,10 +204,15 @@ def _inject_auth_css(max_width: int = 460) -> None:
         background:#151823 !important;border:1px solid #262b3d !important;border-radius:16px !important;
         padding:26px 26px 18px !important;
         box-shadow:0 24px 70px rgba(0,0,0,.55),0 0 0 1px rgba(124,92,255,.08),0 0 60px rgba(124,92,255,.10) !important;}}
+    [data-testid="stForm"] h1,[data-testid="stForm"] h2,[data-testid="stForm"] h3{{
+        display:none !important;margin:0 !important;}}
     [data-testid="stForm"] label{{color:#aeb4c2 !important;font-size:.8rem !important;font-weight:500 !important;}}
     [data-testid="stTextInput"] input{{
         background:#0e1117 !important;border:1px solid #2a2f42 !important;color:#eaecef !important;
         border-radius:10px !important;padding:.6rem .8rem !important;}}
+    [data-testid="stTextInput"] button{{
+        background:#0e1117 !important;border:1px solid #2a2f42 !important;border-left:0 !important;
+        color:#8890a2 !important;border-radius:0 10px 10px 0 !important;}}
     [data-testid="stTextInput"] input:focus{{
         border-color:#7c5cff !important;box-shadow:0 0 0 2px rgba(124,92,255,.25) !important;}}
     [data-testid="stFormSubmitButton"] button{{

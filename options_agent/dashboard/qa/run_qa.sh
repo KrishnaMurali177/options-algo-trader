@@ -25,12 +25,15 @@ fi
 SHA=$(git -C "$REPO" rev-parse --short HEAD 2>/dev/null || echo "?")
 
 echo "== seed QA config + run deterministic AppTest suite =="
-docker run --rm \
+if docker run --rm \
   -e DASHBOARD_AUTH_CONFIG="$CFG_IN_CTR" \
   -v "$DASH":/app/dashboard \
   "$IMAGE" bash -c \
-  "python dashboard/qa/qa_bootstrap.py && python dashboard/qa/test_auth_apptest.py"
-APPTEST_RC=$?
+  "python dashboard/qa/qa_bootstrap.py && python dashboard/qa/test_auth_apptest.py"; then
+  APPTEST_RC=0
+else
+  APPTEST_RC=$?
+fi
 
 BROWSER_RC=0
 if [ "$RUN_BROWSER" = 1 ]; then

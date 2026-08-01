@@ -1,35 +1,40 @@
 #!/usr/bin/env python3
-"""Add or reset a dashboard login in ``auth_users.json`` (stdlib only).
+"""Bootstrap the FIRST owner account for the dashboard (one-time).
 
-Run it inside the dashboard container so it edits the mounted config file::
+Everyone else self-signs-up through a one-time invite link in the browser; this
+script only exists to create the initial owner so the invite machinery has an
+admin. Run it inside the dashboard container so it writes the mounted config::
 
     docker exec -it options-dashboard \
-        python dashboard/make_user.py <username> --role member --display "Name"
+        python dashboard/make_user.py rohith --name "Rohith" --role owner
 
-Prompts for the password (never echoed), generates a fresh 16-byte salt and
-stores a PBKDF2-HMAC-SHA256 hash — plaintext is never written. Creates the file
-with a random ``cookie_secret`` (reserved for future signed-cookie sessions) if
-it does not yet exist, and chmods it to 0600.
+Prompts for the password (never echoed), hashes it with bcrypt via
+streamlit-authenticator's Hasher, and writes/updates the gitignored
+``auth_config.yaml`` (creating a random cookie key if absent), chmod 0600.
 """
 from __future__ import annotations
 
 import argparse
 import getpass
-import json
 import os
 import secrets
 import sys
 
-from _auth import _CONFIG_PATH, _PBKDF2_ITERATIONS, hash_password
+import yaml
+from streamlit_authenticator import Hasher
+from streamlit_authenticator.utilities import Validator
+
+from _auth import _CONFIG_PATH
 
 _MIN_PW_LEN = 10
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="Add/reset a dashboard login.")
+    ap = argparse.ArgumentParser(description="Bootstrap the dashboard owner account.")
     ap.add_argument("username")
-    ap.add_argument("--role", default="member", choices=["member", "owner"])
-    ap.add_argument("--display", default=None, help="Display name (defaults to username)")
+    ap.add_argument("--name", default=None, help="Display name (defaults to username)")
+    ap.add_argument("--email", default="", help="Optional; used only for reset/2FA")
+    ap.add_argument("--role", default="owner", choices=["owner", "member"])
     ap.add_argument("--config", default=_CONFIG_PATH)
     args = ap.parse_args()
 
@@ -40,40 +45,46 @@ def main() -> int:
 
     if os.path.exists(args.config):
         with open(args.config) as fh:
-            cfg = json.load(fh)
+            cfg = yaml.safe_load(fh) or {}
     else:
-        cfg = {
-            "cookie_secret": secrets.token_hex(32),
-            "session_ttl_minutes": 480,
-            "users": {},
-        }
+        cfg = {}
+    cfg.setdefault("credentials", {}).setdefault("usernames", {})
+    cfg.setdefault("cookie", {})
+    cfg.setdefault("invites", {})
+    cfg.setdefault("security", {"login_captcha": True, "max_login_attempts": 8})
+    cfg["cookie"].setdefault("name", "options_dash_auth")
+    cfg["cookie"].setdefault("expiry_days", 7)
+    if not cfg["cookie"].get("key"):
+        cfg["cookie"]["key"] = secrets.token_hex(32)
 
     pw1 = getpass.getpass(f"Password for '{username}': ")
-    if len(pw1) < _MIN_PW_LEN:
-        print(f"Password must be at least {_MIN_PW_LEN} characters.", file=sys.stderr)
+    ok, _msg = Validator().validate_password(pw1)
+    if not ok or len(pw1) < _MIN_PW_LEN:
+        print("Password too weak (need length + upper/lower/digit/special).",
+              file=sys.stderr)
         return 1
     if getpass.getpass("Confirm password: ") != pw1:
         print("Passwords do not match.", file=sys.stderr)
         return 1
 
-    salt = secrets.token_bytes(16)
-    cfg.setdefault("users", {})[username] = {
-        "display": args.display or args.username,
-        "role": args.role,
-        "salt": salt.hex(),
-        "iterations": _PBKDF2_ITERATIONS,
-        "hash": hash_password(pw1, salt, _PBKDF2_ITERATIONS),
+    cfg["credentials"]["usernames"][username] = {
+        "email": args.email,
+        "name": args.name or args.username,
+        "password": Hasher().hash(pw1),
+        "roles": [args.role],
+        "failed_login_attempts": 0,
+        "logged_in": False,
     }
 
     tmp = args.config + ".tmp"
     with open(tmp, "w") as fh:
-        json.dump(cfg, fh, indent=2)
+        yaml.safe_dump(cfg, fh, sort_keys=False)
     os.replace(tmp, args.config)
     try:
         os.chmod(args.config, 0o600)
     except OSError:
         pass
-    print(f"✓ user '{username}' ({args.role}) written to {args.config}")
+    print(f"✓ {args.role} '{username}' written to {args.config}")
     return 0
 
 

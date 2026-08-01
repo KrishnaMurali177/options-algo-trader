@@ -1,0 +1,27 @@
+# Template only. Real config lives in auth_config.yaml (gitignored, box-only,
+# chmod 600). Bootstrap it with:
+#   docker exec -it options-dashboard python dashboard/make_user.py <user> --role owner
+# Never commit real password hashes, the cookie key, or invite hashes.
+
+credentials:
+  usernames:
+    example_owner:
+      email: ""                       # optional (reset/2FA only)
+      name: Example Owner
+      password: "$2b$12$REPLACE_WITH_BCRYPT_HASH"   # bcrypt, via Hasher().hash()
+      roles: [owner]
+      failed_login_attempts: 0
+      logged_in: false
+
+cookie:
+  name: options_dash_auth
+  key: REPLACE_WITH_secrets.token_hex_32   # signs the session cookie
+  expiry_days: 7
+
+security:
+  login_captcha: true       # CAPTCHA on the login form (bot mitigation)
+  max_login_attempts: 8     # per-user lockout threshold
+
+# One-time invite links (managed from the Admin page). Only SHA-256 hashes of
+# tokens are stored, never the raw token.
+invites: {}

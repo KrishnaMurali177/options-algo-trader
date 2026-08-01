@@ -1,11 +1,15 @@
 # Changelog
 
-- [2026-07-31] Created: options_agent/dashboard/_auth.py — Dependency-free contributor login gate (PBKDF2-HMAC-SHA256, per-user salt, fail-closed require_auth()); stdlib-only to avoid rebuilding the shared agent image. Stashes identity in st.session_state["auth_user"] for future per-user isolation.
-- [2026-07-31] Created: options_agent/dashboard/make_user.py — CLI to add/reset a dashboard login (getpass prompt, fresh salt, PBKDF2 hash; writes gitignored auth_users.json, chmod 0600).
-- [2026-07-31] Created: options_agent/dashboard/auth_users.example.json — Template for the auth config (never commit real hashes/cookie_secret).
-- [2026-07-31] Created: options_agent/dashboard/AUTH_README.md — Auth setup, Tailscale hosting, threat model, and step-2 (per-user credential isolation) roadmap.
+- [2026-07-31] Rewrote: options_agent/dashboard/_auth.py — Public (Tailscale Funnel) invite-only auth on streamlit-authenticator 0.4.2 (bcrypt, signed cookie sessions, CAPTCHA, per-user lockout). Adds one-time invite links (256-bit token, SHA-256 stored, single-use, expiring), fail-closed require_auth(), and owner render_admin(). Replaces the earlier stdlib PBKDF2 gate after scope moved to a hosted multi-user app.
+- [2026-07-31] Rewrote: options_agent/dashboard/make_user.py — Now bootstraps the FIRST owner into auth_config.yaml (bcrypt via Hasher, random cookie key, Validator strength check, chmod 0600); others self-signup via invite links.
+- [2026-07-31] Created: options_agent/dashboard/dashboard.Dockerfile — Decoupled dashboard image (FROM options-algo-trader + streamlit-authenticator) so the live trading agents' image is never touched by dashboard deps; XSRF on, usage stats off.
+- [2026-07-31] Created: options_agent/dashboard/pages/9_Admin.py — Owner-only page to generate/list/revoke one-time invite links.
+- [2026-07-31] Created: options_agent/dashboard/auth_config.example.yaml — Template config (credentials/cookie/security/invites); real auth_config.yaml is gitignored.
+- [2026-07-31] Deleted: options_agent/dashboard/auth_users.example.json — Superseded by auth_config.example.yaml.
+- [2026-07-31] Created: options_agent/dashboard/AUTH_README.md — Funnel/invite setup, security posture, bootstrap + go-public steps, step-2 roadmap.
 - [2026-07-31] Modified: options_agent/dashboard/app.py — Added require_auth() gate immediately after st.set_page_config().
-- [2026-07-31] Modified: .gitignore — Ignore options_agent/dashboard/auth_users.json (PBKDF2 hashes + cookie secret).
+- [2026-07-31] Modified: docker-compose.yml — dashboard service builds the decoupled options-dashboard image, mounts dashboard code + auth_config.yaml (rw), passes DASHBOARD_PUBLIC_URL.
+- [2026-07-31] Modified: .gitignore — Ignore options_agent/dashboard/auth_config.yaml (+ .tmp/.lock).
 
 - [2026-07-06] Created: options_agent/src/utils/broker.py — get_trader() factory selecting execution backend via BROKER env (default alpaca; public → Public.com). Execution-only switch; market data/0DTE chain stay on Alpaca.
 - [2026-07-06] Created: options_agent/src/utils/public_broker.py — PublicTrader: 0DTE single-leg option execution on Public.com via publicdotcom-py, mirroring AlpacaPaperTrader interface/return-shapes. PUBLIC_DRY_RUN (default true) routes orders through Public's preflight (validated+logged, not placed) since Public has no paper env. Option quotes delegate to Alpaca data. Some response-field mappings flagged # CONFIRM (need live-account validation).

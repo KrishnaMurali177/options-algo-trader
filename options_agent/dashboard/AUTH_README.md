@@ -1,57 +1,67 @@
-# Dashboard authentication
+# Dashboard authentication — public (Funnel), invite-only
 
-A dependency-free login gate for the Streamlit dashboard. Contributor-only,
-hosted over Tailscale (private), no public exposure.
+The fund dashboard is exposed to the public internet via **Tailscale Funnel**
+(HTTPS) and gated by an **invite-only** account system. Anyone can reach the URL;
+only holders of a valid one-time invite link can create an account, and only
+signed-in users see anything.
 
-## How it works
-- `_auth.py` verifies passwords with **PBKDF2-HMAC-SHA256** (per-user 16-byte
-  salt, 240k iterations, `hmac.compare_digest`). Only hashes are stored.
-- Credentials live in `auth_users.json` — **gitignored**, box-only, mounted
-  read-only into the container. `auth_users.example.json` is the template.
-- Every page calls `require_auth()` right after `st.set_page_config()`. It
-  **fails closed** (missing config ⇒ dashboard blocked, never exposed) and
-  stashes the identity in `st.session_state["auth_user"]`.
-- **No third-party dependency** on purpose: the dashboard shares a Docker image
-  with the live trading agents, so a new pip dep would force rebuilding that
-  image. stdlib-only keeps the agents untouched — deploy is just
-  `docker restart options-dashboard`, no rebuild.
+## Stack
+- **`streamlit-authenticator` 0.4.2** — bcrypt password hashes, signed HttpOnly
+  cookie sessions, CAPTCHA, per-user login **lockout** (`max_login_attempts`),
+  optional 2FA.
+- **`_auth.py`** — adds a custom **one-time invite-link** layer + `require_auth()`
+  (called at the top of every page) + the owner Admin panel.
+- **Decoupled image** (`dashboard.Dockerfile` → `options-dashboard`): the base
+  agent image plus the auth deps, so the **live trading agents are never
+  rebuilt** by dashboard dependencies.
 
-## Setup (on the box)
+## Security posture
+| Concern | Mitigation |
+|---|---|
+| Password theft | bcrypt hashes only; strength enforced by `Validator`; never logged |
+| Sessions | signed HttpOnly cookie, short expiry; TLS via Funnel |
+| Signup abuse | reachable only with a valid `?invite=` token — 256-bit, **SHA-256 stored** (leaked config ⇒ no usable links), single-use, expiring |
+| Brute force | CAPTCHA + per-user lockout; generic errors (no user enumeration) |
+| Config at rest | gitignored `auth_config.yaml`, `chmod 600`, atomic writes under `flock` |
+| Misconfig | **fail-closed** — blocks the dashboard, never exposes it |
+| XSRF | Streamlit `enableXsrfProtection=true` |
+
+⚠️ **Data privacy gap (until step 2):** every signed-in user sees the *single
+fund* including the live overlay. Invite only people you would show your account
+to. Step 2 adds per-user data/credential isolation.
+
+## Bootstrap (once, on the box)
 ```bash
-# create / reset a login (edits the mounted auth_users.json)
-docker exec -it options-dashboard \
-    python dashboard/make_user.py rohith --role owner --display "Rohith"
-docker exec -it options-dashboard \
-    python dashboard/make_user.py alice --role member --display "Alice"
-# no rebuild — restart to be safe
-docker restart options-dashboard
+# 1) build the decoupled dashboard image (base image must exist first)
+cd ~/projects/options_algo/options-algo-trader
+docker build -f options_agent/dashboard/dashboard.Dockerfile -t options-dashboard .
+
+# 2) create the owner account (writes gitignored auth_config.yaml)
+touch options_agent/dashboard/auth_config.yaml   # so the RW mount has a target
+docker compose run --rm dashboard \
+    python dashboard/make_user.py rohith --name "Rohith" --role owner
+
+# 3) bring the dashboard up on the new image (still private on :8501)
+docker-compose up -d dashboard
 ```
 
-## Hosting (Tailscale, private)
-Served via `tailscale serve` (tailnet-only HTTPS), **not** Funnel — the
-dashboard never touches the public internet. Reachable from any device logged
-into the tailnet.
+## Go public (you run this — needs sudo)
+```bash
+# expose ONLY the dashboard, on Funnel port 8443 (":443/" is the multilingual app)
+sudo tailscale funnel --bg --https=8443 127.0.0.1:8501
+# set the public host so invite links render correctly, then restart:
+#   DASHBOARD_PUBLIC_URL=https://<host>.ts.net:8443  (in options_agent/.env)
+```
+Public URL: `https://<host>.tailXXXX.ts.net:8443`
 
-## Session behaviour
-Session-scoped: a login lasts `session_ttl_minutes` (default 480) and re-prompts
-on a hard refresh. Streamlit can't set a persistent cookie without a custom
-component; short sessions are acceptable (arguably desirable) for a real-money
-tool. Upgrade path: `streamlit-authenticator` for "remember me" cookies — at the
-cost of a shared-image rebuild.
+## Inviting contributors
+1. Sign in as owner → **Admin** page → *Generate one-time invite link*.
+2. Send the link privately (it is shown once, works once, expires).
+3. They open it, pick a username + strong password (CAPTCHA), and are in.
 
-## Threat model
-- **Solved (step 1):** only PBKDF2 hashes + a reserved cookie secret at rest;
-  generic login errors (no user enumeration); escalating failure throttle;
-  traffic WireGuard-encrypted within the tailnet even before TLS.
-- **NOT yet solved (step 2 — credential management):** per-user **live-key
-  isolation** and per-user **data views**. Until then, every logged-in
-  contributor sees the *current single fund*, including the live overlay.
-  When step 2 lands, live Alpaca keys must be encrypted per-user and unlockable
-  only by that user's own login secret — so even a co-builder with full box/repo
-  access cannot read another contributor's live keys.
-
-## Roadmap → step 2 (separate branch, deliberate)
-1. Per-user encrypted credential store (unlock key derived from login secret).
-2. A separate control-plane service owns the store + agent start/stop — the
-   read-only dashboard never holds keys or touches the Docker socket.
-3. Per-user data scoping in the dashboard, keyed off `st.session_state["auth_user"]`.
+## Roadmap → step 2 (separate branch)
+Per-user **encrypted** credential store (unlock derived from the user's own login
+secret, so even box/repo access can't read another user's live keys) + per-user
+data scoping in the dashboard, keyed off `st.session_state["auth_user"]`.
+Optional hardening already available in the stack: **owner TOTP/2FA** and
+`Encryptor` for encrypting the whole config at rest.

@@ -1,13 +1,22 @@
 services:
   dashboard:
-    build: .
-    image: options-algo-trader
+    # Decoupled image: base agent image + auth stack, so the live agents'
+    # image (options-algo-trader) is never touched by dashboard deps.
+    build:
+      context: .
+      dockerfile: options_agent/dashboard/dashboard.Dockerfile
+    image: options-dashboard
     container_name: options-dashboard
     ports:
       - "8501:8501"
     env_file:
       - options_agent/.env
+    environment:
+      # Public Funnel host, used to render one-time invite links.
+      - DASHBOARD_PUBLIC_URL=${DASHBOARD_PUBLIC_URL:-}
     volumes:
+      - ./options_agent/dashboard:/app/dashboard            # live code (no rebuild)
+      - ./options_agent/dashboard/auth_config.yaml:/app/dashboard/auth_config.yaml  # creds (read-write: signup/lockout)
       - ./options_agent/logs:/app/logs
       - ./options_agent/sweet_spot_journal:/app/sweet_spot_journal
       - ./options_agent/backtest_results:/app/backtest_results

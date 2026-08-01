@@ -120,3 +120,8 @@
 - [2026-05-29] Modified: options_agent/scripts/run_sweet_spot_agent.py — Fixed _safe_sleep to use wall clock (time.time) instead of monotonic clock so agents wake up after laptop lid suspend
 - [2026-06-12] Modified: options_agent/scripts/replay_sweet_spot.py — Added --require-real-options flag for real-pricing-only replay (skips synth fallback)
 - [2026-06-13] Created: LICENSE — Proprietary all-rights-reserved license with not-financial-advice disclaimer
+- [2026-08-01] Modified: options_agent/dashboard/_auth.py — QA-001: catch LoginError in require_auth() for generic time-based lockout message; OBS-001: st.rerun() after signup so login form shows at top
+- [2026-08-01] Modified: options_agent/dashboard/qa/run_qa.sh — ART-002/ART-003: conditional --env-file, pinned playwright==1.47.0
+- [2026-08-01] Modified: options_agent/dashboard/qa/test_auth_browser.py — OBS-003: add reused-invite scenario; QA-001 regression: 4-attempt lockout + message check
+- [2026-08-01] Modified: options_agent/dashboard/qa/test_auth_apptest.py — QA-001: add LoginError unit injection regression test
+- [2026-08-01] Created: options_agent/dashboard/qa/triage_2026-08-01T035830Z.md — Triage report: verdicts + rationale for QA-001, OBS-001..003, ART-001..004

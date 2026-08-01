@@ -198,7 +198,7 @@ def _handle_invite(cfg: dict, authenticator: stauth.Authenticate, token: str) ->
         _email, username, _name = authenticator.register_user(
             location="main",
             roles=[inv.get("role", "member")],
-            captcha=True,
+            captcha=bool(cfg.get("security", {}).get("register_captcha", True)),
             two_factor_auth=False,
             password_hint=True,
             merge_username_email=False,

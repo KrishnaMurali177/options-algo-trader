@@ -1,5 +1,16 @@
 # Changelog
 
+- [2026-07-31] Created: .claude/agents/ui-qa-tester.md — QA subagent that black/gray-box tests the dashboard UI (AppTest + Playwright, private :8502 only) and files evidence-backed bug reports; never edits source or touches live/real-money.
+- [2026-07-31] Created: .claude/agents/qa-triage-developer.md — Developer subagent that reproduces each reported bug before acting, classifies real vs false-positive, fixes only CONFIRMED defects + adds regression tests.
+- [2026-07-31] Created: .claude/agents/README.md — QA↔developer loop: the triage/reproduction gate ensures only real bugs are fixed.
+- [2026-07-31] Created: options_agent/dashboard/qa/qa_bootstrap.py — Seeds a throwaway QA auth config (CAPTCHA off, low lockout, owner+member, one invite token).
+- [2026-07-31] Created: options_agent/dashboard/qa/test_auth_apptest.py — Deterministic AppTest suite (gate, invite validate/expire/single-use, fail-closed, no content leak).
+- [2026-07-31] Created: options_agent/dashboard/qa/test_auth_browser.py — Playwright browser scaffold (signup, login, cookie session, wrong-pw, lockout, logout).
+- [2026-07-31] Created: options_agent/dashboard/qa/run_qa.sh — Box/Docker harness runner; stands up private :8502, runs both suites, collects artifacts, tears down.
+- [2026-07-31] Created: options_agent/dashboard/qa/README.md — How to run the QA harness.
+- [2026-07-31] Modified: options_agent/dashboard/_auth.py — Signup CAPTCHA now config-driven (security.register_captcha) so QA can automate; prod stays on.
+- [2026-07-31] Modified: .gitignore — Ignore qa/state and qa/reports runtime artifacts.
+
 - [2026-07-31] Rewrote: options_agent/dashboard/_auth.py — Public (Tailscale Funnel) invite-only auth on streamlit-authenticator 0.4.2 (bcrypt, signed cookie sessions, CAPTCHA, per-user lockout). Adds one-time invite links (256-bit token, SHA-256 stored, single-use, expiring), fail-closed require_auth(), and owner render_admin(). Replaces the earlier stdlib PBKDF2 gate after scope moved to a hosted multi-user app.
 - [2026-07-31] Rewrote: options_agent/dashboard/make_user.py — Now bootstraps the FIRST owner into auth_config.yaml (bcrypt via Hasher, random cookie key, Validator strength check, chmod 0600); others self-signup via invite links.
 - [2026-07-31] Created: options_agent/dashboard/dashboard.Dockerfile — Decoupled dashboard image (FROM options-algo-trader + streamlit-authenticator) so the live trading agents' image is never touched by dashboard deps; XSRF on, usage stats off.

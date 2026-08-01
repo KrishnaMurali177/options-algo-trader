@@ -22,5 +22,9 @@ options_agent/dashboard/auth_config.yaml
 options_agent/dashboard/auth_config.yaml.*
 options_agent/dashboard/auth_config.yaml.lock
 
+# QA harness runtime artifacts (throwaway configs, tokens, screenshots)
+options_agent/dashboard/qa/state/
+options_agent/dashboard/qa/reports/
+
 # Data cache
 options_agent/data_cache/

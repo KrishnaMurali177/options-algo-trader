@@ -42,7 +42,7 @@ if [ "$RUN_BROWSER" = 1 ]; then
   docker run -d --name oat-qa-dash -p 8502:8501 \
     -e DASHBOARD_AUTH_CONFIG="$CFG_IN_CTR" \
     -e DASHBOARD_PUBLIC_URL=http://localhost:8502 \
-    --env-file "$REPO/options_agent/.env" \
+    $([ -f "$REPO/options_agent/.env" ] && echo "--env-file $REPO/options_agent/.env") \
     -v "$DASH":/app/dashboard \
     "$IMAGE" >/dev/null
   for i in $(seq 1 30); do
@@ -57,7 +57,7 @@ if [ "$RUN_BROWSER" = 1 ]; then
       -e BASE_URL=http://localhost:8502 -e INVITE_TOKEN="$INVITE" \
       -e QA_REPORT_DIR=/qa/reports \
       -v "$QA_DIR":/qa \
-      "$PW_IMAGE" python /qa/test_auth_browser.py; then
+      "$PW_IMAGE" bash -c "pip install -q 'playwright==1.47.0' && python /qa/test_auth_browser.py"; then
     BROWSER_RC=0
   else
     BROWSER_RC=$?

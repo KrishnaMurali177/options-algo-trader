@@ -43,7 +43,7 @@ import streamlit as st
 import streamlit_authenticator as stauth
 import yaml
 from streamlit_authenticator.utilities import Validator
-from streamlit_authenticator.utilities.exceptions import RegisterError
+from streamlit_authenticator.utilities.exceptions import LoginError, RegisterError
 
 _CONFIG_PATH = os.environ.get(
     "DASHBOARD_AUTH_CONFIG",
@@ -218,9 +218,8 @@ def _handle_invite(cfg: dict, authenticator: stauth.Authenticate, token: str) ->
                 new_creds["usernames"][username]
             consume_invite(latest, token, username)
             _save_config(latest)
-        st.success("✅ Account created. Remove the invite link from the address "
-                   "bar and sign in.")
         st.query_params.clear()
+        st.rerun()  # invite param is gone; page reloads showing the login form
 
 
 def require_auth() -> dict:
@@ -248,13 +247,22 @@ def require_auth() -> dict:
 
     # ── login ──
     sec = cfg.get("security", {})
-    authenticator.login(
-        location="main",
-        max_login_attempts=int(sec.get("max_login_attempts", 8)),
-        captcha=bool(sec.get("login_captcha", True)),
-        fields={"Form name": "Sign in — fund dashboard"},
-        key="_auth_login",
-    )
+    try:
+        authenticator.login(
+            location="main",
+            max_login_attempts=int(sec.get("max_login_attempts", 8)),
+            captcha=bool(sec.get("login_captcha", True)),
+            fields={"Form name": "Sign in — fund dashboard"},
+            key="_auth_login",
+        )
+    except LoginError:
+        # Raised by streamlit-authenticator once the per-user attempt counter
+        # reaches max_login_attempts.  Show a generic time-based message so
+        # we neither confirm whether the account exists nor reveal lockout
+        # status to an attacker — consistent with the generic-errors posture.
+        _persist_failed_login(authenticator)
+        st.error("Too many failed attempts. Please wait a few minutes and try again.")
+        st.stop()
     status = st.session_state.get("authentication_status")
 
     if status is True:

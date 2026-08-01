@@ -178,6 +178,67 @@ def _persist_failed_login(authenticator: stauth.Authenticate) -> None:
 
 
 # ── UI helpers ─────────────────────────────────────────────────────────────────
+def _inject_chrome_css() -> None:
+    """Hide Streamlit's dev chrome (Deploy button, hamburger, top bar, footer)
+    on every page — this is a product, not a dev preview."""
+    st.markdown(
+        "<style>"
+        '[data-testid="stToolbar"],[data-testid="stDecoration"],'
+        "#MainMenu,footer{display:none !important;}"
+        "</style>",
+        unsafe_allow_html=True,
+    )
+
+
+def _inject_auth_css(max_width: int = 460) -> None:
+    """Aurora theme for the unauthenticated screens: dark charcoal + violet
+    accent, hidden sidebar, centered card. Injected only when NOT logged in, so
+    it never bleeds into the dashboard."""
+    st.markdown(
+        f"""<style>
+    [data-testid="stSidebar"],[data-testid="collapsedControl"]{{display:none !important;}}
+    .stApp,[data-testid="stAppViewContainer"]{{
+        background:radial-gradient(1100px 620px at 50% -12%,#1b1740 0%,#0b0d12 60%) !important;}}
+    .block-container{{max-width:{max_width}px !important;padding-top:7vh !important;margin:0 auto !important;}}
+    [data-testid="stForm"]{{
+        background:#151823 !important;border:1px solid #262b3d !important;border-radius:16px !important;
+        padding:26px 26px 18px !important;
+        box-shadow:0 24px 70px rgba(0,0,0,.55),0 0 0 1px rgba(124,92,255,.08),0 0 60px rgba(124,92,255,.10) !important;}}
+    [data-testid="stForm"] label{{color:#aeb4c2 !important;font-size:.8rem !important;font-weight:500 !important;}}
+    [data-testid="stTextInput"] input{{
+        background:#0e1117 !important;border:1px solid #2a2f42 !important;color:#eaecef !important;
+        border-radius:10px !important;padding:.6rem .8rem !important;}}
+    [data-testid="stTextInput"] input:focus{{
+        border-color:#7c5cff !important;box-shadow:0 0 0 2px rgba(124,92,255,.25) !important;}}
+    [data-testid="stFormSubmitButton"] button{{
+        background:linear-gradient(180deg,#8b6cff,#7c5cff) !important;color:#fff !important;border:0 !important;
+        border-radius:10px !important;width:100% !important;padding:.6rem 1rem !important;
+        font-weight:600 !important;letter-spacing:.02em !important;margin-top:.5rem !important;}}
+    [data-testid="stFormSubmitButton"] button:hover{{filter:brightness(1.08) !important;}}
+    .auth-brand{{text-align:center;margin:0 auto 18px;max-width:{max_width}px;}}
+    .auth-logo{{font-size:1.4rem;font-weight:800;letter-spacing:.14em;color:#eaecef;
+        font-family:Inter,system-ui,sans-serif;}}
+    .auth-logo .accent{{color:#7c5cff;}} .auth-logo .dia{{color:#7c5cff;margin-right:.35rem;}}
+    .auth-tag{{color:#8890a2;font-size:.82rem;letter-spacing:.03em;margin-top:.3rem;}}
+    .auth-foot{{text-align:center;color:#5c6478;font-size:.72rem;letter-spacing:.05em;
+        margin:14px auto 0;max-width:{max_width}px;}}
+    .auth-err{{max-width:{max_width}px;margin:12px auto 0;background:rgba(255,77,79,.08);
+        border:1px solid rgba(255,77,79,.35);color:#ff9a9a;padding:.5rem .8rem;border-radius:10px;
+        font-size:.85rem;text-align:center;}}
+    </style>""",
+        unsafe_allow_html=True,
+    )
+
+
+def _brand(tagline: str) -> None:
+    st.markdown(
+        f'<div class="auth-brand"><div class="auth-logo">'
+        f'<span class="dia">◆</span>OPTIONS <span class="accent">AGENT</span></div>'
+        f'<div class="auth-tag">{tagline}</div></div>',
+        unsafe_allow_html=True,
+    )
+
+
 def _sidebar(authenticator: stauth.Authenticate, user: dict) -> None:
     with st.sidebar:
         roles = ", ".join(user["roles"]) or "member"
@@ -188,21 +249,22 @@ def _sidebar(authenticator: stauth.Authenticate, user: dict) -> None:
 def _handle_invite(cfg: dict, authenticator: stauth.Authenticate, token: str) -> None:
     inv = validate_invite(cfg, token)
     if not inv:
-        st.error("🚫 This signup link is invalid, already used, or expired. "
-                 "Ask the fund owner for a fresh invite.")
+        st.markdown(
+            '<div class="auth-err">This signup link is invalid, already used, or '
+            'expired. Ask the fund owner for a fresh invite.</div>',
+            unsafe_allow_html=True,
+        )
         return
 
-    st.markdown("### 🎟️ You've been invited — create your account")
-    st.caption("Pick a username and a strong password. This link works once.")
     try:
         _email, username, _name = authenticator.register_user(
             location="main",
             roles=[inv.get("role", "member")],
             captcha=bool(cfg.get("security", {}).get("register_captcha", True)),
             two_factor_auth=False,
-            password_hint=True,
+            password_hint=False,
             merge_username_email=False,
-            fields={"Form name": "Create account"},
+            fields={"Form name": ""},
             key="_auth_register",
         )
     except RegisterError as exc:
@@ -227,6 +289,7 @@ def require_auth() -> dict:
     until authenticated. Returns ``{username, display, roles}`` and also stashes
     it in ``st.session_state["auth_user"]`` (the hook for step-2 per-user
     isolation). Fails closed."""
+    _inject_chrome_css()
     with _config_lock():
         cfg = _load_config()
 
@@ -242,30 +305,34 @@ def require_auth() -> dict:
     # ── one-time invite signup (only when not already logged in) ──
     token = st.query_params.get("invite")
     if token and not already_authed:
+        _inject_auth_css(max_width=620)
+        _brand("You've been invited — create your account")
         _handle_invite(cfg, authenticator, token)
         st.stop()
 
     # ── login ──
     sec = cfg.get("security", {})
+    brand_slot = st.empty()  # reserve a slot ABOVE the login form
+    login_error = None
     try:
         authenticator.login(
             location="main",
             max_login_attempts=int(sec.get("max_login_attempts", 8)),
             captcha=bool(sec.get("login_captcha", True)),
-            fields={"Form name": "Sign in — fund dashboard"},
+            fields={"Form name": ""},
             key="_auth_login",
         )
     except LoginError:
-        # Raised by streamlit-authenticator once the per-user attempt counter
-        # reaches max_login_attempts.  Show a generic time-based message so
-        # we neither confirm whether the account exists nor reveal lockout
-        # status to an attacker — consistent with the generic-errors posture.
+        # Once the per-user attempt counter hits max_login_attempts. Generic
+        # time-based message — neither confirms the account exists nor reveals
+        # lockout status to an attacker (generic-errors posture).
         _persist_failed_login(authenticator)
-        st.error("Too many failed attempts. Please wait a few minutes and try again.")
-        st.stop()
+        login_error = "Too many failed attempts. Please wait a few minutes and try again."
+
     status = st.session_state.get("authentication_status")
 
     if status is True:
+        brand_slot.empty()
         user = {
             "username": st.session_state.get("username"),
             "display": st.session_state.get("name") or st.session_state.get("username"),
@@ -275,12 +342,20 @@ def require_auth() -> dict:
         _sidebar(authenticator, user)
         return user
 
-    if status is False:
+    if status is False and login_error is None:
         _persist_failed_login(authenticator)
-        st.error("Invalid username or password.")
-        st.stop()
+        login_error = "Invalid username or password."
 
-    st.info("🔐 Please sign in. Access to this dashboard is invite-only.")
+    # Not authenticated → dress the screen: brand above the form + Aurora theme.
+    with brand_slot.container():
+        _brand("private fund dashboard")
+    _inject_auth_css()
+    if login_error:
+        st.markdown(f'<div class="auth-err">{login_error}</div>', unsafe_allow_html=True)
+    st.markdown(
+        '<div class="auth-foot">🔒 invite-only · encrypted · access is logged</div>',
+        unsafe_allow_html=True,
+    )
     st.stop()
 
 

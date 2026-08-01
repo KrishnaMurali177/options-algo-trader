@@ -1,5 +1,7 @@
 # Changelog
 
+- [2026-07-31] Modified: options_agent/dashboard/_auth.py — Aurora auth theme: hide Streamlit dev chrome globally; branded centered login/signup card (dark charcoal + violet accent), sidebar hidden pre-auth, styled inputs/button/errors; drop password-hint clutter.
+
 - [2026-07-31] Created: .claude/agents/ui-qa-tester.md — QA subagent that black/gray-box tests the dashboard UI (AppTest + Playwright, private :8502 only) and files evidence-backed bug reports; never edits source or touches live/real-money.
 - [2026-07-31] Created: .claude/agents/qa-triage-developer.md — Developer subagent that reproduces each reported bug before acting, classifies real vs false-positive, fixes only CONFIRMED defects + adds regression tests.
 - [2026-07-31] Created: .claude/agents/README.md — QA↔developer loop: the triage/reproduction gate ensures only real bugs are fixed.

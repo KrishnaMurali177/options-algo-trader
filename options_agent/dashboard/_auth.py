@@ -132,6 +132,12 @@ def validate_invite(cfg: dict, token: str) -> Optional[dict]:
     return rec
 
 
+def consume_invite(cfg: dict, token: str, username: str) -> None:
+    rec = _invite_record(cfg, token)
+    if rec is not None:
+        rec.update(used=True, used_by=username, used_at=_now().isoformat())
+
+
 def invite_link(token: str) -> str:
     base = _PUBLIC_URL or "https://<your-funnel-host>:8443"
     return f"{base}/?invite={token}"
@@ -210,9 +216,7 @@ def _handle_invite(cfg: dict, authenticator: stauth.Authenticate, token: str) ->
             latest = _load_config() or cfg
             latest["credentials"]["usernames"][username] = \
                 new_creds["usernames"][username]
-            rec = latest.setdefault("invites", {}).get(_hash_token(token))
-            if rec is not None:
-                rec.update(used=True, used_by=username, used_at=_now().isoformat())
+            consume_invite(latest, token, username)
             _save_config(latest)
         st.success("✅ Account created. Remove the invite link from the address "
                    "bar and sign in.")

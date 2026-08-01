@@ -58,8 +58,7 @@ def main() -> int:
         cfg["cookie"]["key"] = secrets.token_hex(32)
 
     pw1 = getpass.getpass(f"Password for '{username}': ")
-    ok, _msg = Validator().validate_password(pw1)
-    if not ok or len(pw1) < _MIN_PW_LEN:
+    if not Validator().validate_password(pw1) or len(pw1) < _MIN_PW_LEN:
         print("Password too weak (need length + upper/lower/digit/special).",
               file=sys.stderr)
         return 1

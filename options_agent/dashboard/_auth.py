@@ -227,9 +227,11 @@ def _inject_auth_css(max_width: int = 460) -> None:
     [data-testid="stFormSubmitButton"] button:hover{{filter:brightness(1.08) !important;}}
     [data-testid="stFormSubmitButton"] button:active{{transform:translateY(1px) !important;}}
     .auth-brand{{text-align:center;margin:0 auto 22px;max-width:{max_width}px;}}
-    .auth-logo{{font-size:1.4rem;font-weight:800;letter-spacing:.16em;color:#f2f3f7;
+    .auth-logo{{display:flex;align-items:center;justify-content:center;gap:.6rem;
+        font-size:1.4rem;font-weight:800;letter-spacing:.16em;color:#f2f3f7;
         font-family:Inter,system-ui,sans-serif;}}
-    .auth-logo .accent{{color:#8b6cff;}} .auth-logo .dia{{color:#8b6cff;margin-right:.4rem;}}
+    .auth-logo .accent{{color:#8b6cff;}}
+    .auth-logo svg{{filter:drop-shadow(0 4px 12px rgba(124,92,255,.45));}}
     .auth-tag{{color:#7c8397;font-size:.8rem;letter-spacing:.01em;margin-top:.55rem;}}
     .auth-foot{{text-align:center;color:#525a70;font-size:.72rem;letter-spacing:.02em;
         margin:18px auto 0;max-width:{max_width}px;}}
@@ -281,10 +283,28 @@ def apply_dashboard_theme() -> None:
     )
 
 
+# Inline vector logo: violet-gradient rounded badge with a white upward-trend
+# mark + arrowhead — an "options fund" wordmark glyph. No external asset needed.
+LOGO_SVG = (
+    '<svg class="oa-logo" width="34" height="34" viewBox="0 0 40 40" fill="none" '
+    'xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Options Agent logo">'
+    '<defs><linearGradient id="oaLg" x1="0" y1="0" x2="40" y2="40" '
+    'gradientUnits="userSpaceOnUse">'
+    '<stop stop-color="#9b7cff"/><stop offset="1" stop-color="#6b4cf0"/>'
+    '</linearGradient></defs>'
+    '<rect x="1.5" y="1.5" width="37" height="37" rx="11" fill="url(#oaLg)"/>'
+    '<path d="M9 27 L17 19 L22 23 L30.5 12.5" stroke="#fff" stroke-width="2.6" '
+    'stroke-linecap="round" stroke-linejoin="round"/>'
+    '<path d="M25 12.5 H31 V18" stroke="#fff" stroke-width="2.6" '
+    'stroke-linecap="round" stroke-linejoin="round"/>'
+    '<circle cx="9" cy="27" r="1.9" fill="#fff"/></svg>'
+)
+
+
 def _brand(tagline: str) -> None:
     st.markdown(
         f'<div class="auth-brand"><div class="auth-logo">'
-        f'<span class="dia">◆</span>OPTIONS <span class="accent">AGENT</span></div>'
+        f'{LOGO_SVG}<span class="wm">OPTIONS <span class="accent">AGENT</span></span></div>'
         f'<div class="auth-tag">{tagline}</div></div>',
         unsafe_allow_html=True,
     )

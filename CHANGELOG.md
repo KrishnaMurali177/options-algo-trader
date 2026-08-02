@@ -1,5 +1,7 @@
 # Changelog
 
+- [2026-08-01] Modified: options_agent/dashboard/_auth.py — Replace Streamlit's raw file-name page nav (ugly 'app') with a custom sidebar nav: 'Dashboard' + prettified page labels + material icons; hide the auto nav via CSS; Admin link shown to owners only.
+
 - [2026-08-01] Modified: options_agent/.streamlit/config.toml + dashboard.Dockerfile — Aurora native Streamlit theme (violet primary #8b6cff, charcoal bg); dashboard image now COPYs it over the base image's gold config so sliders/widgets pick up the accent.
 
 - [2026-08-01] Modified: options_agent/dashboard/_auth.py + app.py — apply_dashboard_theme(): Aurora post-login theme by overriding app.py's CSS variables (gold→violet, charcoal bg) + button/link/alert styling; applied via require_auth for all pages and after app.py's CSS.

@@ -32,8 +32,10 @@ Every page must call :func:`require_auth` immediately after
 from __future__ import annotations
 
 import fcntl
+import glob
 import hashlib
 import os
+import re
 import secrets
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
@@ -255,6 +257,7 @@ def apply_dashboard_theme() -> None:
     .stApp,[data-testid="stAppViewContainer"]{
         background:radial-gradient(1200px 640px at 50% -18%,#141038 0%,#0a0b10 55%) !important;}
     [data-testid="stSidebar"]{background:#0d0f16 !important;border-right:1px solid #1a1f2e !important;}
+    [data-testid="stSidebarNav"]{display:none !important;}  /* raw file-name nav → custom nav */
     a,a:visited{color:#8b6cff !important;}
     /* buttons: dark by default, violet for primary */
     .stButton>button,.stDownloadButton>button{
@@ -287,7 +290,45 @@ def _brand(tagline: str) -> None:
     )
 
 
+_NAV_ICONS = {
+    "Dashboard": ":material/space_dashboard:",
+    "Admin": ":material/admin_panel_settings:",
+    "Fund Performance": ":material/monitoring:",
+    "Backtest": ":material/insights:",
+}
+
+
+def _pretty_page(path: str) -> str:
+    """`pages/9_Admin.py` → `Admin`, `2_Fund_Performance.py` → `Fund Performance`."""
+    stem = os.path.splitext(os.path.basename(path))[0]
+    stem = re.sub(r"^\d+[_-]?", "", stem)
+    return stem.replace("_", " ").strip().title()
+
+
+def _render_nav(user: dict) -> None:
+    """Custom sidebar nav (the default file-name nav is hidden by CSS). Gives the
+    main page a real 'Dashboard' label + icons, and hides Admin from non-owners."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    is_owner = "owner" in (user.get("roles") or [])
+    with st.sidebar:
+        try:
+            st.page_link("app.py", label="Dashboard", icon=_NAV_ICONS["Dashboard"])
+        except Exception:
+            pass
+        for f in sorted(glob.glob(os.path.join(here, "pages", "*.py"))):
+            label = _pretty_page(f)
+            if label.lower() == "admin" and not is_owner:
+                continue
+            try:
+                st.page_link(f"pages/{os.path.basename(f)}", label=label,
+                             icon=_NAV_ICONS.get(label, ":material/description:"))
+            except Exception:
+                pass
+        st.divider()
+
+
 def _sidebar(authenticator: stauth.Authenticate, user: dict) -> None:
+    _render_nav(user)
     with st.sidebar:
         roles = ", ".join(user["roles"]) or "member"
         st.caption(f"🔐 **{user['display']}** · _{roles}_")

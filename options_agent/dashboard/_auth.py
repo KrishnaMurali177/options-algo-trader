@@ -198,37 +198,41 @@ def _inject_auth_css(max_width: int = 460) -> None:
         f"""<style>
     [data-testid="stSidebar"],[data-testid="collapsedControl"]{{display:none !important;}}
     .stApp,[data-testid="stAppViewContainer"]{{
-        background:radial-gradient(1100px 620px at 50% -12%,#1b1740 0%,#0b0d12 60%) !important;}}
-    .block-container{{max-width:{max_width}px !important;padding-top:7vh !important;margin:0 auto !important;}}
+        background:radial-gradient(1100px 660px at 50% -14%,#1c1842 0%,#0a0b10 62%) !important;}}
+    /* vertically + horizontally centre the card */
+    section.main>div.block-container,[data-testid="stMainBlockContainer"]{{
+        max-width:{max_width}px !important;margin:0 auto !important;padding:1.5rem 1rem !important;
+        min-height:100vh;display:flex;flex-direction:column;justify-content:center;}}
     [data-testid="stForm"]{{
-        background:#151823 !important;border:1px solid #262b3d !important;border-radius:16px !important;
-        padding:26px 26px 18px !important;
-        box-shadow:0 24px 70px rgba(0,0,0,.55),0 0 0 1px rgba(124,92,255,.08),0 0 60px rgba(124,92,255,.10) !important;}}
-    [data-testid="stForm"] h1,[data-testid="stForm"] h2,[data-testid="stForm"] h3{{
-        display:none !important;margin:0 !important;}}
-    [data-testid="stForm"] label{{color:#aeb4c2 !important;font-size:.8rem !important;font-weight:500 !important;}}
+        background:#141722 !important;border:1px solid #222738 !important;border-radius:18px !important;
+        padding:30px 30px 22px !important;
+        box-shadow:0 30px 80px rgba(0,0,0,.60),0 0 0 1px rgba(124,92,255,.06),0 0 70px rgba(124,92,255,.10) !important;}}
+    [data-testid="stForm"] h1,[data-testid="stForm"] h2,[data-testid="stForm"] h3{{display:none !important;margin:0 !important;}}
+    [data-testid="stForm"] label{{color:#98a0b2 !important;font-size:.78rem !important;font-weight:500 !important;letter-spacing:0 !important;}}
     [data-testid="stTextInput"] input{{
-        background:#0e1117 !important;border:1px solid #2a2f42 !important;color:#eaecef !important;
-        border-radius:10px !important;padding:.6rem .8rem !important;}}
-    [data-testid="stTextInput"] button{{
-        background:#0e1117 !important;border:1px solid #2a2f42 !important;border-left:0 !important;
-        color:#8890a2 !important;border-radius:0 10px 10px 0 !important;}}
+        background:#0d0f16 !important;border:1px solid #222738 !important;color:#eef0f4 !important;
+        border-radius:12px !important;padding:.62rem .85rem !important;
+        transition:border-color .15s,box-shadow .15s !important;}}
     [data-testid="stTextInput"] input:focus{{
-        border-color:#7c5cff !important;box-shadow:0 0 0 2px rgba(124,92,255,.25) !important;}}
+        border-color:#7c5cff !important;box-shadow:0 0 0 3px rgba(124,92,255,.22) !important;}}
+    /* kill the native password reveal (eye) button entirely */
+    [data-testid="stTextInput"] button{{display:none !important;}}
     [data-testid="stFormSubmitButton"] button{{
-        background:linear-gradient(180deg,#8b6cff,#7c5cff) !important;color:#fff !important;border:0 !important;
-        border-radius:10px !important;width:100% !important;padding:.6rem 1rem !important;
-        font-weight:600 !important;letter-spacing:.02em !important;margin-top:.5rem !important;}}
+        background:linear-gradient(180deg,#8b6cff,#7452ff) !important;color:#fff !important;border:0 !important;
+        border-radius:12px !important;width:100% !important;padding:.64rem 1rem !important;
+        font-weight:600 !important;letter-spacing:.01em !important;margin-top:.6rem !important;
+        box-shadow:0 8px 22px rgba(124,92,255,.35) !important;transition:filter .15s,transform .05s !important;}}
     [data-testid="stFormSubmitButton"] button:hover{{filter:brightness(1.08) !important;}}
-    .auth-brand{{text-align:center;margin:0 auto 18px;max-width:{max_width}px;}}
-    .auth-logo{{font-size:1.4rem;font-weight:800;letter-spacing:.14em;color:#eaecef;
+    [data-testid="stFormSubmitButton"] button:active{{transform:translateY(1px) !important;}}
+    .auth-brand{{text-align:center;margin:0 auto 22px;max-width:{max_width}px;}}
+    .auth-logo{{font-size:1.4rem;font-weight:800;letter-spacing:.16em;color:#f2f3f7;
         font-family:Inter,system-ui,sans-serif;}}
-    .auth-logo .accent{{color:#7c5cff;}} .auth-logo .dia{{color:#7c5cff;margin-right:.35rem;}}
-    .auth-tag{{color:#8890a2;font-size:.82rem;letter-spacing:.03em;margin-top:.3rem;}}
-    .auth-foot{{text-align:center;color:#5c6478;font-size:.72rem;letter-spacing:.05em;
-        margin:14px auto 0;max-width:{max_width}px;}}
+    .auth-logo .accent{{color:#8b6cff;}} .auth-logo .dia{{color:#8b6cff;margin-right:.4rem;}}
+    .auth-tag{{color:#7c8397;font-size:.8rem;letter-spacing:.01em;margin-top:.55rem;}}
+    .auth-foot{{text-align:center;color:#525a70;font-size:.72rem;letter-spacing:.02em;
+        margin:18px auto 0;max-width:{max_width}px;}}
     .auth-err{{max-width:{max_width}px;margin:12px auto 0;background:rgba(255,77,79,.08);
-        border:1px solid rgba(255,77,79,.35);color:#ff9a9a;padding:.5rem .8rem;border-radius:10px;
+        border:1px solid rgba(255,77,79,.32);color:#ff9a9a;padding:.55rem .85rem;border-radius:12px;
         font-size:.85rem;text-align:center;}}
     </style>""",
         unsafe_allow_html=True,

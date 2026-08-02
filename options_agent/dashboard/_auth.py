@@ -239,6 +239,42 @@ def _inject_auth_css(max_width: int = 460) -> None:
     )
 
 
+def apply_dashboard_theme() -> None:
+    """Aurora theme for the AUTHENTICATED dashboard. app.py's 'Swiss luxury'
+    styling is CSS-variable-driven, so we recolor the whole thing by overriding
+    those variables (gold → violet, warmer greys → charcoal) plus a few extras
+    for buttons/links/alerts. Call AFTER any page's own CSS so this wins."""
+    st.markdown(
+        """<style>
+    :root{
+        --bg-primary:#0b0d12 !important; --bg-card:#141722 !important; --bg-elevated:#1c2233 !important;
+        --text-primary:#eef0f4 !important; --text-secondary:#98a0b2 !important; --text-muted:#5c6478 !important;
+        --accent-gold:#8b6cff !important; --accent-gold-dim:rgba(139,108,255,.15) !important;
+        --accent-gold-glow:rgba(139,108,255,.10) !important;
+        --border-subtle:#222738 !important; --border-faint:#1a1f2e !important;}
+    .stApp,[data-testid="stAppViewContainer"]{
+        background:radial-gradient(1200px 640px at 50% -18%,#141038 0%,#0a0b10 55%) !important;}
+    [data-testid="stSidebar"]{background:#0d0f16 !important;border-right:1px solid #1a1f2e !important;}
+    a,a:visited{color:#8b6cff !important;}
+    /* buttons: dark by default, violet for primary */
+    .stButton>button,.stDownloadButton>button{
+        background:#141722 !important;border:1px solid #2a3042 !important;color:#e7e9ef !important;
+        border-radius:10px !important;transition:border-color .15s,filter .15s !important;}
+    .stButton>button:hover,.stDownloadButton>button:hover{border-color:#8b6cff !important;color:#fff !important;}
+    .stButton>button[kind="primary"]{
+        background:linear-gradient(180deg,#8b6cff,#7452ff) !important;border:0 !important;color:#fff !important;
+        box-shadow:0 8px 22px rgba(124,92,255,.30) !important;}
+    /* unify alert banners to the theme */
+    [data-testid="stAlert"],[data-testid="stNotification"]{
+        background:#141722 !important;border:1px solid #222738 !important;
+        border-left:3px solid #8b6cff !important;border-radius:12px !important;color:#c7ccd8 !important;}
+    /* slider / toggle accents */
+    [data-testid="stSlider"] [data-baseweb="slider"] div[role="slider"]{background:#8b6cff !important;}
+    </style>""",
+        unsafe_allow_html=True,
+    )
+
+
 def _brand(tagline: str) -> None:
     st.markdown(
         f'<div class="auth-brand"><div class="auth-logo">'
@@ -348,6 +384,7 @@ def require_auth() -> dict:
             "roles": st.session_state.get("roles") or ["member"],
         }
         st.session_state["auth_user"] = user
+        apply_dashboard_theme()  # pages with no competing CSS get Aurora here
         _sidebar(authenticator, user)
         return user
 

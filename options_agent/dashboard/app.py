@@ -60,7 +60,7 @@ st.set_page_config(
 )
 
 # ── Contributor auth gate (see dashboard/_auth.py) ──
-from _auth import require_auth  # noqa: E402
+from _auth import apply_dashboard_theme, require_auth  # noqa: E402
 require_auth()
 
 # ── Swiss Luxury Theme CSS ────────────────────────────────────────
@@ -282,6 +282,9 @@ hr {
 }
 </style>
 """, unsafe_allow_html=True)
+
+# Aurora overrides the Swiss-luxury variables above (gold → violet, charcoal).
+apply_dashboard_theme()
 
 # ── Constants ────────────────────────────────────────────────────
 

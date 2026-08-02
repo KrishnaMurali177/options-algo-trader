@@ -10,6 +10,10 @@ FROM options-algo-trader
 # sessions, CAPTCHA, per-user lockout, optional 2FA. Additive only.
 RUN pip install --no-cache-dir "streamlit-authenticator==0.4.2"
 
+# Aurora Streamlit theme (violet primary + charcoal) — overrides the base
+# image's baked config.toml so widgets/sliders pick up the accent natively.
+COPY options_agent/.streamlit/config.toml /app/.streamlit/config.toml
+
 # Dashboard code is bind-mounted in docker-compose (no rebuild for code edits).
 CMD ["streamlit", "run", "dashboard/app.py", \
      "--server.port=8501", "--server.address=0.0.0.0", \

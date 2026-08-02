@@ -52,9 +52,10 @@ from src.utils.choppiness import compute_choppiness
 
 # ── Page config ──────────────────────────────────────────────────
 
+_LOGO_ICON = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.svg")
 st.set_page_config(
-    page_title="Options Trading Simulator",
-    page_icon="💰",
+    page_title="Options Agent",
+    page_icon=_LOGO_ICON if os.path.exists(_LOGO_ICON) else "💰",
     layout="wide",
     initial_sidebar_state="expanded",
 )

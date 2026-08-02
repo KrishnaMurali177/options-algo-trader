@@ -1,5 +1,7 @@
 # Changelog
 
+- [2026-08-01] Created: options_agent/dashboard/assets/logo.svg + Modified _auth.py/app.py/9_Admin.py — Real logo asset used as sidebar logo (st.logo on every authed page) and browser favicon (page_icon); tab title 'Options Agent'.
+
 - [2026-08-01] Modified: options_agent/dashboard/_auth.py — Replace the ◆ placeholder with a real inline SVG logo (violet-gradient rounded badge + white upward-trend/arrow mark); flex-align it with the OPTIONS AGENT wordmark.
 
 - [2026-08-01] Modified: options_agent/dashboard/_auth.py — Replace Streamlit's raw file-name page nav (ugly 'app') with a custom sidebar nav: 'Dashboard' + prettified page labels + material icons; hide the auto nav via CSS; Admin link shown to owners only.

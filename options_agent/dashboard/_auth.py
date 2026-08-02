@@ -53,6 +53,7 @@ _CONFIG_PATH = os.environ.get(
 )
 _PUBLIC_URL = os.environ.get("DASHBOARD_PUBLIC_URL", "").rstrip("/")
 _INVITE_TTL_HOURS = int(os.environ.get("DASHBOARD_INVITE_TTL_HOURS", "72"))
+_LOGO_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "logo.svg")
 
 
 def _now() -> datetime:
@@ -449,6 +450,11 @@ def require_auth() -> dict:
         }
         st.session_state["auth_user"] = user
         apply_dashboard_theme()  # pages with no competing CSS get Aurora here
+        if os.path.exists(_LOGO_PATH):
+            try:
+                st.logo(_LOGO_PATH, size="large")
+            except Exception:
+                pass
         _sidebar(authenticator, user)
         return user
 

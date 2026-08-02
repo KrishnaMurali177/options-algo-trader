@@ -88,9 +88,9 @@ h1, h2, h3, h4, h5, h6, p, label,
     --text-primary: #F5F5F7;
     --text-secondary: #A1A1A6;
     --text-muted: #636366;
-    --accent-gold: #C9A96E;
-    --accent-gold-dim: rgba(201, 169, 110, 0.15);
-    --accent-gold-glow: rgba(201, 169, 110, 0.08);
+    --accent-gold: #8b6cff;
+    --accent-gold-dim: rgba(139, 108, 255, 0.15);
+    --accent-gold-glow: rgba(139, 108, 255, 0.08);
     --border-subtle: #3A3A3C;
     --border-faint: #2C2C2E;
     --success: #6BBF7A;
@@ -184,20 +184,20 @@ button[kind="headerNoPadding"] span,
 /* ── Buttons ── */
 .stButton > button[kind="primary"],
 .stButton > button[data-testid="stBaseButton-primary"] {
-    background: linear-gradient(135deg, #C9A96E, #B8944F) !important;
+    background: linear-gradient(135deg, #8b6cff, #7452ff) !important;
     color: #1C1C1E !important;
     border: none !important;
     border-radius: var(--radius-sm) !important;
     font-weight: 600 !important;
     letter-spacing: 0.02em !important;
     transition: all 0.2s ease !important;
-    box-shadow: 0 2px 8px rgba(201,169,110,0.25) !important;
+    box-shadow: 0 2px 8px rgba(139,108,255,0.25) !important;
 }
 
 .stButton > button[kind="primary"]:hover,
 .stButton > button[data-testid="stBaseButton-primary"]:hover {
-    background: linear-gradient(135deg, #D4B97E, #C9A96E) !important;
-    box-shadow: 0 4px 16px rgba(201,169,110,0.35) !important;
+    background: linear-gradient(135deg, #a68cff, #8b6cff) !important;
+    box-shadow: 0 4px 16px rgba(139,108,255,0.35) !important;
 }
 
 /* ── Expanders ── */
@@ -242,10 +242,10 @@ hr {
 
 .swiss-card-accent {
     background: #2C2C2E;
-    border: 1px solid #C9A96E;
+    border: 1px solid #8b6cff;
     border-radius: 12px;
     padding: 24px;
-    box-shadow: 0 2px 12px rgba(201,169,110,0.12);
+    box-shadow: 0 2px 12px rgba(139,108,255,0.12);
 }
 
 .swiss-label {
@@ -264,7 +264,7 @@ hr {
 }
 
 .swiss-accent {
-    color: #C9A96E;
+    color: #8b6cff;
 }
 
 .swiss-muted {
@@ -943,7 +943,7 @@ def build_pnl_chart(order: OptionOrder, current_price: float) -> go.Figure:
         )
     )
     fig.add_hline(y=0, line_dash="dash", line_color="#3A3A3C")
-    fig.add_vline(x=current_price, line_dash="dot", line_color="#C9A96E", annotation_text="Current")
+    fig.add_vline(x=current_price, line_dash="dot", line_color="#8b6cff", annotation_text="Current")
 
     for leg in order.legs:
         fig.add_vline(
@@ -991,7 +991,7 @@ def build_price_chart(df: pd.DataFrame, indicators: dict) -> go.Figure:
     sma20 = close.rolling(20).mean()
     sma50 = close.rolling(50).mean()
 
-    fig.add_trace(go.Scatter(x=df.index, y=sma20, name="SMA 20", line=dict(color="#C9A96E", width=1)))
+    fig.add_trace(go.Scatter(x=df.index, y=sma20, name="SMA 20", line=dict(color="#8b6cff", width=1)))
     fig.add_trace(go.Scatter(x=df.index, y=sma50, name="SMA 50", line=dict(color="#7AB4D9", width=1)))
 
     # Bollinger
@@ -1029,7 +1029,7 @@ def build_price_chart(df: pd.DataFrame, indicators: dict) -> go.Figure:
 st.sidebar.markdown(
     '<div style="text-align:center; padding: 12px 0 4px;">'
     '<span style="font-size: 28px; font-weight: 700; letter-spacing: -0.03em; color: #F5F5F7;">Options</span>'
-    '<span style="font-size: 28px; font-weight: 300; letter-spacing: -0.03em; color: #C9A96E;"> Agent</span>'
+    '<span style="font-size: 28px; font-weight: 300; letter-spacing: -0.03em; color: #8b6cff;"> Agent</span>'
     '</div>',
     unsafe_allow_html=True,
 )
@@ -1788,10 +1788,10 @@ else:
     )
 
 # ── Momentum Cascade Alert (always visible) ──
-_cascade_color = "#E06C6C" if _cascade.explosion_score >= 7 else "#C9A96E" if _cascade.explosion_score >= 4 else "#636366"
+_cascade_color = "#E06C6C" if _cascade.explosion_score >= 7 else "#8b6cff" if _cascade.explosion_score >= 4 else "#636366"
 _cascade_border = "2px solid" if _cascade.explosion_score >= 7 else "1px solid"
 _cascade_bg = "#2C2C2E"
-_otm_html = f'<div style="font-size: 12px; color: #C9A96E; margin-top: 8px;">Consider <b>{_cascade.recommended_strike_offset} strike(s) OTM</b> for higher leverage</div>' if _cascade.recommended_strike_offset > 0 else ''
+_otm_html = f'<div style="font-size: 12px; color: #8b6cff; margin-top: 8px;">Consider <b>{_cascade.recommended_strike_offset} strike(s) OTM</b> for higher leverage</div>' if _cascade.recommended_strike_offset > 0 else ''
 _cascade_flags = (
     f"{'Momentum accelerating · ' if _cascade.acceleration_detected else ''}"
     f"{'Volume climax · ' if _cascade.volume_climax else ''}"
@@ -1903,7 +1903,7 @@ if _dynamic_or_fired and _dynamic_or_details:
     )
 if _g_vwap_slope_override:
     _enhancement_badges.append(
-        f"<span style='background: rgba(201,169,110,0.15); color: #C9A96E; padding: 2px 8px; "
+        f"<span style='background: rgba(139,108,255,0.15); color: #8b6cff; padding: 2px 8px; "
         f"border-radius: 6px; font-size: 11px; margin-right: 6px;'>"
         f"🌊 CHOP OVR (VWAP-slope, CI {_vwap_slope_details['ci']:.2f})</span>"
     )
@@ -1931,7 +1931,7 @@ if _sweet_spot_prime:
         f"{_enhancement_html}"
     )
 elif _sweet_spot_active:
-    _ss_color = "#C9A96E"
+    _ss_color = "#8b6cff"
     _ss_border = "1px solid"
     _ss_bg = "#2C2C2E"
     _ss_icon = "◆"

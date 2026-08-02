@@ -264,12 +264,15 @@ def apply_dashboard_theme() -> None:
     .stButton>button[kind="primary"]{
         background:linear-gradient(180deg,#8b6cff,#7452ff) !important;border:0 !important;color:#fff !important;
         box-shadow:0 8px 22px rgba(124,92,255,.30) !important;}
-    /* unify alert banners to the theme */
-    [data-testid="stAlert"],[data-testid="stNotification"]{
+    /* unify alert banners to the theme (kill the default blue info wash) */
+    [data-testid="stAlert"],[data-testid="stAlertContainer"],[data-testid="stNotification"]{
         background:#141722 !important;border:1px solid #222738 !important;
-        border-left:3px solid #8b6cff !important;border-radius:12px !important;color:#c7ccd8 !important;}
-    /* slider / toggle accents */
-    [data-testid="stSlider"] [data-baseweb="slider"] div[role="slider"]{background:#8b6cff !important;}
+        border-left:3px solid #8b6cff !important;border-radius:12px !important;}
+    [data-testid="stAlert"]>div,[data-testid="stAlertContainer"]>div{background:transparent !important;}
+    /* slider accents */
+    [data-testid="stSlider"] [role="slider"]{
+        background:#8b6cff !important;box-shadow:0 0 0 .2rem rgba(139,108,255,.25) !important;}
+    [data-testid="stSlider"] [data-testid="stThumbValue"]{color:#8b6cff !important;}
     </style>""",
         unsafe_allow_html=True,
     )

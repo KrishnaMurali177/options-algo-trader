@@ -9,6 +9,10 @@ _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
+_dash = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _dash not in sys.path:
+    sys.path.insert(0, _dash)
+
 import logging
 import pandas as pd
 import plotly.graph_objects as go
@@ -20,9 +24,10 @@ from src.models.backtest_result import BacktestReport
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+_LOGO_ICON = os.path.join(_dash, "assets", "logo.svg")
 st.set_page_config(
     page_title="Backtest | Options Agent",
-    page_icon="📊",
+    page_icon=_LOGO_ICON if os.path.exists(_LOGO_ICON) else "📊",
     layout="wide",
     initial_sidebar_state="expanded",
 )
@@ -48,8 +53,8 @@ h1, h2, h3, h4, h5, h6, p, label,
     --bg-elevated: #3A3A3C;
     --text-primary: #F5F5F7;
     --text-secondary: #A1A1A6;
-    --accent-gold: #C9A96E;
-    --accent-gold-dim: rgba(201, 169, 110, 0.15);
+    --accent-gold: #8b6cff;
+    --accent-gold-dim: rgba(139, 108, 255, 0.15);
     --border-subtle: #3A3A3C;
     --success: #6BBF7A;
     --danger: #E06C6C;
@@ -107,12 +112,12 @@ h1, h2, h3, h4, h5, h6, p, label,
 
 .stButton > button[kind="primary"],
 .stButton > button[data-testid="stBaseButton-primary"] {
-    background: linear-gradient(135deg, #C9A96E, #B8944F) !important;
+    background: linear-gradient(135deg, #8b6cff, #7452ff) !important;
     color: #1C1C1E !important;
     border: none !important;
     border-radius: 8px !important;
     font-weight: 600 !important;
-    box-shadow: 0 2px 8px rgba(201,169,110,0.25) !important;
+    box-shadow: 0 2px 8px rgba(139,108,255,0.25) !important;
 }
 
 [data-testid="stExpander"] {
@@ -125,6 +130,11 @@ h1, h2, h3, h4, h5, h6, p, label,
 hr { border-color: var(--border-subtle) !important; opacity: 0.5 !important; }
 </style>
 """, unsafe_allow_html=True)
+
+# Aurora overrides the Swiss-luxury variables above (gold → violet, charcoal),
+# hides Streamlit's dev chrome, sets the sidebar logo and the custom nav.
+from _theme import apply_theme  # noqa: E402
+apply_theme()
 
 
 # ── Sidebar controls ────────────────────────────────────────────
@@ -219,7 +229,7 @@ if taken:
     colors = ["#6BBF7A" if v >= 0 else "#E06C6C" for v in cum_pnl]
     fig.add_trace(go.Scatter(
         x=dates, y=cum_pnl, mode="lines+markers",
-        line=dict(color="#C9A96E", width=2),
+        line=dict(color="#8b6cff", width=2),
         marker=dict(size=5, color=colors),
         hovertemplate="Date: %{x}<br>Cumulative P&L: $%{y:.4f}<extra></extra>",
     ))
@@ -245,7 +255,7 @@ if report.exit_reasons:
     fig_exit = go.Figure(go.Bar(
         x=[r[0] for r in reasons],
         y=[r[1] for r in reasons],
-        marker_color="#C9A96E",
+        marker_color="#8b6cff",
         text=[f"{r[1]}" for r in reasons],
         textposition="auto",
     ))

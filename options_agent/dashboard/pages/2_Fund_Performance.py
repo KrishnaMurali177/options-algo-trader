@@ -16,13 +16,24 @@ _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__
 if _root not in sys.path:
     sys.path.insert(0, _root)
 
+_dash = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _dash not in sys.path:
+    sys.path.insert(0, _dash)
+
 try:
     from zoneinfo import ZoneInfo
     ET = ZoneInfo("America/New_York")
 except Exception:
     ET = None
 
-st.set_page_config(page_title="Fund Performance", layout="wide")
+_LOGO_ICON = os.path.join(_dash, "assets", "logo.svg")
+st.set_page_config(page_title="Fund Performance", layout="wide",
+                   page_icon=_LOGO_ICON if os.path.exists(_LOGO_ICON) else "📈")
+
+# Aurora theme: dev chrome hidden, gold → violet, sidebar logo + custom nav.
+from _theme import apply_theme  # noqa: E402
+apply_theme()
+
 st.title("📈 Fund Performance")
 st.caption("Normalized to a flat **2 contracts/position** (strips duplication & lot-size differences).")
 

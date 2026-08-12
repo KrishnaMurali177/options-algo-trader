@@ -1,5 +1,11 @@
 # Changelog
 
+- [2026-08-12] Created: options_agent/dashboard/_theme.py — Aurora theme ported from feature/dashboard-auth's _auth.py, stripped of all auth (no login card, no role gating): chrome-hiding CSS, gold→violet CSS-variable override, sidebar logo, custom labelled nav.
+- [2026-08-12] Created: options_agent/dashboard/assets/logo.svg — Violet-gradient trend-mark logo, used as sidebar logo (st.logo) and browser favicon.
+- [2026-08-12] Modified: options_agent/dashboard/app.py — Aurora: page title 'Options Agent' + SVG favicon, gold (#C9A96E) → violet (#8b6cff) throughout, apply_theme() after the Swiss-luxury CSS block. No auth gate.
+- [2026-08-12] Modified: options_agent/dashboard/pages/1_Backtest.py — Aurora: SVG favicon, gold → violet (CSS vars, primary button, plotly equity/bar colors), apply_theme() after its CSS block.
+- [2026-08-12] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — Aurora: SVG favicon + apply_theme() so it matches the themed dashboard and gets the custom nav.
+- [2026-08-12] Modified: options_agent/.streamlit/config.toml — Native Streamlit theme swapped to the Aurora palette (violet primary #8b6cff, #0b0d12 background).
 - [2026-07-20] Modified: options_agent/docs/2026-07-20_one_host_realmoney_plan.md — Added the compare_perf.linux.sh cron line (35 13 * * 1-5, 10 min after the shadow report) alongside the shadow report entry, with a note on the perf_compare.log snapshot.
 - [2026-07-20] Modified: options_agent/scripts/compare_perf.linux.sh — Made cron-friendly: timestamped banner + tee to logs/perf_compare.log (still prints to stdout for interactive runs), so a daily cron leaves a dated real-vs-shadow record.
 - [2026-07-20] Created: options_agent/scripts/compare_perf.linux.sh — Linux wrapper for compare_perf.py; mounts perf/ and runs the real-vs-shadow table via agent-spy (read-only, no Discord/DB writes), extra args pass through.

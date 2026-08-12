@@ -9,6 +9,7 @@ services:
       - options_agent/.env
     volumes:
       - ./options_agent/dashboard:/app/dashboard   # live dashboard code (no rebuild needed)
+      - ./options_agent/.streamlit:/app/.streamlit:ro   # native theme palette (baked in the image otherwise)
       - ./options_agent/.env.live:/app/.env.live:ro   # live keys for perf overlay (read-only)
       - ./options_agent/logs:/app/logs
       - ./options_agent/sweet_spot_journal:/app/sweet_spot_journal

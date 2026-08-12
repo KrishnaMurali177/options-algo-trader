@@ -180,9 +180,11 @@ else:
     k[5].metric("Max drawdown", f"${float((cumser - cumser.cummax()).min()):,.0f}")
     if view == "Both" and not dl.empty:
         lnet = float(dl["pnl"].sum())
-        st.caption(f"🔴 **Live** (real money): net **${lnet:,.0f}** · WR {dl['win'].mean()*100:.0f}%  |  "
-                   f"🟢 **Paper** (same symbols): net **${net:,.0f}**  |  "
-                   f"**intervention/divergence cost (paper − live) = ${net - lnet:,.0f}**")
+        # NB: '$' must be escaped or Streamlit's markdown treats the pair as LaTeX
+        # and swallows the text between them into a math span.
+        st.caption(f"🔴 **Live** (real money): net **\\${lnet:,.0f}** · WR {dl['win'].mean()*100:.0f}%  |  "
+                   f"🟢 **Paper** (same symbols): net **\\${net:,.0f}**  |  "
+                   f"**intervention/divergence cost (paper − live) = \\${net - lnet:,.0f}**")
 
 # Equity curve overlay
 fig = go.Figure()

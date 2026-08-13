@@ -35,9 +35,12 @@ import _charts as charts  # noqa: E402
 apply_theme()
 
 st.title("📈 Fund Performance")
-st.caption("Normalized to a flat **2 contracts/position** (strips duplication & lot-size differences).")
+st.caption("P&L as actually traded, at the quantities actually filled — live is net of "
+           "broker fees. Only **Both (matched)** normalizes to a flat 2 contracts/position, "
+           "because comparing paper to live needs a common lot size.")
 
-EMPTY = pd.DataFrame(columns=["date", "symbol", "dir", "strike", "pnl", "win"])
+EMPTY = pd.DataFrame(columns=["date", "symbol", "dir", "strike", "pnl", "pnl_2ct",
+                              "qty", "win"])
 
 
 def _live_keys():
@@ -106,13 +109,57 @@ def load_trades(account: str) -> pd.DataFrame:
             continue
         ab = p["bc"] / p["bq"]
         av = (p["sc"] / p["sq"]) if p["sq"] else 0.0
-        rows.append({"date": d, "symbol": p["u"], "dir": "CALL" if p["cp"] == "C" else "PUT",
-                     "strike": p["k"], "pnl": round((av - ab) * 2 * 100, 2)})
+        rows.append({
+            "date": d, "symbol": p["u"], "dir": "CALL" if p["cp"] == "C" else "PUT",
+            "strike": p["k"], "qty": p["bq"],
+            # What the account actually made: real cash out minus real cash in.
+            "pnl": round(p["sc"] * 100 - p["bc"] * 100, 2),
+            # Same trade at a flat 2 contracts — only meaningful for comparing
+            # paper against live, whose lot sizes differ.
+            "pnl_2ct": round((av - ab) * 2 * 100, 2),
+        })
     df = pd.DataFrame(rows)
     if len(df):
         df["win"] = df["pnl"] > 0
         df = df.sort_values("date").reset_index(drop=True)
     return df if len(df) else EMPTY.copy()
+
+
+@st.cache_data(ttl=600, show_spinner=False)
+def load_live_fees() -> dict:
+    """Broker fees on the live account, summed per day (OCC/ORF/CAT/TAF...).
+
+    Reconstructing P&L from fills gives the GROSS number; the account's equity
+    is net of these. They are small but they are real money, and leaving them
+    out is how a flat month reads as a winning one."""
+    import requests
+
+    keys = _live_keys()
+    if not keys:
+        return {}
+    hdr = {"APCA-API-KEY-ID": keys[0], "APCA-API-SECRET-KEY": keys[1]}
+    fees, page = defaultdict(float), None
+    try:
+        while True:
+            url = ("https://api.alpaca.markets/v2/account/activities/FEE"
+                   "?page_size=100" + (f"&page_token={page}" if page else ""))
+            r = requests.get(url, headers=hdr, timeout=30)
+            r.raise_for_status()
+            batch = r.json()
+            if not batch:
+                break
+            for a in batch:
+                try:
+                    d = datetime.strptime(a["date"], "%Y-%m-%d").date()
+                    fees[d] += float(a.get("net_amount") or 0)
+                except Exception:
+                    continue
+            page = batch[-1].get("id")
+            if len(batch) < 100:
+                break
+    except Exception:
+        return {}
+    return dict(fees)
 
 
 df_p = load_trades("paper")
@@ -168,66 +215,95 @@ def clip(df):
 
 
 dp, dl = clip(df_p), clip(df_l)
+
+# Which P&L basis this view is denominated in. Everything downstream reads the
+# `pnl` column, so swap it here once instead of threading a column name through.
+NORMALIZED = view == MATCHED
+for _d in (dp, dl):
+    if len(_d):
+        _d["pnl"] = _d["pnl_2ct" if NORMALIZED else "pnl"]
+        _d["win"] = _d["pnl"] > 0
+# Fees are real money off a real account, so they belong in the real-dollar
+# basis only — the normalized figure isn't dollars anyone paid or received.
+_fees = load_live_fees() if (has_live and not NORMALIZED) else {}
+
+
+def daily_pnl(df, live: bool = False):
+    """Daily totals, with the live account's broker fees applied on their day."""
+    d = df.groupby("date")["pnl"].sum().sort_index()
+    if live and _fees and len(d):
+        for _dt, _f in _fees.items():
+            if _dt in d.index:
+                d.loc[_dt] += _f
+    return d
+
+
 lsyms = sorted(dl["symbol"].unique()) if not dl.empty else []
 # Matched view only: compare paper on the SAME symbols live trades — apples-to-apples.
 dp_view = dp[dp["symbol"].isin(lsyms)].copy() if (view == MATCHED and lsyms) else dp
-# What the KPIs and the per-view charts below are computed over.
+# What the KPIs and the per-view charts below are computed over. `has_live_leg`
+# says whether broker fees apply to this view's totals.
 if view == "Live":
-    primary, plabel = dl, "Live (real money)"
+    primary, plabel, has_live_leg = dl, "Live (real money)", True
 elif view == ALLACC:
     primary = pd.concat([dp, dl], ignore_index=True) if has_live else dp
-    plabel = "All accounts"
+    plabel, has_live_leg = "All accounts", has_live
 elif view == MATCHED:
     primary = dp_view
     plabel = ("Paper · " + ", ".join(lsyms)) if lsyms else "Paper"
+    has_live_leg = False
 else:
-    primary, plabel = dp, "Paper"
+    primary, plabel, has_live_leg = dp, "Paper", False
 
 _rng = f"**{eff_start} → {end}** · {plabel}"
 if view == MATCHED and lsyms:
-    _rng += (f" · matched **{', '.join(lsyms)}** since live inception "
-             f"(select *All accounts* for the full fund)")
+    _rng += (f" · matched **{', '.join(lsyms)}** on a flat **2 contracts**, "
+             f"since live inception — normalized, *not* account dollars")
 elif view == ALLACC:
-    _rng += " · every symbol, paper **+** live combined"
+    _rng += " · every symbol, paper **+** live, as traded"
 st.caption(_rng)
 
 if primary.empty:
     st.info(f"No {plabel} trades in this range.")
 else:
-    daily = primary.groupby("date")["pnl"].sum().sort_index()
+    daily = daily_pnl(primary, live=has_live_leg)
     cumser = daily.cumsum()
-    net = float(primary["pnl"].sum())
+    net = float(daily.sum())
+    _fee_sum = net - float(primary["pnl"].sum())
     # Hero figure first, chart under it, supporting stats after — the number is
     # the headline, the curve is how it got there.
-    # No sub-line: the range/account caption directly above already says it.
-    st.markdown(charts.hero_html(net, "Net P&L"), unsafe_allow_html=True)
+    _sub = ""
+    if NORMALIZED:
+        _sub = "normalized to 2 contracts/position — comparison basis, not account dollars"
+    elif has_live_leg and _fee_sum:
+        _sub = f"net of ${abs(_fee_sum):,.2f} broker fees"
+    st.markdown(charts.hero_html(net, "Net P&L", _sub), unsafe_allow_html=True)
     if view == MATCHED and not dl.empty:
         lnet = float(dl["pnl"].sum())
         # NB: '$' must be escaped or Streamlit's markdown treats the pair as LaTeX
         # and swallows the text between them into a math span.
-        st.caption(f"**Live** (real money): net **\\${lnet:,.0f}** · WR {dl['win'].mean()*100:.0f}%  |  "
-                   f"**Paper** (same symbols): net **\\${net:,.0f}**  |  "
-                   f"**intervention/divergence cost (paper − live) = \\${net - lnet:,.0f}**")
+        st.caption(f"Both legs at 2 contracts — **live** net **\\${lnet:,.0f}** "
+                   f"· WR {dl['win'].mean()*100:.0f}%  |  **paper** (same symbols) net "
+                   f"**\\${net:,.0f}**  |  **divergence (paper − live) = \\${net - lnet:,.0f}**. "
+                   f"Select *Live* for what the account actually made.")
     elif view == ALLACC and has_live:
-        st.caption(f"Paper **\\${float(dp['pnl'].sum()):,.0f}** + live "
-                   f"**\\${float(dl['pnl'].sum()):,.0f}**; paper P&L is simulated, "
-                   f"only the live leg is real money.")
+        _lnet = float(daily_pnl(dl, live=True).sum())
+        st.caption(f"Live (real money) **\\${_lnet:,.0f}** + paper (simulated) "
+                   f"**\\${float(dp['pnl'].sum()):,.0f}**; only the live leg is money "
+                   f"that exists.")
 
 # ── Cumulative P&L ───────────────────────────────────────────────────────────
-
-
-def _cum(df):
-    return df.groupby("date")["pnl"].sum().sort_index().cumsum()
 
 
 _series = []
 if view in ("Paper", MATCHED, ALLACC) and not dp_view.empty:
     _pname = f"Paper · {', '.join(lsyms)}" if (view == MATCHED and lsyms) else "Paper"
-    _c = _cum(dp_view)
+    _c = daily_pnl(dp_view).cumsum()
     _series.append((_pname, charts.SERIES["paper"], _c.index, _c.values))
 if view in ("Live", MATCHED, ALLACC) and not dl.empty:
-    _c = _cum(dl)
-    _series.append(("Live (real money)", charts.SERIES["live"], _c.index, _c.values))
+    _c = daily_pnl(dl, live=not NORMALIZED).cumsum()
+    _lname = "Live (2ct)" if NORMALIZED else "Live (real money)"
+    _series.append((_lname, charts.SERIES["live"], _c.index, _c.values))
 
 if _series:
     st.plotly_chart(charts.trend(_series, height=380), width="stretch",
@@ -244,8 +320,9 @@ if not primary.empty:
 
 # ── Weekly bars + per-symbol for the primary view ────────────────────────────
 if not primary.empty:
-    primary["week"] = pd.to_datetime(primary["date"]).dt.to_period("W").apply(lambda p: p.start_time.date())
-    wk = primary.groupby("week")["pnl"].sum()
+    # Roll up the fee-adjusted daily series, not the raw trades, so the bars
+    # sum to the hero figure.
+    wk = daily.groupby(pd.to_datetime(daily.index).to_period("W").start_time.date).sum()
     figw = charts.sign_bars([str(x) for x in wk.index], wk.values, hover_label="Week")
     st.subheader(f"Weekly P&L — {plabel} (2ct)")
     charts.style(figw, height=340, crosshair=False, legend=False)

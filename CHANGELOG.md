@@ -1,5 +1,6 @@
 # Changelog
 
+- [2026-08-12] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — FIX: live P&L reported 2ct-normalized figures as "real money" (overstated by $1,216, and flipped Julys sign). Now reports actual fills at actual quantities, net of broker fees; 2ct normalization is confined to the Both (matched) comparison and labeled as such.
 - [2026-08-12] Modified: options_agent/dashboard/_charts.py — Added trend() (brokerage-app style: no gridlines/y-axis, sign-colored solo line, dashed break-even rule, full-height hover hairline) and hero_html() for the headline figure.
 - [2026-08-12] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — Dropped the combined curve; hero P&L figure above the chart, supporting stats moved below it.
 - [2026-08-12] Modified: options_agent/dashboard/pages/1_Backtest.py — Equity curve switched to the same trend() style.

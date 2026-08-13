@@ -324,7 +324,8 @@ if not primary.empty:
     # sum to the hero figure.
     wk = daily.groupby(pd.to_datetime(daily.index).to_period("W").start_time.date).sum()
     figw = charts.sign_bars([str(x) for x in wk.index], wk.values, hover_label="Week")
-    st.subheader(f"Weekly P&L — {plabel} (2ct)")
+    # "(2ct)" only where it is true — everywhere else these are real dollars.
+    st.subheader(f"Weekly P&L — {plabel}" + (" (2ct)" if NORMALIZED else ""))
     charts.style(figw, height=340, crosshair=False, legend=False, zoom=False)
     st.plotly_chart(figw, width="stretch", config=charts.CONFIG_STATIC)
 

@@ -51,10 +51,20 @@ CONFIG = {
     "toImageButtonOptions": {"format": "png", "scale": 2},
 }
 
+# For charts where zooming buys nothing — a dozen weekly bars are all on screen
+# already, so the zoom/pan controls are just clutter over the data.
+CONFIG_STATIC = {
+    "displayModeBar": False,
+    "displaylogo": False,
+    "scrollZoom": False,
+    "staticPlot": False,   # keep hover; it is only the zoom controls we drop
+}
+
 
 def style(fig: go.Figure, title: str | None = None, height: int = 420,
           money_y: bool = True, crosshair: bool = True,
-          legend: bool = True, y_fmt: str | None = None) -> go.Figure:
+          legend: bool = True, y_fmt: str | None = None,
+          zoom: bool = True) -> go.Figure:
     """Apply the shared look: transparent surface, hairline grid, crosshair +
     unified tooltip, dollar-formatted y axis. Height includes the axis band."""
     # NB: chart titles live in the page as Streamlit headings, not in the
@@ -74,7 +84,7 @@ def style(fig: go.Figure, title: str | None = None, height: int = 420,
         showlegend=legend,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left",
                     x=0, bgcolor="rgba(0,0,0,0)", font=dict(size=12)),
-        dragmode="zoom",
+        dragmode="zoom" if zoom else False,
         barcornerradius=4,
     )
     fig.update_xaxes(

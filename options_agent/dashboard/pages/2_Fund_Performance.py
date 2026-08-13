@@ -325,8 +325,8 @@ if not primary.empty:
     wk = daily.groupby(pd.to_datetime(daily.index).to_period("W").start_time.date).sum()
     figw = charts.sign_bars([str(x) for x in wk.index], wk.values, hover_label="Week")
     st.subheader(f"Weekly P&L — {plabel} (2ct)")
-    charts.style(figw, height=340, crosshair=False, legend=False)
-    st.plotly_chart(figw, width="stretch", config=charts.CONFIG)
+    charts.style(figw, height=340, crosshair=False, legend=False, zoom=False)
+    st.plotly_chart(figw, width="stretch", config=charts.CONFIG_STATIC)
 
     # Table view — the WCAG-clean twin of the charts above (every value the
     # tooltips show is reachable here without hovering).

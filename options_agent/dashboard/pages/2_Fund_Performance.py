@@ -32,6 +32,7 @@ st.set_page_config(page_title="Fund Performance", layout="wide",
 
 # Aurora theme: dev chrome hidden, gold → violet, sidebar logo + custom nav.
 from _theme import apply_theme  # noqa: E402
+import _charts as charts  # noqa: E402
 apply_theme()
 
 st.title("📈 Fund Performance")
@@ -117,6 +118,11 @@ def load_trades(account: str) -> pd.DataFrame:
 
 df_p = load_trades("paper")
 df_l = load_trades("live")
+# Tag the account so the combined ("All accounts") view can still break the
+# numbers back out per account in the table.
+for _df, _acct in ((df_p, "Paper"), (df_l, "Live")):
+    if len(_df):
+        _df["account"] = _acct
 has_live = not df_l.empty
 if df_p.empty and not has_live:
     st.warning("No trades found.")
@@ -127,8 +133,14 @@ first = df_p["date"].min() if not df_p.empty else df_l["date"].min()
 
 c = st.columns([2, 2, 1])
 period = c[0].radio("Period", ["1W", "1M", "3M", "6M", "YTD", "All", "Custom"], horizontal=True, index=2)
-view = c[1].radio("Account", ["Paper", "Live", "Both"] if has_live else ["Paper"],
-                  horizontal=True, index=(2 if has_live else 0))
+_views = ["Paper", "Live", "Both (matched)", "All accounts"] if has_live else ["Paper"]
+view = c[1].radio(
+    "Account", _views, horizontal=True, index=(len(_views) - 1),
+    help="Paper / Live show one account. **Both (matched)** compares them on the "
+         "same symbols since live inception — the apples-to-apples view. "
+         "**All accounts** is the full fund: every symbol, both accounts, "
+         "no clamping.",
+)
 if c[2].button("🔄 Refresh"):
     load_trades.clear()
     st.rerun()
@@ -144,9 +156,12 @@ else:
              "YTD": date(today.year, 1, 1), "All": first}[period]
 
 
+MATCHED, ALLACC = "Both (matched)", "All accounts"
+
 live_start = df_l["date"].min() if not df_l.empty else None
-# In "Both", clamp to where BOTH were live (matched TIME window) for a fair comparison.
-eff_start = max(start, live_start) if (view == "Both" and live_start) else start
+# Matched view only: clamp to where BOTH were live (matched TIME window) for a
+# fair comparison. Every other view shows the period exactly as selected.
+eff_start = max(start, live_start) if (view == MATCHED and live_start) else start
 
 
 def clip(df):
@@ -155,16 +170,28 @@ def clip(df):
 
 dp, dl = clip(df_p), clip(df_l)
 lsyms = sorted(dl["symbol"].unique()) if not dl.empty else []
-# In "Both", compare paper on the SAME symbols live trades (SPY/QQQ) — apples-to-apples.
-dp_view = dp[dp["symbol"].isin(lsyms)].copy() if (view == "Both" and lsyms) else dp
-_rng = f"**{eff_start} → {end}**"
-if view == "Both" and lsyms:
-    _rng += f" · matched **{', '.join(lsyms)}** since live inception (select *Paper* for the full fund)"
+# Matched view only: compare paper on the SAME symbols live trades — apples-to-apples.
+dp_view = dp[dp["symbol"].isin(lsyms)].copy() if (view == MATCHED and lsyms) else dp
+# What the KPIs and the per-view charts below are computed over.
+if view == "Live":
+    primary, plabel = dl, "Live (real money)"
+elif view == ALLACC:
+    primary = pd.concat([dp, dl], ignore_index=True) if has_live else dp
+    plabel = "All accounts"
+elif view == MATCHED:
+    primary = dp_view
+    plabel = ("Paper · " + ", ".join(lsyms)) if lsyms else "Paper"
+else:
+    primary, plabel = dp, "Paper"
+
+_rng = f"**{eff_start} → {end}** · {plabel}"
+if view == MATCHED and lsyms:
+    _rng += (f" · matched **{', '.join(lsyms)}** since live inception "
+             f"(select *All accounts* for the full fund)")
+elif view == ALLACC:
+    _rng += " · every symbol, paper **+** live combined"
 st.caption(_rng)
 
-# KPIs for the selected view (Live if Live, else Paper)
-primary = dl if view == "Live" else dp_view
-plabel = "Live (real money)" if view == "Live" else ("Paper · SPY/QQQ" if view == "Both" else "Paper")
 if primary.empty:
     st.info(f"No {plabel} trades in this range.")
 else:
@@ -172,47 +199,68 @@ else:
     cumser = daily.cumsum()
     net = float(primary["pnl"].sum())
     k = st.columns(6)
-    k[0].metric(f"{plabel} · Net P&L", f"${net:,.0f}")
+    # Label stays short — a long account name truncates inside the metric tile,
+    # and the caption above already names the view.
+    k[0].metric("Net P&L", f"${net:,.0f}")
     k[1].metric("Trades", f"{len(primary)}")
     k[2].metric("Win rate", f"{primary['win'].mean() * 100:.0f}%")
     k[3].metric("Avg / trade", f"${net / len(primary):,.0f}")
     k[4].metric("Best day", f"${daily.max():,.0f}")
     k[5].metric("Max drawdown", f"${float((cumser - cumser.cummax()).min()):,.0f}")
-    if view == "Both" and not dl.empty:
+    if view == MATCHED and not dl.empty:
         lnet = float(dl["pnl"].sum())
         # NB: '$' must be escaped or Streamlit's markdown treats the pair as LaTeX
         # and swallows the text between them into a math span.
-        st.caption(f"🔴 **Live** (real money): net **\\${lnet:,.0f}** · WR {dl['win'].mean()*100:.0f}%  |  "
-                   f"🟢 **Paper** (same symbols): net **\\${net:,.0f}**  |  "
+        st.caption(f"**Live** (real money): net **\\${lnet:,.0f}** · WR {dl['win'].mean()*100:.0f}%  |  "
+                   f"**Paper** (same symbols): net **\\${net:,.0f}**  |  "
                    f"**intervention/divergence cost (paper − live) = \\${net - lnet:,.0f}**")
+    elif view == ALLACC and has_live:
+        st.caption(f"Paper **\\${float(dp['pnl'].sum()):,.0f}** + live "
+                   f"**\\${float(dl['pnl'].sum()):,.0f}** — combined across accounts; "
+                   f"paper P&L is simulated, only the live leg is real money.")
 
-# Equity curve overlay
+# ── Cumulative P&L ───────────────────────────────────────────────────────────
 fig = go.Figure()
-if view in ("Paper", "Both") and not dp_view.empty:
-    cp = dp_view.groupby("date")["pnl"].sum().sort_index().cumsum()
-    _pname = "Paper · SPY/QQQ (untouched)" if view == "Both" else "Paper (untouched)"
-    fig.add_trace(go.Scatter(x=cp.index, y=cp.values, name=_pname,
-                             mode="lines", line=dict(color="#2e7d32", width=2)))
-if view in ("Live", "Both") and not dl.empty:
-    cl = dl.groupby("date")["pnl"].sum().sort_index().cumsum()
-    fig.add_trace(go.Scatter(x=cl.index, y=cl.values, name="Live (real money)",
-                             mode="lines", line=dict(color="#c62828", width=2)))
-fig.update_layout(title="Cumulative P&L (2ct)", height=400, margin=dict(t=40, b=10),
-                  hovermode="x unified", xaxis=dict(rangeslider=dict(visible=True)))
-st.plotly_chart(fig, use_container_width=True)
 
-# Weekly bars + per-symbol for the primary view
+
+def _cum(df):
+    return df.groupby("date")["pnl"].sum().sort_index().cumsum()
+
+
+_series = []
+if view in ("Paper", MATCHED, ALLACC) and not dp_view.empty:
+    _pname = f"Paper · {', '.join(lsyms)}" if (view == MATCHED and lsyms) else "Paper"
+    _series.append((_pname, charts.SERIES["paper"], _cum(dp_view)))
+if view in ("Live", MATCHED, ALLACC) and not dl.empty:
+    _series.append(("Live (real money)", charts.SERIES["live"], _cum(dl)))
+if view == ALLACC and has_live and not primary.empty:
+    _series.append(("Combined", charts.SERIES["combined"], _cum(primary)))
+
+# Area wash only when a single curve owns the plot — stacked translucent fills
+# turn to mud where they overlap, and the line already carries the shape.
+_fill = len(_series) == 1
+for _name, _color, _cum_ser in _series:
+    charts.line(fig, _cum_ser.index, _cum_ser.values, _name, _color, fill=_fill)
+
+st.subheader("Cumulative P&L (2ct)")
+charts.style(fig, height=430, legend=len(_series) > 1)
+st.plotly_chart(fig, width="stretch", config=charts.CONFIG)
+
+# ── Weekly bars + per-symbol for the primary view ────────────────────────────
 if not primary.empty:
     primary["week"] = pd.to_datetime(primary["date"]).dt.to_period("W").apply(lambda p: p.start_time.date())
     wk = primary.groupby("week")["pnl"].sum()
-    figw = go.Figure(go.Bar(x=[str(x) for x in wk.index], y=wk.values,
-                            marker_color=["#2e7d32" if v >= 0 else "#c62828" for v in wk.values]))
-    figw.update_layout(title=f"Weekly P&L — {plabel} (2ct)", height=320, margin=dict(t=40, b=10))
-    st.plotly_chart(figw, use_container_width=True)
+    figw = charts.sign_bars([str(x) for x in wk.index], wk.values, hover_label="Week")
+    st.subheader(f"Weekly P&L — {plabel} (2ct)")
+    charts.style(figw, height=340, crosshair=False, legend=False)
+    st.plotly_chart(figw, width="stretch", config=charts.CONFIG)
 
-    g = (primary.groupby("symbol")
+    # Table view — the WCAG-clean twin of the charts above (every value the
+    # tooltips show is reachable here without hovering).
+    _by = ["account", "symbol"] if (view == ALLACC and has_live) else ["symbol"]
+    g = (primary.groupby(_by)
          .agg(trades=("pnl", "size"), win_rate=("win", "mean"), pnl=("pnl", "sum")).reset_index())
     g["win_rate"] = (g["win_rate"] * 100).round(0).astype(int).astype(str) + "%"
     g["pnl"] = g["pnl"].round(0)
     st.subheader(f"By symbol — {plabel}")
-    st.dataframe(g.sort_values("pnl", ascending=False), use_container_width=True, hide_index=True)
+    st.dataframe(g.sort_values("pnl", ascending=False), width="stretch", hide_index=True)

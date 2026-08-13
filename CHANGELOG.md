@@ -1,5 +1,8 @@
 # Changelog
 
+- [2026-08-12] Created: options_agent/dashboard/_charts.py — Shared Plotly styling (Aurora dark): validated series/sign palette, hairline grid, crosshair + unified tooltip, end-of-line direct labels, cleaned modebar.
+- [2026-08-12] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — Added "All accounts" view (paper + live + combined, unclamped); restyled charts via _charts; titles moved to Streamlit headings; per-account breakdown in the by-symbol table.
+- [2026-08-12] Modified: options_agent/dashboard/pages/1_Backtest.py — Equity curve and exit-reason bars routed through _charts (they were still painting the old #1C1C1E chart background on the Aurora surface).
 - [2026-08-12] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — Escaped `$` in the live-overlay caption; unescaped pairs were parsed as LaTeX and swallowed the WR/paper text into a math span.
 - [2026-08-12] Modified: docker-compose.yml — Mount options_agent/.streamlit into the dashboard container read-only so the Aurora palette applies without rebuilding the image (config.toml was baked in).
 - [2026-08-12] Created: options_agent/dashboard/_theme.py — Aurora theme ported from feature/dashboard-auth's _auth.py, stripped of all auth (no login card, no role gating): chrome-hiding CSS, gold→violet CSS-variable override, sidebar logo, custom labelled nav.

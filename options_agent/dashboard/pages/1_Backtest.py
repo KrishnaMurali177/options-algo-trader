@@ -134,6 +134,7 @@ hr { border-color: var(--border-subtle) !important; opacity: 0.5 !important; }
 # Aurora overrides the Swiss-luxury variables above (gold → violet, charcoal),
 # hides Streamlit's dev chrome, sets the sidebar logo and the custom nav.
 from _theme import apply_theme  # noqa: E402
+import _charts as charts  # noqa: E402
 apply_theme()
 
 
@@ -226,24 +227,12 @@ if taken:
         dates.append(t.trade_date)
 
     fig = go.Figure()
-    colors = ["#6BBF7A" if v >= 0 else "#E06C6C" for v in cum_pnl]
-    fig.add_trace(go.Scatter(
-        x=dates, y=cum_pnl, mode="lines+markers",
-        line=dict(color="#8b6cff", width=2),
-        marker=dict(size=5, color=colors),
-        hovertemplate="Date: %{x}<br>Cumulative P&L: $%{y:.4f}<extra></extra>",
-    ))
-    fig.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="#1C1C1E",
-        plot_bgcolor="#1C1C1E",
-        font=dict(family="Inter", color="#F5F5F7"),
-        xaxis=dict(gridcolor="#2C2C2E", title=""),
-        yaxis=dict(gridcolor="#2C2C2E", title="Cumulative P&L ($)", tickformat="$.4f"),
-        margin=dict(l=60, r=20, t=20, b=40),
-        height=350,
-    )
-    st.plotly_chart(fig, use_container_width=True)
+    # Per-contract P&L runs in cents, so both the tooltip and the axis need
+    # more precision than the fund-level dollar charts.
+    charts.line(fig, dates, cum_pnl, "Cumulative P&L", charts.SERIES["paper"],
+                fmt=",.4f")
+    charts.style(fig, height=360, legend=False, y_fmt=",.4f")
+    st.plotly_chart(fig, width="stretch", config=charts.CONFIG)
 else:
     st.warning("No trades matched the criteria.")
 
@@ -255,21 +244,17 @@ if report.exit_reasons:
     fig_exit = go.Figure(go.Bar(
         x=[r[0] for r in reasons],
         y=[r[1] for r in reasons],
-        marker_color="#8b6cff",
+        marker_color=charts.SERIES["paper"],
         text=[f"{r[1]}" for r in reasons],
-        textposition="auto",
+        textposition="outside",
+        cliponaxis=False,
+        textfont=dict(family=charts.FONT, size=11, color=charts.INK),
+        hovertemplate="%{x}: <b>%{y}</b> trades<extra></extra>",
     ))
-    fig_exit.update_layout(
-        template="plotly_dark",
-        paper_bgcolor="#1C1C1E",
-        plot_bgcolor="#1C1C1E",
-        font=dict(family="Inter", color="#F5F5F7"),
-        xaxis=dict(gridcolor="#2C2C2E"),
-        yaxis=dict(gridcolor="#2C2C2E", title="Count"),
-        margin=dict(l=40, r=20, t=20, b=40),
-        height=280,
-    )
-    st.plotly_chart(fig_exit, use_container_width=True)
+    fig_exit.update_layout(bargap=charts.bar_gap(len(reasons)))
+    charts.style(fig_exit, height=300, money_y=False, crosshair=False, legend=False)
+    fig_exit.update_yaxes(title="Count", title_font=dict(size=12, color=charts.INK_MUTED))
+    st.plotly_chart(fig_exit, width="stretch", config=charts.CONFIG)
 
 # ── Trade log ───────────────────────────────────────────────────
 st.markdown("## Trade Log")
@@ -292,7 +277,7 @@ if taken:
             "Winner": "Y" if t.is_winner else "",
         })
     df = pd.DataFrame(rows)
-    st.dataframe(df, use_container_width=True, height=400, hide_index=True)
+    st.dataframe(df, width="stretch", height=400, hide_index=True)
 
 # ── Signal accuracy ─────────────────────────────────────────────
 if report.signal_accuracy:
@@ -309,4 +294,4 @@ if report.signal_accuracy:
             "Avg P&L": f"${s.avg_pnl_when_active:.4f}",
         })
     if sig_rows:
-        st.dataframe(pd.DataFrame(sig_rows), use_container_width=True, hide_index=True)
+        st.dataframe(pd.DataFrame(sig_rows), width="stretch", hide_index=True)

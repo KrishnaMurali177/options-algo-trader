@@ -28,13 +28,31 @@ LOGO_PATH = os.path.join(_HERE, "assets", "logo.svg")
 
 
 def _inject_chrome_css() -> None:
-    """Hide Streamlit's dev chrome (Deploy button, hamburger, top bar, footer) —
-    this is a product, not a dev preview."""
+    """Hide Streamlit's dev chrome (Deploy button, hamburger, decoration bar,
+    footer) — this is a product, not a dev preview.
+
+    NB: hide the chrome *inside* the header, never the header itself. Streamlit
+    renders the "reopen sidebar" control there, so `display:none` on the header
+    makes collapsing the sidebar a one-way door: it disappears and there is no
+    way to bring it back short of a reload."""
     st.markdown(
-        "<style>"
-        '[data-testid="stToolbar"],[data-testid="stDecoration"],'
-        '[data-testid="stHeader"],#MainMenu,footer{display:none !important;}'
-        "</style>",
+        """<style>
+    [data-testid="stToolbar"],[data-testid="stDecoration"],
+    [data-testid="stStatusWidget"],#MainMenu,footer{display:none !important;}
+    /* keep the header as an empty transparent strip: it still hosts the
+       sidebar-reopen button, but shows nothing of its own */
+    [data-testid="stHeader"]{background:transparent !important;
+        box-shadow:none !important;border:0 !important;}
+    /* ...and make sure that button is always visible and clickable */
+    [data-testid="stSidebarCollapsedControl"]{
+        display:flex !important;visibility:visible !important;opacity:1 !important;
+        pointer-events:auto !important;z-index:1000 !important;}
+    [data-testid="stSidebarCollapsedControl"] button{
+        background:#141722 !important;border:1px solid #2a3042 !important;
+        border-radius:10px !important;color:#eef0f4 !important;}
+    [data-testid="stSidebarCollapsedControl"] button:hover{
+        border-color:#8b6cff !important;}
+    </style>""",
         unsafe_allow_html=True,
     )
 

@@ -34,7 +34,8 @@ except Exception:
 
 _LOGO_ICON = os.path.join(_dash, "assets", "logo.svg")
 st.set_page_config(page_title="Fund Performance", layout="wide",
-                   page_icon=_LOGO_ICON if os.path.exists(_LOGO_ICON) else "📈")
+                   page_icon=_LOGO_ICON if os.path.exists(_LOGO_ICON) else "📈",
+                   initial_sidebar_state="expanded")
 
 # Aurora theme: dev chrome hidden, gold → violet, sidebar logo + custom nav.
 from _theme import apply_theme  # noqa: E402

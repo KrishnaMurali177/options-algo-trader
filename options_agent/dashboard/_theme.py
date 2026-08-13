@@ -43,24 +43,22 @@ def _inject_chrome_css() -> None:
        sidebar-reopen button, but shows nothing of its own */
     [data-testid="stHeader"]{background:transparent !important;
         box-shadow:none !important;border:0 !important;}
-    /* ...and make sure that button is always visible and clickable. Streamlit
-       renders it at zero size until the header is hovered, which on a dark
-       page reads as "the sidebar is simply gone". stExpandSidebarButton is the
-       1.59 name; stSidebarCollapsedControl is kept for older builds. */
-    [data-testid="stExpandSidebarButton"],
-    [data-testid="stSidebarCollapsedControl"]{
-        display:flex !important;visibility:visible !important;opacity:1 !important;
-        pointer-events:auto !important;z-index:1000 !important;
-        width:auto !important;height:auto !important;overflow:visible !important;}
-    [data-testid="stExpandSidebarButton"] button,
-    [data-testid="stSidebarCollapsedControl"] button{
-        display:flex !important;visibility:visible !important;opacity:1 !important;
-        min-width:34px !important;min-height:34px !important;
-        background:#141722 !important;border:1px solid #2a3042 !important;
-        border-radius:10px !important;color:#eef0f4 !important;}
-    [data-testid="stExpandSidebarButton"] button:hover,
-    [data-testid="stSidebarCollapsedControl"] button:hover{
-        border-color:#8b6cff !important;color:#fff !important;}
+    /* On a desktop width the nav is pinned open and cannot be collapsed.
+       Streamlit's reopen affordance only materialises on hover over a 0x0
+       wrapper, so a collapsed sidebar on a dark page reads as gone for good —
+       and this dashboard is three pages, the nav has no reason to hide.
+       Below 768px Streamlit's own overlay behaviour is left alone, so the
+       collapse button stays available where the screen is actually narrow. */
+    @media (min-width: 768px){
+        [data-testid="stSidebar"]{
+            display:block !important;visibility:visible !important;
+            width:300px !important;min-width:300px !important;max-width:300px !important;
+            margin-left:0 !important;transform:none !important;}
+        [data-testid="stSidebar"][aria-expanded="false"]{
+            width:300px !important;min-width:300px !important;margin-left:0 !important;}
+        [data-testid="stSidebarContent"]{visibility:visible !important;opacity:1 !important;}
+        [data-testid="stSidebarCollapseButton"]{display:none !important;}
+    }
     </style>""",
         unsafe_allow_html=True,
     )

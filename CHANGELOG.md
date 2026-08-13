@@ -1,5 +1,7 @@
 # Changelog
 
+- [2026-08-13] Created: options_agent/dashboard/_ledger.py — FIFO position engine over the broker activities ledger (fees, exercises + their share legs, shorts); reconciles to equity-minus-funding.
+- [2026-08-13] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — FIX: paper P&L understated by $2,967 (exercised contracts booked as total premium loss, their share sales filtered out). Money figures now come from the ledger engine.
 - [2026-08-12] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — Weekly P&L heading no longer says "(2ct)" in the real-dollar views; the suffix now appears only in Both (matched).
 - [2026-08-12] Modified: options_agent/dashboard/_charts.py + pages/2_Fund_Performance.py — Weekly P&L bars drop the zoom/pan modebar and drag-zoom (all bars are on screen already); hover retained.
 - [2026-08-12] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — FIX: live P&L reported 2ct-normalized figures as "real money" (overstated by $1,216, and flipped Julys sign). Now reports actual fills at actual quantities, net of broker fees; 2ct normalization is confined to the Both (matched) comparison and labeled as such.

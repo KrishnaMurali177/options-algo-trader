@@ -96,6 +96,59 @@ def style(fig: go.Figure, title: str | None = None, height: int = 420,
     return fig
 
 
+def trend(series: list[tuple], height: int = 360, fmt: str = ",.0f") -> go.Figure:
+    """A brokerage-app trend chart: no gridlines, no y axis, no frame — just the
+    curve, a dashed break-even reference, and a full-height hairline on hover.
+
+    The number lives in the hero figure above the chart and in the hover
+    readout, so the y axis has nothing left to say and is dropped entirely; the
+    table below the chart remains the exact-values view.
+
+    `series` is a list of (name, color, x, y). A single series is colored by the
+    sign of where it ends (green up / red down); comparisons keep their fixed
+    categorical slots so identity never follows rank."""
+    fig = go.Figure()
+    solo = len(series) == 1
+    for name, color, x, y in series:
+        xs, ys = list(x), list(y)
+        if solo:
+            color = POS if (ys and ys[-1] >= 0) else NEG
+        fig.add_trace(go.Scatter(
+            x=xs, y=ys, name=name, mode="lines",
+            line=dict(color=color, width=2, shape="linear"),
+            fill="tozeroy" if solo else None,
+            fillcolor=_wash(color, 0.10) if solo else None,
+            hovertemplate=f"{name}: <b>%{{y:${fmt}}}</b><extra></extra>",
+            marker=dict(size=8, color=color, line=dict(width=2, color=CARD)),
+        ))
+    fig.update_layout(
+        height=height,
+        font=dict(family=FONT, size=13, color=INK_MUTED),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        margin=dict(t=28 if not solo else 8, b=28, l=8, r=8),
+        hovermode="x unified",
+        hoverlabel=dict(bgcolor=CARD, bordercolor=ZERO, align="left",
+                        font=dict(family=FONT, size=12, color=INK)),
+        showlegend=not solo,
+        legend=dict(orientation="h", yanchor="bottom", y=1.0, xanchor="left",
+                    x=0, bgcolor="rgba(0,0,0,0)", font=dict(size=12)),
+        dragmode=False,
+    )
+    fig.update_xaxes(
+        showgrid=False, showline=False, zeroline=False, ticks="",
+        tickfont=dict(size=11, color=INK_MUTED), nticks=6,
+        showspikes=True, spikemode="across", spikesnap="cursor",
+        spikecolor=SPIKE, spikethickness=1, spikedash="solid",
+    )
+    # No y axis at all — and a dashed break-even rule, which is a threshold
+    # (the one line dashing is *for*), not a gridline.
+    fig.update_yaxes(showgrid=False, showline=False, showticklabels=False,
+                     zeroline=False)
+    fig.add_hline(y=0, line=dict(color=ZERO, width=1, dash="dot"))
+    return fig
+
+
 def line(fig: go.Figure, x, y, name: str, color: str, fill: bool = True,
          label_end: bool = True, fmt: str = ",.0f") -> go.Figure:
     """A 2px series line with a soft area wash, hover markers, and a selective
@@ -150,6 +203,24 @@ def bar_gap(n: int) -> float:
     if n <= 6:
         return 0.5
     return 0.28
+
+
+def hero_html(value: float, label: str, sub: str = "", fmt: str = ",.0f") -> str:
+    """The brokerage-app hero figure: the number the page is actually about,
+    in the system sans with proportional figures, sign-colored, with the
+    period/account it covers underneath."""
+    color = POS if value >= 0 else NEG
+    sign = "+" if value > 0 else ""
+    sub_html = (f'<div style="color:{INK_MUTED};font-size:.82rem;margin-top:.35rem">'
+                f'{sub}</div>') if sub else ""
+    return (
+        f'<div style="margin:.25rem 0 1.1rem">'
+        f'<div style="color:{INK_MUTED};font-size:.78rem;font-weight:500;'
+        f'letter-spacing:.06em;text-transform:uppercase">{label}</div>'
+        f'<div style="color:{color};font-family:{FONT};font-size:2.9rem;'
+        f'font-weight:700;line-height:1.15;letter-spacing:-.02em">'
+        f'{sign}${value:{fmt}}</div>{sub_html}</div>'
+    )
 
 
 def _wash(hex_color: str, alpha: float = 0.13) -> str:

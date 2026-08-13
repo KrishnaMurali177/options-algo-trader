@@ -1,5 +1,8 @@
 # Changelog
 
+- [2026-08-12] Modified: options_agent/dashboard/_charts.py — Added trend() (brokerage-app style: no gridlines/y-axis, sign-colored solo line, dashed break-even rule, full-height hover hairline) and hero_html() for the headline figure.
+- [2026-08-12] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — Dropped the combined curve; hero P&L figure above the chart, supporting stats moved below it.
+- [2026-08-12] Modified: options_agent/dashboard/pages/1_Backtest.py — Equity curve switched to the same trend() style.
 - [2026-08-12] Created: options_agent/dashboard/_charts.py — Shared Plotly styling (Aurora dark): validated series/sign palette, hairline grid, crosshair + unified tooltip, end-of-line direct labels, cleaned modebar.
 - [2026-08-12] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — Added "All accounts" view (paper + live + combined, unclamped); restyled charts via _charts; titles moved to Streamlit headings; per-account breakdown in the by-symbol table.
 - [2026-08-12] Modified: options_agent/dashboard/pages/1_Backtest.py — Equity curve and exit-reason bars routed through _charts (they were still painting the old #1C1C1E chart background on the Aurora surface).

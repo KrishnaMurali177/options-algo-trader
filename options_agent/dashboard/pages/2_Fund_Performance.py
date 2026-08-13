@@ -9,7 +9,6 @@ from collections import defaultdict
 from datetime import date, datetime, timedelta
 
 import pandas as pd
-import plotly.graph_objects as go
 import streamlit as st
 
 _root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # -> /app
@@ -198,15 +197,10 @@ else:
     daily = primary.groupby("date")["pnl"].sum().sort_index()
     cumser = daily.cumsum()
     net = float(primary["pnl"].sum())
-    k = st.columns(6)
-    # Label stays short — a long account name truncates inside the metric tile,
-    # and the caption above already names the view.
-    k[0].metric("Net P&L", f"${net:,.0f}")
-    k[1].metric("Trades", f"{len(primary)}")
-    k[2].metric("Win rate", f"{primary['win'].mean() * 100:.0f}%")
-    k[3].metric("Avg / trade", f"${net / len(primary):,.0f}")
-    k[4].metric("Best day", f"${daily.max():,.0f}")
-    k[5].metric("Max drawdown", f"${float((cumser - cumser.cummax()).min()):,.0f}")
+    # Hero figure first, chart under it, supporting stats after — the number is
+    # the headline, the curve is how it got there.
+    # No sub-line: the range/account caption directly above already says it.
+    st.markdown(charts.hero_html(net, "Net P&L"), unsafe_allow_html=True)
     if view == MATCHED and not dl.empty:
         lnet = float(dl["pnl"].sum())
         # NB: '$' must be escaped or Streamlit's markdown treats the pair as LaTeX
@@ -216,11 +210,10 @@ else:
                    f"**intervention/divergence cost (paper − live) = \\${net - lnet:,.0f}**")
     elif view == ALLACC and has_live:
         st.caption(f"Paper **\\${float(dp['pnl'].sum()):,.0f}** + live "
-                   f"**\\${float(dl['pnl'].sum()):,.0f}** — combined across accounts; "
-                   f"paper P&L is simulated, only the live leg is real money.")
+                   f"**\\${float(dl['pnl'].sum()):,.0f}**; paper P&L is simulated, "
+                   f"only the live leg is real money.")
 
 # ── Cumulative P&L ───────────────────────────────────────────────────────────
-fig = go.Figure()
 
 
 def _cum(df):
@@ -230,21 +223,24 @@ def _cum(df):
 _series = []
 if view in ("Paper", MATCHED, ALLACC) and not dp_view.empty:
     _pname = f"Paper · {', '.join(lsyms)}" if (view == MATCHED and lsyms) else "Paper"
-    _series.append((_pname, charts.SERIES["paper"], _cum(dp_view)))
+    _c = _cum(dp_view)
+    _series.append((_pname, charts.SERIES["paper"], _c.index, _c.values))
 if view in ("Live", MATCHED, ALLACC) and not dl.empty:
-    _series.append(("Live (real money)", charts.SERIES["live"], _cum(dl)))
-if view == ALLACC and has_live and not primary.empty:
-    _series.append(("Combined", charts.SERIES["combined"], _cum(primary)))
+    _c = _cum(dl)
+    _series.append(("Live (real money)", charts.SERIES["live"], _c.index, _c.values))
 
-# Area wash only when a single curve owns the plot — stacked translucent fills
-# turn to mud where they overlap, and the line already carries the shape.
-_fill = len(_series) == 1
-for _name, _color, _cum_ser in _series:
-    charts.line(fig, _cum_ser.index, _cum_ser.values, _name, _color, fill=_fill)
+if _series:
+    st.plotly_chart(charts.trend(_series, height=380), width="stretch",
+                    config=charts.CONFIG)
 
-st.subheader("Cumulative P&L (2ct)")
-charts.style(fig, height=430, legend=len(_series) > 1)
-st.plotly_chart(fig, width="stretch", config=charts.CONFIG)
+# Supporting stats sit under the hero + curve, not above them.
+if not primary.empty:
+    k = st.columns(5)
+    k[0].metric("Trades", f"{len(primary)}")
+    k[1].metric("Win rate", f"{primary['win'].mean() * 100:.0f}%")
+    k[2].metric("Avg / trade", f"${net / len(primary):,.0f}")
+    k[3].metric("Best day", f"${daily.max():,.0f}")
+    k[4].metric("Max drawdown", f"${float((cumser - cumser.cummax()).min()):,.0f}")
 
 # ── Weekly bars + per-symbol for the primary view ────────────────────────────
 if not primary.empty:

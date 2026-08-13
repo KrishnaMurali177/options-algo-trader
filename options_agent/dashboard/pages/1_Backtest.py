@@ -226,12 +226,10 @@ if taken:
         cum_pnl.append(running)
         dates.append(t.trade_date)
 
-    fig = go.Figure()
-    # Per-contract P&L runs in cents, so both the tooltip and the axis need
-    # more precision than the fund-level dollar charts.
-    charts.line(fig, dates, cum_pnl, "Cumulative P&L", charts.SERIES["paper"],
-                fmt=",.4f")
-    charts.style(fig, height=360, legend=False, y_fmt=",.4f")
+    # Per-contract P&L runs in cents, so the readout needs more precision than
+    # the fund-level dollar charts.
+    fig = charts.trend([("Cumulative P&L", charts.SERIES["paper"], dates, cum_pnl)],
+                       height=360, fmt=",.4f")
     st.plotly_chart(fig, width="stretch", config=charts.CONFIG)
 else:
     st.warning("No trades matched the criteria.")

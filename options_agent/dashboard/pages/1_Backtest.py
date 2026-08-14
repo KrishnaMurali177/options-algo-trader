@@ -228,8 +228,10 @@ if taken:
 
     # Per-contract P&L runs in cents, so the readout needs more precision than
     # the fund-level dollar charts.
+    # show_y: this page has no hero figure, and per-contract cents need an axis
+    # to be readable at all.
     fig = charts.trend([("Cumulative P&L", charts.SERIES["paper"], dates, cum_pnl)],
-                       height=360, fmt=",.4f")
+                       height=360, fmt=",.4f", show_y=True)
     st.plotly_chart(fig, width="stretch", config=charts.CONFIG)
 else:
     st.warning("No trades matched the criteria.")
@@ -250,6 +252,7 @@ if report.exit_reasons:
         hovertemplate="%{x}: <b>%{y}</b> trades<extra></extra>",
     ))
     fig_exit.update_layout(bargap=charts.bar_gap(len(reasons)))
+    fig_exit.update_traces(width=charts.bar_width(len(reasons)))
     charts.style(fig_exit, height=300, money_y=False, crosshair=False, legend=False)
     fig_exit.update_yaxes(title="Count", title_font=dict(size=12, color=charts.INK_MUTED))
     st.plotly_chart(fig_exit, width="stretch", config=charts.CONFIG)

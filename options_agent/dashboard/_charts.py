@@ -106,7 +106,8 @@ def style(fig: go.Figure, title: str | None = None, height: int = 420,
     return fig
 
 
-def trend(series: list[tuple], height: int = 360, fmt: str = ",.0f") -> go.Figure:
+def trend(series: list[tuple], height: int = 360, fmt: str = ",.0f",
+          show_y: bool = False) -> go.Figure:
     """A brokerage-app trend chart: no gridlines, no y axis, no frame — just the
     curve, a dashed break-even reference, and a full-height hairline on hover.
 
@@ -151,10 +152,20 @@ def trend(series: list[tuple], height: int = 360, fmt: str = ",.0f") -> go.Figur
         showspikes=True, spikemode="across", spikesnap="cursor",
         spikecolor=SPIKE, spikethickness=1, spikedash="solid",
     )
-    # No y axis at all — and a dashed break-even rule, which is a threshold
-    # (the one line dashing is *for*), not a gridline.
-    fig.update_yaxes(showgrid=False, showline=False, showticklabels=False,
-                     zeroline=False)
+    # Normally no y axis at all: the hero figure and the hover readout carry the
+    # number. `show_y` is for pages with no hero — a backtest in per-contract
+    # cents has nothing else to give the reader a magnitude.
+    if show_y:
+        fig.update_yaxes(showgrid=True, gridcolor=GRID, gridwidth=1,
+                         showline=False, showticklabels=True, zeroline=False,
+                         tickfont=dict(size=12, color=INK_MUTED),
+                         tickprefix="$", tickformat=fmt)
+        fig.update_layout(margin=dict(t=28 if not solo else 8, b=28, l=8, r=8))
+    else:
+        fig.update_yaxes(showgrid=False, showline=False, showticklabels=False,
+                         zeroline=False)
+    # A dashed break-even rule — a threshold, which is the one thing dashing is
+    # actually for, not a gridline.
     fig.add_hline(y=0, line=dict(color=ZERO, width=1, dash="dot"))
     return fig
 
@@ -202,6 +213,7 @@ def sign_bars(x, y, hover_label: str = "P&L") -> go.Figure:
         hovertemplate=f"{hover_label}: <b>%{{y:$,.0f}}</b><extra></extra>",
     ))
     fig.update_layout(bargap=bar_gap(len(vals)))
+    fig.update_traces(width=bar_width(len(vals)))
     return fig
 
 
@@ -213,6 +225,19 @@ def bar_gap(n: int) -> float:
     if n <= 6:
         return 0.5
     return 0.28
+
+
+def bar_width(n: int):
+    """Explicit bar width, in category units, when there are few categories.
+
+    `bargap` alone does not save a one- or two-category chart: plotly still
+    spreads the slots across the full width, so a single bar renders as a
+    300px saturated slab. None = let plotly decide."""
+    if n <= 2:
+        return 0.22
+    if n <= 4:
+        return 0.4
+    return None
 
 
 def hero_html(value: float, label: str, sub: str = "", fmt: str = ",.0f") -> str:

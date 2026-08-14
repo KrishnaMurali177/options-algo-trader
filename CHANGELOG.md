@@ -1,5 +1,6 @@
 # Changelog
 
+- [2026-08-13] Modified: options_agent/dashboard/_charts.py + pages/1_Backtest.py — Backtest equity curve gets a y axis back (no hero figure there, per-contract cents unreadable without one); bars get an explicit width so a one-category chart stops rendering as a 300px slab.
 - [2026-08-13] Modified: options_agent/dashboard/_theme.py + pages/2_Fund_Performance.py — FIX: hiding stHeader removed the sidebar-reopen button, so collapsing the sidebar was irreversible; hide only the chrome inside the header, style the reopen control, and open the Fund page with the sidebar expanded.
 - [2026-08-13] Created: options_agent/dashboard/_ledger.py — FIFO position engine over the broker activities ledger (fees, exercises + their share legs, shorts); reconciles to equity-minus-funding.
 - [2026-08-13] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — FIX: paper P&L understated by $2,967 (exercised contracts booked as total premium loss, their share sales filtered out). Money figures now come from the ledger engine.

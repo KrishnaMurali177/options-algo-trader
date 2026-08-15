@@ -194,6 +194,23 @@ if df_p.empty and not has_live and not has_shadow:
 today = (datetime.now(ET).date() if ET else date.today())
 first = min(d["date"].min() for d in (df_p, df_l, df_s) if not d.empty)
 
+# ── Always-on Shadow tile ────────────────────────────────────────────────────
+# A persistent glance at the new-golden 2nd-paper A/B, independent of the
+# period/account selectors below and always clamped to shadow inception: the
+# account's fee-inclusive net, and the vs-old-golden divergence on matched
+# symbols and option fills. (df_p / df_s still hold the real `pnl` column here —
+# the 2ct normalization only touches the clipped copies further down.)
+if has_shadow:
+    _ss0 = df_s["date"].min()
+    _sled = load_ledger("shadow")
+    _snet = float(sum(v for d, v in _sled.items() if d >= _ss0)) if _sled else float(df_s["pnl"].sum())
+    _ssyms = sorted(df_s["symbol"].unique())
+    _sfill = float(df_s["pnl"].sum())
+    _ofill = (float(df_p[(df_p["symbol"].isin(_ssyms)) & (df_p["date"] >= _ss0)]["pnl"].sum())
+              if not df_p.empty else 0.0)
+    st.markdown(charts.shadow_tile(_snet, _sfill - _ofill, _ss0, _ssyms),
+                unsafe_allow_html=True)
+
 c = st.columns([2, 2, 1])
 period = c[0].radio("Period", ["1W", "1M", "3M", "6M", "YTD", "All", "Custom"], horizontal=True, index=2)
 _views = (["Paper", "Live", "Both (matched)", "All accounts"] if has_live else ["Paper"])

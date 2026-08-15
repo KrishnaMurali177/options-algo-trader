@@ -258,6 +258,34 @@ def hero_html(value: float, label: str, sub: str = "", fmt: str = ",.0f") -> str
     )
 
 
+def shadow_tile(net: float, div: float, since, syms: list[str]) -> str:
+    """A small always-on card for the new-golden shadow A/B: the account's
+    fee-inclusive net and the vs-old-golden divergence, each colored by sign.
+
+    Sized well below the page hero (1.9rem vs 2.9rem) so it reads as a
+    persistent glance, not the headline of whatever view is selected."""
+    ncol = POS if net >= 0 else NEG
+    nsign = "+" if net > 0 else ""
+    dcol = POS if div >= 0 else NEG
+    arrow = "▲" if div >= 0 else "▼"
+    word = "ahead of" if div >= 0 else "behind"
+    return (
+        f'<div style="display:inline-block;border:1px solid {ZERO};border-radius:12px;'
+        f'padding:13px 18px;background:{CARD};box-shadow:0 2px 12px rgba(0,0,0,.25);'
+        f'margin:.1rem 0 1.1rem">'
+        f'<div style="color:{INK_MUTED};font-size:.68rem;font-weight:600;'
+        f'letter-spacing:.07em;text-transform:uppercase">🧪 Shadow · new golden</div>'
+        f'<div style="display:flex;align-items:baseline;gap:16px;margin-top:.35rem">'
+        f'<span style="color:{ncol};font-family:{FONT};font-size:1.9rem;font-weight:700;'
+        f'letter-spacing:-.02em;line-height:1.1">{nsign}${net:,.0f}</span>'
+        f'<span style="color:{dcol};font-size:.85rem;font-weight:600">{arrow} '
+        f'${abs(div):,.0f} {word} old golden</span></div>'
+        f'<div style="color:{INK_MUTED};font-size:.72rem;margin-top:.35rem">'
+        f'since {since} · {", ".join(syms)} · fee-inclusive net; A/B on option fills'
+        f'</div></div>'
+    )
+
+
 def _wash(hex_color: str, alpha: float = 0.13) -> str:
     """Series color at low alpha for the area fill under a line."""
     h = hex_color.lstrip("#")

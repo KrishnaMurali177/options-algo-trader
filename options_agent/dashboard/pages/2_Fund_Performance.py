@@ -226,9 +226,17 @@ else:
 MATCHED, ALLACC, SHADOW = "Both (matched)", "All accounts", "Shadow"
 
 live_start = df_l["date"].min() if not df_l.empty else None
-# Matched view only: clamp to where BOTH were live (matched TIME window) for a
-# fair comparison. Every other view shows the period exactly as selected.
-eff_start = max(start, live_start) if (view == MATCHED and live_start) else start
+shadow_start = df_s["date"].min() if not df_s.empty else None
+# Comparison views clamp to where BOTH legs existed, for a fair matched-time
+# window; every other view shows the period exactly as selected. Matched clamps
+# to live inception; Shadow clamps to when the new-golden 2nd-paper account
+# started, so the old-golden paper leg isn't credited with pre-shadow weeks.
+if view == MATCHED and live_start:
+    eff_start = max(start, live_start)
+elif view == SHADOW and shadow_start:
+    eff_start = max(start, shadow_start)
+else:
+    eff_start = start
 
 
 def clip(df):
@@ -341,7 +349,8 @@ else:
         opaper_fill = float(dp[dp["symbol"].isin(ssyms)]["pnl"].sum()) if ssyms else 0.0
         _div = snet_fill - opaper_fill
         st.caption(
-            f"A/B on **{', '.join(ssyms) or '—'}**, same window · option fills only. "
+            f"A/B on **{', '.join(ssyms) or '—'}** since shadow inception "
+            f"(**{eff_start}**) · option fills only. "
             f"**New golden** (shadow) **\\${snet_fill:,.0f}**  |  **old golden** "
             f"(paper, same symbols) **\\${opaper_fill:,.0f}**  |  **divergence "
             f"(new − old) = \\${_div:,.0f}**. The hero above is the shadow account's "

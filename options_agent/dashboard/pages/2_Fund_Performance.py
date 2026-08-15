@@ -53,10 +53,11 @@ EMPTY = pd.DataFrame(columns=["date", "symbol", "dir", "strike", "pnl", "pnl_2ct
                               "qty", "win"])
 
 
-def _live_keys():
+def _env_keys(path: str):
+    """Read an ALPACA key pair out of a mounted .env file (live or shadow)."""
     k = s = None
     try:
-        for ln in open("/app/.env.live"):
+        for ln in open(path):
             ln = ln.strip()
             if ln.startswith("ALPACA_API_KEY="):
                 k = ln.split("=", 1)[1].strip().strip('"').strip("'")
@@ -65,6 +66,16 @@ def _live_keys():
     except Exception:
         return None
     return (k, s) if k and s else None
+
+
+def _live_keys():
+    return _env_keys("/app/.env.live")
+
+
+def _shadow_keys():
+    # 2nd PAPER account running main's NEW-golden code — the A/B against the
+    # old-golden paper agents. Same file shape as .env.live.
+    return _env_keys("/app/.env.shadow")
 
 
 @st.cache_data(ttl=600, show_spinner="Loading trades…")
@@ -76,6 +87,11 @@ def load_trades(account: str) -> pd.DataFrame:
     if account == "paper":
         from src.utils.alpaca_paper import AlpacaPaperTrader
         client = AlpacaPaperTrader().client
+    elif account == "shadow":
+        keys = _shadow_keys()
+        if not keys:
+            return EMPTY.copy()
+        client = TradingClient(keys[0], keys[1], paper=True)
     else:
         keys = _live_keys()
         if not keys:
@@ -145,6 +161,10 @@ def load_ledger(account: str) -> dict:
     if account == "paper":
         base = "https://paper-api.alpaca.markets"
         key, sec = os.environ.get("ALPACA_API_KEY"), os.environ.get("ALPACA_SECRET_KEY")
+    elif account == "shadow":
+        base = "https://paper-api.alpaca.markets"
+        keys = _shadow_keys()
+        key, sec = keys if keys else (None, None)
     else:
         base = "https://api.alpaca.markets"
         keys = _live_keys()
@@ -159,28 +179,34 @@ def load_ledger(account: str) -> dict:
 
 df_p = load_trades("paper")
 df_l = load_trades("live")
+df_s = load_trades("shadow")
 # Tag the account so the combined ("All accounts") view can still break the
 # numbers back out per account in the table.
-for _df, _acct in ((df_p, "Paper"), (df_l, "Live")):
+for _df, _acct in ((df_p, "Paper"), (df_l, "Live"), (df_s, "Shadow")):
     if len(_df):
         _df["account"] = _acct
 has_live = not df_l.empty
-if df_p.empty and not has_live:
+has_shadow = not df_s.empty
+if df_p.empty and not has_live and not has_shadow:
     st.warning("No trades found.")
     st.stop()
 
 today = (datetime.now(ET).date() if ET else date.today())
-first = df_p["date"].min() if not df_p.empty else df_l["date"].min()
+first = min(d["date"].min() for d in (df_p, df_l, df_s) if not d.empty)
 
 c = st.columns([2, 2, 1])
 period = c[0].radio("Period", ["1W", "1M", "3M", "6M", "YTD", "All", "Custom"], horizontal=True, index=2)
-_views = ["Paper", "Live", "Both (matched)", "All accounts"] if has_live else ["Paper"]
+_views = (["Paper", "Live", "Both (matched)", "All accounts"] if has_live else ["Paper"])
+if has_shadow:
+    _views.append("Shadow")
 view = c[1].radio(
-    "Account", _views, horizontal=True, index=(len(_views) - 1),
+    "Account", _views, horizontal=True,
+    index=(_views.index("All accounts") if "All accounts" in _views else 0),
     help="Paper / Live show one account. **Both (matched)** compares them on the "
          "same symbols since live inception — the apples-to-apples view. "
          "**All accounts** is the full fund: every symbol, both accounts, "
-         "no clamping.",
+         "no clamping. **Shadow** is a 2nd paper account running the NEW golden "
+         "config (old-vs-new A/B on the same symbols).",
 )
 if c[2].button("🔄 Refresh"):
     load_trades.clear()
@@ -197,7 +223,7 @@ else:
              "YTD": date(today.year, 1, 1), "All": first}[period]
 
 
-MATCHED, ALLACC = "Both (matched)", "All accounts"
+MATCHED, ALLACC, SHADOW = "Both (matched)", "All accounts", "Shadow"
 
 live_start = df_l["date"].min() if not df_l.empty else None
 # Matched view only: clamp to where BOTH were live (matched TIME window) for a
@@ -209,19 +235,30 @@ def clip(df):
     return df[(df["date"] >= eff_start) & (df["date"] <= end)].copy() if len(df) else df
 
 
-dp, dl = clip(df_p), clip(df_l)
+dp, dl, ds = clip(df_p), clip(df_l), clip(df_s)
 
 # Which P&L basis this view is denominated in. Everything downstream reads the
 # `pnl` column, so swap it here once instead of threading a column name through.
 NORMALIZED = view == MATCHED
-for _d in (dp, dl):
+for _d in (dp, dl, ds):
     if len(_d):
         _d["pnl"] = _d["pnl_2ct" if NORMALIZED else "pnl"]
         _d["win"] = _d["pnl"] > 0
 # The money basis: the broker's ledger, which already contains fees, exercises
 # and the share legs they create. Not used by the matched view, whose whole
-# point is the normalized per-trade figure.
-_LEDGER = {} if NORMALIZED else {a: load_ledger(a) for a in ("paper", "live")}
+# point is the normalized per-trade figure. Only load the ledgers this view
+# needs — the Shadow view also pulls paper, for the old-vs-new A/B line.
+if NORMALIZED:
+    _need = ()
+elif view == SHADOW:
+    _need = ("shadow", "paper")
+elif view == ALLACC:
+    _need = ("paper", "live") if has_live else ("paper",)
+elif view == "Live":
+    _need = ("live",)
+else:
+    _need = ("paper",)
+_LEDGER = {a: load_ledger(a) for a in _need}
 
 
 def ledger_daily(accounts):
@@ -250,6 +287,8 @@ dp_view = dp[dp["symbol"].isin(lsyms)].copy() if (view == MATCHED and lsyms) els
 # which broker ledgers supply this view's money figures.
 if view == "Live":
     primary, plabel, accts = dl, "Live (real money)", ("live",)
+elif view == SHADOW:
+    primary, plabel, accts = ds, "Shadow (new golden)", ("shadow",)
 elif view == ALLACC:
     primary = pd.concat([dp, dl], ignore_index=True) if has_live else dp
     plabel = "All accounts"
@@ -293,6 +332,20 @@ else:
         st.caption(f"Live (real money) **\\${float(ledger_daily(('live',)).sum()):,.0f}** "
                    f"+ paper (simulated) **\\${float(ledger_daily(('paper',)).sum()):,.0f}**; "
                    f"only the live leg is money that exists.")
+    elif view == SHADOW:
+        # The A/B this account exists for: new-golden (shadow) vs old-golden
+        # (paper) on the SAME symbols and window. Option fills only, so both
+        # legs share a basis; the hero above is shadow's fee-inclusive ledger.
+        ssyms = sorted(ds["symbol"].unique())
+        snet_fill = float(ds["pnl"].sum())
+        opaper_fill = float(dp[dp["symbol"].isin(ssyms)]["pnl"].sum()) if ssyms else 0.0
+        _div = snet_fill - opaper_fill
+        st.caption(
+            f"A/B on **{', '.join(ssyms) or '—'}**, same window · option fills only. "
+            f"**New golden** (shadow) **\\${snet_fill:,.0f}**  |  **old golden** "
+            f"(paper, same symbols) **\\${opaper_fill:,.0f}**  |  **divergence "
+            f"(new − old) = \\${_div:,.0f}**. The hero above is the shadow account's "
+            f"fee-inclusive ledger; both accounts run on the same 2nd-paper sizing.")
 
 # ── Cumulative P&L ───────────────────────────────────────────────────────────
 
@@ -306,6 +359,16 @@ if view in ("Live", MATCHED, ALLACC) and not dl.empty:
     _c = daily_pnl(dl, ("live",)).cumsum()
     _lname = "Live (2ct)" if NORMALIZED else "Live (real money)"
     _series.append((_lname, charts.SERIES["live"], _c.index, _c.values))
+# Shadow view overlays the A/B directly: new-golden (shadow) against old-golden
+# (paper) on the same symbols. Per-fill cumulative so both lines share a basis.
+if view == SHADOW and not ds.empty:
+    _cs = ds.groupby("date")["pnl"].sum().sort_index().cumsum()
+    _series.append(("Shadow (new golden)", charts.SERIES["combined"], _cs.index, _cs.values))
+    _ssyms = sorted(ds["symbol"].unique())
+    _op = dp[dp["symbol"].isin(_ssyms)]
+    if not _op.empty:
+        _co = _op.groupby("date")["pnl"].sum().sort_index().cumsum()
+        _series.append(("Paper (old golden)", charts.SERIES["paper"], _co.index, _co.values))
 
 if _series:
     st.plotly_chart(charts.trend(_series, height=380), width="stretch",

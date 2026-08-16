@@ -41,32 +41,34 @@ NEG = "#e66767"
 
 FONT = "Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif"
 
-# Modebar: keep zoom/pan/reset, drop the export-and-lasso clutter.
+# ── One interaction model, every chart, every page ───────────────────────────
+# Charts are READ, not manipulated. The time range is chosen with the page's
+# Period control, never by dragging or scrolling on the plot — so nothing fights
+# the page scroll, there is no modebar to reset, and a curve behaves the same
+# whether it is on Fund Performance, Backtest or the Dashboard. Hover stays: a
+# crosshair and the exact value are how you read a single point. Axes are pinned
+# with `fixedrange` in style()/trend() so even a stray gesture can't zoom them.
 CONFIG = {
-    "displaylogo": False,
-    "scrollZoom": True,
-    "modeBarButtonsToRemove": ["lasso2d", "select2d", "autoScale2d",
-                               "toggleSpikelines", "hoverClosestCartesian",
-                               "hoverCompareCartesian"],
-    "toImageButtonOptions": {"format": "png", "scale": 2},
-}
-
-# For charts where zooming buys nothing — a dozen weekly bars are all on screen
-# already, so the zoom/pan controls are just clutter over the data.
-CONFIG_STATIC = {
     "displayModeBar": False,
     "displaylogo": False,
     "scrollZoom": False,
-    "staticPlot": False,   # keep hover; it is only the zoom controls we drop
+    "doubleClick": False,
+    "staticPlot": False,   # keep hover/crosshair; only pan-zoom is removed
 }
+
+# Kept as an alias so existing call sites read clearly; every chart is static now.
+CONFIG_STATIC = CONFIG
 
 
 def style(fig: go.Figure, title: str | None = None, height: int = 420,
           money_y: bool = True, crosshair: bool = True,
           legend: bool = True, y_fmt: str | None = None,
-          zoom: bool = True) -> go.Figure:
+          zoom: bool = False) -> go.Figure:
     """Apply the shared look: transparent surface, hairline grid, crosshair +
-    unified tooltip, dollar-formatted y axis. Height includes the axis band."""
+    unified tooltip, dollar-formatted y axis. Height includes the axis band.
+
+    `zoom` is retained for call-site compatibility but no longer enables drag
+    zoom — the dashboard's single interaction model is read-only (see CONFIG)."""
     # NB: chart titles live in the page as Streamlit headings, not in the
     # figure — a plotly title and a top legend share the same margin band and
     # collide. `title` here is accepted and ignored so callers can document
@@ -84,10 +86,11 @@ def style(fig: go.Figure, title: str | None = None, height: int = 420,
         showlegend=legend,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left",
                     x=0, bgcolor="rgba(0,0,0,0)", font=dict(size=12)),
-        dragmode="zoom" if zoom else False,
+        dragmode=False,
         barcornerradius=4,
     )
     fig.update_xaxes(
+        fixedrange=True,   # read-only: no drag/scroll zoom on this axis
         showgrid=False, showline=True, linecolor=AXIS, linewidth=1,
         ticks="outside", tickcolor=AXIS, ticklen=4,
         tickfont=dict(size=12, color=INK_MUTED),
@@ -95,6 +98,7 @@ def style(fig: go.Figure, title: str | None = None, height: int = 420,
         spikecolor=SPIKE, spikethickness=1, spikedash="solid",
     )
     fig.update_yaxes(
+        fixedrange=True,
         showgrid=True, gridcolor=GRID, gridwidth=1, zeroline=True,
         zerolinecolor=ZERO, zerolinewidth=1, showline=False,
         tickfont=dict(size=12, color=INK_MUTED),
@@ -147,6 +151,7 @@ def trend(series: list[tuple], height: int = 360, fmt: str = ",.0f",
         dragmode=False,
     )
     fig.update_xaxes(
+        fixedrange=True,   # read-only: the Period control sets the range, not drag
         showgrid=False, showline=False, zeroline=False, ticks="",
         tickfont=dict(size=11, color=INK_MUTED), nticks=6,
         showspikes=True, spikemode="across", spikesnap="cursor",
@@ -156,14 +161,14 @@ def trend(series: list[tuple], height: int = 360, fmt: str = ",.0f",
     # number. `show_y` is for pages with no hero — a backtest in per-contract
     # cents has nothing else to give the reader a magnitude.
     if show_y:
-        fig.update_yaxes(showgrid=True, gridcolor=GRID, gridwidth=1,
+        fig.update_yaxes(fixedrange=True, showgrid=True, gridcolor=GRID, gridwidth=1,
                          showline=False, showticklabels=True, zeroline=False,
                          tickfont=dict(size=12, color=INK_MUTED),
                          tickprefix="$", tickformat=fmt)
         fig.update_layout(margin=dict(t=28 if not solo else 8, b=28, l=8, r=8))
     else:
-        fig.update_yaxes(showgrid=False, showline=False, showticklabels=False,
-                         zeroline=False)
+        fig.update_yaxes(fixedrange=True, showgrid=False, showline=False,
+                         showticklabels=False, zeroline=False)
     # A dashed break-even rule — a threshold, which is the one thing dashing is
     # actually for, not a gridline.
     fig.add_hline(y=0, line=dict(color=ZERO, width=1, dash="dot"))

@@ -61,6 +61,7 @@ st.set_page_config(
 )
 
 from _theme import apply_theme  # noqa: E402
+import _charts as charts  # noqa: E402  — shared read-only chart config + palette
 
 # ── Swiss Luxury Theme CSS ────────────────────────────────────────
 st.markdown("""
@@ -954,17 +955,20 @@ def build_pnl_chart(order: OptionOrder, current_price: float) -> go.Figure:
         )
 
     fig.update_layout(
-        title=dict(text="P&L at Expiration", font=dict(family="Inter", size=16, color="#F5F5F7")),
+        title=dict(text="P&L at Expiration", font=dict(family=charts.FONT, size=16, color=charts.INK)),
         xaxis_title="Stock Price at Expiration ($)",
         yaxis_title="Profit / Loss ($)",
         template="plotly_dark",
-        paper_bgcolor="#1C1C1E",
-        plot_bgcolor="#2C2C2E",
-        font=dict(family="Inter", color="#A1A1A6"),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=charts.FONT, color=charts.INK_MUTED),
         height=400,
         margin=dict(l=40, r=40, t=50, b=40),
-        xaxis=dict(gridcolor="#3A3A3C", zerolinecolor="#3A3A3C"),
-        yaxis=dict(gridcolor="#3A3A3C", zerolinecolor="#3A3A3C"),
+        dragmode=False,
+        hoverlabel=dict(bgcolor=charts.CARD, bordercolor=charts.ZERO,
+                        font=dict(family=charts.FONT, size=12, color=charts.INK)),
+        xaxis=dict(gridcolor=charts.GRID, zerolinecolor=charts.ZERO, fixedrange=True),
+        yaxis=dict(gridcolor=charts.GRID, zerolinecolor=charts.ZERO, fixedrange=True),
     )
     return fig
 
@@ -1008,16 +1012,21 @@ def build_price_chart(df: pd.DataFrame, indicators: dict) -> go.Figure:
     )
 
     fig.update_layout(
-        title=dict(text=f"{indicators.get('symbol', '')} — Price & Indicators", font=dict(family="Inter", size=16, color="#F5F5F7")),
+        title=dict(text=f"{indicators.get('symbol', '')} — Price & Indicators", font=dict(family=charts.FONT, size=16, color=charts.INK)),
         xaxis_rangeslider_visible=False,
         template="plotly_dark",
-        paper_bgcolor="#1C1C1E",
-        plot_bgcolor="#2C2C2E",
-        font=dict(family="Inter", color="#A1A1A6"),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family=charts.FONT, color=charts.INK_MUTED),
         height=450,
         margin=dict(l=40, r=40, t=50, b=40),
-        xaxis=dict(gridcolor="#3A3A3C", zerolinecolor="#3A3A3C"),
-        yaxis=dict(gridcolor="#3A3A3C", zerolinecolor="#3A3A3C"),
+        dragmode=False,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="left", x=0,
+                    bgcolor="rgba(0,0,0,0)", font=dict(size=12)),
+        hoverlabel=dict(bgcolor=charts.CARD, bordercolor=charts.ZERO,
+                        font=dict(family=charts.FONT, size=12, color=charts.INK)),
+        xaxis=dict(gridcolor=charts.GRID, zerolinecolor=charts.ZERO, fixedrange=True),
+        yaxis=dict(gridcolor=charts.GRID, zerolinecolor=charts.ZERO, fixedrange=True),
     )
     return fig
 
@@ -1724,7 +1733,7 @@ cols[5].metric("ATR (14)", f"${indicators.atr_14:.2f}")
 
 # Price chart
 if hist is not None and not hist.empty:
-    st.plotly_chart(build_price_chart(hist, ind_dict), use_container_width=True)
+    st.plotly_chart(build_price_chart(hist, ind_dict), use_container_width=True, config=charts.CONFIG)
 
 # Detailed indicator table
 with st.expander("📊 All Technical Indicators", expanded=False):
@@ -2492,7 +2501,7 @@ else:
                     st.markdown(f"{icon} **{sig['name']}** ({'+' if s > 0 else ''}{s}) — {sig['desc']}")
 
         # P&L chart
-        st.plotly_chart(build_pnl_chart(order, current_price), use_container_width=True)
+        st.plotly_chart(build_pnl_chart(order, current_price), use_container_width=True, config=charts.CONFIG)
 
         # ══════════════════════════════════════════════════════════
         #  SECTION 4.5: Exact Trade Execution Guide
@@ -2842,17 +2851,25 @@ else:
             hoverinfo="text",
             name="Cumulative P&L",
         ))
-        _fig.add_hline(y=0, line_dash="dash", line_color="#636366", opacity=0.5)
+        _fig.add_hline(y=0, line=dict(color=charts.ZERO, width=1, dash="dot"))
         _fig.update_layout(
-            title="Cumulative P&L Curve",
+            title=dict(text="Cumulative P&L Curve", font=dict(family=charts.FONT, size=16, color=charts.INK)),
             xaxis_title="Trade #",
             yaxis_title="P&L ($)",
             template="plotly_dark",
+            paper_bgcolor="rgba(0,0,0,0)",
+            plot_bgcolor="rgba(0,0,0,0)",
+            font=dict(family=charts.FONT, color=charts.INK_MUTED),
             height=320,
             margin=dict(l=40, r=20, t=40, b=40),
             showlegend=False,
+            dragmode=False,
+            hoverlabel=dict(bgcolor=charts.CARD, bordercolor=charts.ZERO,
+                            font=dict(family=charts.FONT, size=12, color=charts.INK)),
+            xaxis=dict(gridcolor=charts.GRID, zerolinecolor=charts.ZERO, fixedrange=True),
+            yaxis=dict(gridcolor=charts.GRID, zerolinecolor=charts.ZERO, fixedrange=True),
         )
-        st.plotly_chart(_fig, use_container_width=True)
+        st.plotly_chart(_fig, use_container_width=True, config=charts.CONFIG)
 
         # ── Exit-mix bar ──
         _outcomes = {}

@@ -1,5 +1,7 @@
 # Changelog
 
+- [2026-08-17] Modified: options_agent/dashboard/app.py — Market Overview: split the 6-metric row into two rows of three so the values don't squash/truncate ("$44…") when the sidebar is pinned open.
+
 - [2026-08-16] Modified: options_agent/dashboard/app.py — Group the Dashboard's 10 stacked sections into 4 tabs (Market now / Recommendation / Simulate trade / Live agent) to cut the long scroll, each with a legend caption. Uses a small route() container-context helper so the flat, dependency-ordered script isn't reindented; footer routed back to page root.
 
 - [2026-08-16] Modified: options_agent/dashboard/_charts.py + app.py — Unify every chart on ONE read-only interaction model: no drag-zoom, no scroll-zoom (which hijacked page scroll), no modebar; axes pinned with fixedrange; hover/crosshair kept. Time range is driven by each page's Period control. Collapsed CONFIG/CONFIG_STATIC into one config and brought the Dashboard's 3 legacy plotly_dark charts onto the transparent Aurora surface + palette.

@@ -1759,15 +1759,19 @@ _tf_labels = {"intraday": "⚡ Intraday", "15min": "⚡ Intraday", "1hour": "⚡
 _tf_desc = "Regime from daily bars · Trade signals from 5-min bars" if saved_timeframe in ("intraday", "15min", "1hour") else f"All indicators from {saved_timeframe} bars"
 st.caption(f"Timeframe: **{_tf_labels.get(saved_timeframe, saved_timeframe)}** — {_tf_desc}")
 
-cols = st.columns(6)
-cols[0].metric("Price", f"${current_price:.2f}")
-cols[1].metric("VIX", f"{indicators.vix:.1f}", delta=f"{'High' if indicators.vix > 25 else 'Low'}", delta_color="inverse")
 _display_rsi = indicators.rsi_5min if indicators.rsi_5min is not None else indicators.rsi_14
 _rsi_label = "RSI (5m)" if indicators.rsi_5min is not None else "RSI (14)"
-cols[2].metric(_rsi_label, f"{_display_rsi:.1f}", delta="Overbought" if _display_rsi > 70 else ("Oversold" if _display_rsi < 30 else "Neutral"), delta_color="off")
-cols[3].metric("SMA 50", f"${indicators.sma_50:.2f}")
-cols[4].metric("MACD Hist", f"{indicators.macd_histogram:.3f}", delta="Bullish" if indicators.macd_histogram > 0 else "Bearish", delta_color="normal")
-cols[5].metric("ATR (14)", f"${indicators.atr_14:.2f}")
+# Two rows of three, not six across: with the sidebar pinned at 300px, six
+# metrics in one row squash and the values truncate ("$44…"). Three per row
+# gives each tile roughly double the width, so the numbers fit either way.
+_r1 = st.columns(3)
+_r1[0].metric("Price", f"${current_price:.2f}")
+_r1[1].metric("VIX", f"{indicators.vix:.1f}", delta=f"{'High' if indicators.vix > 25 else 'Low'}", delta_color="inverse")
+_r1[2].metric(_rsi_label, f"{_display_rsi:.1f}", delta="Overbought" if _display_rsi > 70 else ("Oversold" if _display_rsi < 30 else "Neutral"), delta_color="off")
+_r2 = st.columns(3)
+_r2[0].metric("SMA 50", f"${indicators.sma_50:.2f}")
+_r2[1].metric("MACD Hist", f"{indicators.macd_histogram:.3f}", delta="Bullish" if indicators.macd_histogram > 0 else "Bearish", delta_color="normal")
+_r2[2].metric("ATR (14)", f"${indicators.atr_14:.2f}")
 
 # Price chart
 if hist is not None and not hist.empty:

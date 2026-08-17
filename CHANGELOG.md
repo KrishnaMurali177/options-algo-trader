@@ -1,5 +1,7 @@
 # Changelog
 
+- [2026-08-16] Modified: options_agent/dashboard/app.py — Group the Dashboard's 10 stacked sections into 4 tabs (Market now / Recommendation / Simulate trade / Live agent) to cut the long scroll, each with a legend caption. Uses a small route() container-context helper so the flat, dependency-ordered script isn't reindented; footer routed back to page root.
+
 - [2026-08-16] Modified: options_agent/dashboard/_charts.py + app.py — Unify every chart on ONE read-only interaction model: no drag-zoom, no scroll-zoom (which hijacked page scroll), no modebar; axes pinned with fixedrange; hover/crosshair kept. Time range is driven by each page's Period control. Collapsed CONFIG/CONFIG_STATIC into one config and brought the Dashboard's 3 legacy plotly_dark charts onto the transparent Aurora surface + palette.
 - [2026-08-14] Modified: options_agent/dashboard/_charts.py + pages/2_Fund_Performance.py — Add a small always-on Shadow tile at the top of Fund Performance (charts.shadow_tile): new-golden fee-inclusive net + vs-old-golden divergence since shadow inception, visible regardless of the selected account view.
 - [2026-08-14] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — Clamp the Shadow view to shadow inception (like Both-matched clamps to live inception) so the old-golden paper comparison leg isn't credited with pre-shadow weeks; A/B caption names the inception date.

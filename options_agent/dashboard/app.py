@@ -1712,9 +1712,47 @@ portfolio = build_simulated_portfolio(
 
 
 # ══════════════════════════════════════════════════════════════════
-#  SECTION 1: Market Overview
+#  Main content — grouped into tabs to cut the long scroll
 # ══════════════════════════════════════════════════════════════════
+# The page is a flat top-to-bottom script: later sections reuse variables the
+# earlier ones compute (e.g. `order`/`chain`), so the sections can't be reordered
+# or wrapped in `with` blocks without a large, risky reindent. Instead we open a
+# tab's container context and leave it open until the next route(); Streamlit
+# renders bare st.* calls into whichever context is currently open. route(None)
+# returns to the page root (for the footer that should sit under the tab strip).
+tab_now, tab_reco, tab_sim, tab_live = st.tabs([
+    "📊 Market now", "🎯 Recommendation", "🧪 Simulate trade", "🤖 Live agent",
+])
+with tab_now:
+    st.caption(f"Where **{sym}** is right now — price, key indicators, the entry "
+               f"setup and the volatility regime. Read-only; nothing here places a trade.")
+with tab_reco:
+    st.caption("What the agent would trade on this setup and why — the selected "
+               "call / put scalp — plus a reference for every strategy in the book.")
+with tab_sim:
+    st.caption("A paper order built from the recommendation: the contract, an "
+               "execution plan, risk checks and a P&L-at-expiration preview. "
+               "Simulation only — nothing is sent to a broker.")
+with tab_live:
+    st.caption("How the real live agent is actually doing — closed-trade P&L "
+               "pulled from its journal.")
 
+_open_tab = {"dg": None}
+
+
+def route(tab):
+    """Send the section(s) that follow into `tab` (or back to the page root when
+    `tab` is None). Keeps the flat script intact — see the note above."""
+    if _open_tab["dg"] is not None:
+        _open_tab["dg"].__exit__(None, None, None)
+        _open_tab["dg"] = None
+    if tab is not None:
+        tab.__enter__()
+        _open_tab["dg"] = tab
+
+
+# ── Market now: Market Overview ──────────────────────────────────────────────
+route(tab_now)
 st.markdown("## Market Overview")
 
 _tf_labels = {"intraday": "⚡ Intraday", "15min": "⚡ Intraday", "1hour": "⚡ Intraday", "daily": "📅 Daily", "weekly": "📆 Weekly"}
@@ -1769,6 +1807,8 @@ with st.expander("📊 All Technical Indicators", expanded=False):
 #  SECTION 3: Strategy Recommendation
 # ══════════════════════════════════════════════════════════════════
 
+# ── Recommendation: Strategy Selection ───────────────────────────────────────
+route(tab_reco)
 st.markdown("## Strategy Selection")
 
 if saved_strategy_mode == "manual":
@@ -2135,6 +2175,8 @@ for col, (sname, sinfo) in zip([scol1, scol2], STRATEGY_DESCRIPTIONS.items()):
 #  SECTION 4: Simulated Order Construction
 # ══════════════════════════════════════════════════════════════════
 
+# ── Simulate trade: order construction (+ execution, risk, summary below) ─────
+route(tab_sim)
 st.markdown("## Simulated Trade")
 
 ALL_STRATEGY_KEYS = ["buy_call", "buy_put"]
@@ -2652,6 +2694,8 @@ else:
 #  SECTION 1.5: Entry Point Analysis
 # ══════════════════════════════════════════════════════════════════
 
+# ── Market now: Entry Point Analysis (back to the first tab) ──────────────────
+route(tab_now)
 st.markdown("## Entry Point Analysis")
 
 entry_analyzer = EntryAnalyzer()
@@ -2753,7 +2797,8 @@ with rcol2:
 #  SECTION 6.5: Live Agent Performance
 # ══════════════════════════════════════════════════════════════════
 
-st.markdown("---")
+# ── Live agent tab ───────────────────────────────────────────────────────────
+route(tab_live)
 st.markdown("## Live Agent Performance")
 
 import json as _json
@@ -2904,7 +2949,8 @@ else:
 #  SECTION 7: Strategy Comparison
 # ══════════════════════════════════════════════════════════════════
 
-st.markdown("---")
+# ── Recommendation: Strategy Reference (back to the recommendation tab) ───────
+route(tab_reco)
 st.markdown("## Strategy Reference")
 
 comp_data = {
@@ -2921,6 +2967,8 @@ comp_data = {
 }
 st.dataframe(pd.DataFrame(comp_data), hide_index=True, use_container_width=True)
 
+# Footer sits under the tab strip, at the page root.
+route(None)
 st.markdown("---")
 st.caption("Simulation Only — No real trades are placed. "
            + ("Running in Mock Mode with sample data." if mock_mode

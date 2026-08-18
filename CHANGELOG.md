@@ -1,5 +1,7 @@
 # Changelog
 
+- [2026-08-17] Modified: options_agent/dashboard/app.py — Cap the Simulate/Live metric strips at 3 cards per row (execution plan 6→3+3, scalp levels 5→3+2, live-agent stats 5→3+2) so they don't squash with the sidebar open; grounded in KPI-card guidance (4/row ceiling, rich cards stay wide).
+
 - [2026-08-17] Modified: options_agent/dashboard/app.py — Market Overview: split the 6-metric row into two rows of three so the values don't squash/truncate ("$44…") when the sidebar is pinned open.
 
 - [2026-08-16] Modified: options_agent/dashboard/app.py — Group the Dashboard's 10 stacked sections into 4 tabs (Market now / Recommendation / Simulate trade / Live agent) to cut the long scroll, each with a legend caption. Uses a small route() container-context helper so the flat, dependency-ordered script isn't reindented; footer routed back to page root.

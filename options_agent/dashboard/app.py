@@ -2419,18 +2419,21 @@ else:
                 unsafe_allow_html=True,
             )
 
-            bp1, bp2, bp3, bp4, bp5, bp6 = st.columns(6)
+            # Two rows of three, not six across — six cards squash with the
+            # sidebar open and the last ones barely register.
+            bp1, bp2, bp3 = st.columns(3)
             bp1.metric("📍 Entry Price", f"${order.entry_price:.2f}",
                        delta=f"{'Above' if override_strategy == 'buy_call' else 'Below'} range", delta_color="off")
             bp2.metric("🛑 Stop Loss", f"${order.stop_loss_price:.2f}",
                        delta=f"Range midpoint", delta_color="inverse")
-            bp3.metric("🎯 T1 (0.75R)", f"${order.profit_target_1:.2f}",
+            bp3.metric("🧭 Direction", f"{order.breakout_direction.upper()}")
+            bp4, bp5, bp6 = st.columns(3)
+            bp4.metric("🎯 T1 (0.75R)", f"${order.profit_target_1:.2f}",
                        delta=f"+${abs(order.profit_target_1 - order.entry_price):.2f}", delta_color="normal")
-            bp4.metric("🎯 T2 (1.5R)", f"${order.profit_target_2:.2f}",
+            bp5.metric("🎯 T2 (1.5R)", f"${order.profit_target_2:.2f}",
                        delta=f"+${abs(order.profit_target_2 - order.entry_price):.2f}", delta_color="normal")
-            bp5.metric("⏰ Time Stop", "3:00 PM ET",
+            bp6.metric("⏰ Time Stop", "3:00 PM ET",
                        delta="Close all", delta_color="off")
-            bp6.metric("Direction", f"{order.breakout_direction.upper()}")
 
             # Step-by-step execution
             with st.expander("📋 How to Execute This Breakout Trade", expanded=True):
@@ -2506,12 +2509,14 @@ else:
 
             # Entry / Exit levels
             st.markdown("#### 🎯 Scalp Levels")
-            lv1, lv2, lv3, lv4, lv5 = st.columns(5)
+            # Three per row so the cards stay wide with the sidebar open.
+            lv1, lv2, lv3 = st.columns(3)
             lv1.metric("Entry", f"${orng.entry_price:.2f}")
             lv2.metric("Stop Loss", f"${orng.stop_loss:.2f}", delta=f"-${orng.risk_per_share:.2f} risk", delta_color="inverse")
-            lv3.metric("Target 1 (1:1)", f"${orng.target_1:.2f}", delta=f"+${orng.risk_per_share:.2f}", delta_color="normal")
-            lv4.metric("Target 2 (2:1)", f"${orng.target_2:.2f}", delta=f"+${orng.risk_per_share * 2:.2f}", delta_color="normal")
-            lv5.metric("Risk/Share", f"${orng.risk_per_share:.2f}")
+            lv3.metric("Risk/Share", f"${orng.risk_per_share:.2f}")
+            lv4, lv5, _ = st.columns(3)
+            lv4.metric("Target 1 (1:1)", f"${orng.target_1:.2f}", delta=f"+${orng.risk_per_share:.2f}", delta_color="normal")
+            lv5.metric("Target 2 (2:1)", f"${orng.target_2:.2f}", delta=f"+${orng.risk_per_share * 2:.2f}", delta_color="normal")
 
             # Signals breakdown
             with st.expander("📊 Opening Range Signals", expanded=True):
@@ -2872,10 +2877,12 @@ else:
         _wr = len(_wins) / len(_closed) * 100
         _total = sum(t["pnl"] for t in _closed)
 
-        _m1, _m2, _m3, _m4, _m5 = st.columns(5)
+        # Three per row so the cards stay wide with the sidebar open.
+        _m1, _m2, _m3 = st.columns(3)
         _m1.metric("Trades", len(_closed), f"{len(_open)} open" if _open else None)
         _m2.metric("Win Rate", f"{_wr:.1f}%", f"vs 63.6% backtest", delta_color="off")
         _m3.metric("Profit Factor", f"{_pf:.2f}", f"vs 1.81 backtest", delta_color="off")
+        _m4, _m5, _ = st.columns(3)
         _m4.metric("Total P&L", f"${_total:+.2f}")
         _m5.metric("Avg / Trade", f"${_total/len(_closed):+.3f}")
 

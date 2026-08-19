@@ -793,6 +793,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
     # ── FOMC sit-out filter (golden 2026-06-04: skip rate-decision days) ──
     if skip_fomc and today.isoformat() in FOMC_DATES:
         logger.info("🚫 FOMC SIT-OUT: %s is an FOMC rate-decision day. Skipping today.", today.isoformat())
+        notifier.notify_sit_out(symbol, today.isoformat(), "FOMC rate-decision day")
         return
 
     # ── Failed-bounce day-regime filter (golden 2026-06-06) ──
@@ -828,6 +829,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                 "prior_close_pos=%.2f ≤ %.2f — skipping today.",
                                 gap_pct, failed_bounce_gap_max,
                                 close_pos, failed_bounce_close_pos_max)
+                            notifier.notify_sit_out(
+                                symbol, today.isoformat(), "failed-bounce archetype",
+                                f"gap +{gap_pct:.2f}% (<= {failed_bounce_gap_max:.2f}); "
+                                f"prior close {close_pos:.0%} of range (<= {failed_bounce_close_pos_max:.0%})")
                             return
         except Exception as e:
             logger.warning("Failed-bounce filter check failed (%s) — proceeding without it.", e)
@@ -843,6 +848,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                 current_vix = float(vix_closes.iloc[-1])
                 if vix_max > 0 and current_vix > vix_max:
                     logger.info("🚫 VIX SIT-OUT: VIX=%.1f > %.0f. Skipping today.", current_vix, vix_max)
+                    notifier.notify_sit_out(symbol, today.isoformat(), "VIX too high", f"VIX {current_vix:.1f} > {vix_max:.0f}")
                     return
                 if vix_spike_pct > 0 and len(vix_closes) >= 2:
                     prev_vix = float(vix_closes.iloc[-2])
@@ -851,6 +857,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                         if spike > vix_spike_pct:
                             logger.info("🚫 VIX SPIKE SIT-OUT: VIX spiked %.1f%% (%.1f→%.1f). Skipping today.",
                                         spike, prev_vix, current_vix)
+                            notifier.notify_sit_out(symbol, today.isoformat(), "VIX spike", f"VIX spiked {spike:.1f}% ({prev_vix:.1f} -> {current_vix:.1f})")
                             return
         except Exception as e:
             logger.warning("VIX sit-out check failed: %s — proceeding anyway", e)

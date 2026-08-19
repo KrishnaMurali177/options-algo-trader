@@ -248,6 +248,19 @@ class DiscordNotifier:
             }]
         })
 
+    def notify_sit_out(self, symbol: str, date_str: str, reason: str, detail: str = "") -> None:
+        """Heartbeat posted when the agent sits out the whole day (FOMC / failed-bounce / VIX)."""
+        desc = f"\U0001f6ab **{symbol}** is sitting out today \u2014 {reason}."
+        if detail:
+            desc += f"\n{detail}"
+        self._post({
+            "embeds": [{
+                "title": f"Sit-out \u2014 {symbol} {date_str}",
+                "color": 0x9AA0A6,
+                "description": desc,
+            }]
+        })
+
     def notify_daily_report(self, date_str: str, trades: list[dict],
                             total_scans: int) -> None:
         # Only executed-and-closed trades belong in the daily P&L/record. A

@@ -36,8 +36,9 @@ logger = logging.getLogger(__name__)
 class AlpacaPaperTrader:
     """Paper trade execution via Alpaca for sweet spot validation."""
 
-    def __init__(self):
+    def __init__(self, paper: bool | None = None):
         from alpaca.trading.client import TradingClient
+        from src.utils.alpaca_data import alpaca_is_paper
 
         api_key = os.environ.get("ALPACA_API_KEY", "")
         secret_key = os.environ.get("ALPACA_SECRET_KEY", "")
@@ -45,16 +46,19 @@ class AlpacaPaperTrader:
         if not api_key or not secret_key:
             raise RuntimeError("ALPACA_API_KEY / ALPACA_SECRET_KEY not set in .env")
 
-        # paper=True ensures we hit the paper trading endpoint
-        self.client = TradingClient(api_key=api_key, secret_key=secret_key, paper=True)
+        # paper=True hits the paper endpoint; paper=False hits the LIVE real-money endpoint.
+        # Defaults to the ALPACA_PAPER env flag (paper unless explicitly set false).
+        self.paper = alpaca_is_paper() if paper is None else paper
+        self.client = TradingClient(api_key=api_key, secret_key=secret_key, paper=self.paper)
         self._verify_account()
 
     def _verify_account(self):
-        """Verify paper account is accessible."""
+        """Verify the account is accessible and announce which endpoint is in use."""
         account = self.client.get_account()
+        mode = "PAPER" if self.paper else "🔴 LIVE REAL-MONEY"
         logger.info(
-            "Alpaca paper account: $%s buying power, $%s equity",
-            account.buying_power, account.equity,
+            "Alpaca %s account: $%s buying power, $%s equity",
+            mode, account.buying_power, account.equity,
         )
         self.account = account
 

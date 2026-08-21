@@ -1514,8 +1514,9 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                 last_trigger = None
 
                             journal_file.write_text(json.dumps(triggers, indent=2, default=str))
-                            logger.info("  📝 Order placed: %s", trigger.get("order_id", "?")[:12])
-                            notifier.notify_trade_entry(trigger)
+                            if not trigger.get("discard"):
+                                logger.info("  📝 Order placed: %s", trigger.get("order_id", "?")[:12])
+                                notifier.notify_trade_entry(trigger)
                         except Exception as e:
                             # Order placement raised (e.g. 40310000 insufficient
                             # options buying power — the 07-07 blackout). This used

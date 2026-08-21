@@ -1,5 +1,6 @@
 # Changelog
 
+- [2026-08-20] Modified: options_agent/scripts/run_sweet_spot_agent.py — Guard notify_trade_entry + 'Order placed' log behind `if not trigger.get("discard")` so discarded no-0DTE-chain signals (single names on non-expiry days) no longer emit a spurious Discord entry alert; journaling of the discard is unchanged.
 - [2026-07-06] Created: options_agent/src/utils/broker.py — get_trader() factory selecting execution backend via BROKER env (default alpaca; public → Public.com). Execution-only switch; market data/0DTE chain stay on Alpaca.
 - [2026-07-06] Created: options_agent/src/utils/public_broker.py — PublicTrader: 0DTE single-leg option execution on Public.com via publicdotcom-py, mirroring AlpacaPaperTrader interface/return-shapes. PUBLIC_DRY_RUN (default true) routes orders through Public's preflight (validated+logged, not placed) since Public has no paper env. Option quotes delegate to Alpaca data. Some response-field mappings flagged # CONFIRM (need live-account validation).
 - [2026-07-06] Created: options_agent/.env.public.example — Template for Public.com creds (PUBLIC_API_SECRET_KEY/PUBLIC_ACCOUNT_NUMBER), BROKER=public, PUBLIC_DRY_RUN=true.

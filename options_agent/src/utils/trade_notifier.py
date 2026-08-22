@@ -46,9 +46,16 @@ class TradeNotifier:
                 logger.error("Notification failed (%s): %s", type(ch).__name__, e)
 
     def notify_daily_report(self, date_str: str, trades: list[dict],
-                            total_scans: int) -> None:
+                            total_scans: int, warning: str | None = None) -> None:
         for ch in self._channels:
             try:
-                ch.notify_daily_report(date_str, trades, total_scans)
+                ch.notify_daily_report(date_str, trades, total_scans, warning=warning)
+            except Exception as e:
+                logger.error("Notification failed (%s): %s", type(ch).__name__, e)
+
+    def notify_alert(self, title: str, description: str, level: str = "warning") -> None:
+        for ch in self._channels:
+            try:
+                ch.notify_alert(title, description, level=level)
             except Exception as e:
                 logger.error("Notification failed (%s): %s", type(ch).__name__, e)

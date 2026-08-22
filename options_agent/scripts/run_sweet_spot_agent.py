@@ -45,7 +45,7 @@ import numpy as np
 import pandas as pd
 import yfinance as yf
 
-from src.utils.alpaca_data import fetch_bars as alpaca_fetch_bars, is_trading_day
+from src.utils import broker
 from src.opening_range import OpeningRangeAnalyzer
 from src.recent_momentum import RecentMomentumAnalyzer
 from src.momentum_cascade import MomentumCascadeDetector
@@ -54,7 +54,13 @@ from src.utils.quality_scorer import compute_quality_score
 from src.utils.choppiness import compute_choppiness
 from src.utils.gainz import gainz_signal
 from src.utils.trade_notifier import TradeNotifier
-from src.utils.alpaca_fills import enrich_trades_with_fills
+
+# Broker-agnostic aliases: everything below calls broker.fetch_bars(...) etc.,
+# so switching --broker at CLI time swaps every data / chain / trader path
+# without touching call sites individually.
+alpaca_fetch_bars = broker.fetch_bars
+is_trading_day = broker.is_trading_day
+enrich_trades_with_fills = broker.enrich_trades_with_fills
 
 
 def _build_indicators_replay_parity(
@@ -767,10 +773,10 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
     trader = None
     if paper_trade:
         try:
-            from src.utils.alpaca_paper import AlpacaPaperTrader
-            trader = AlpacaPaperTrader()
+            trader = broker.make_trader()
             pnl = trader.get_today_pnl()
-            logger.info("Paper account: $%.0f equity, $%.0f buying power", pnl["equity"], pnl["buying_power"])
+            logger.info("Paper account (%s): $%.0f equity, $%.0f buying power",
+                        broker.current_broker(), pnl["equity"], pnl["buying_power"])
         except Exception as e:
             logger.error("Paper trader init failed: %s — running journal-only", e)
 
@@ -803,8 +809,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         try:
             symbol_for_bars = symbol
             # Pull the last 2 daily bars to compute prior_close, prior_high, prior_low, today_open
-            from src.utils.alpaca_data import fetch_bars
-            recent_5m = fetch_bars(symbol_for_bars, days_back=3, interval="5min")
+            recent_5m = broker.fetch_bars(symbol_for_bars, days_back=3, interval="5min")
             if recent_5m is not None and len(recent_5m) > 0:
                 recent_5m["_d"] = recent_5m.index.date
                 daily = recent_5m.groupby("_d").agg(
@@ -880,7 +885,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
     # so a cluster of N same-OCC entries is fully rehydrated as N position_ids.
     if trader:
         try:
-            live_positions = {p.symbol: p for p in trader.client.get_all_positions()}
+            live_positions = broker.get_option_positions_map(trader)
             expected_trade_mode = f"{dte}dte_option"
             for trig in triggers:
                 if trig.get("closed") or trig.get("discard") or trig.get("trade_mode") != expected_trade_mode:
@@ -1012,6 +1017,9 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                         trig["exit_time"] = get_et_now().isoformat()
                         if close_result:
                             trig["close_order_id"] = close_result["order_id"]
+                            if close_result.get("fill_price"):
+                                trig["actual_exit"] = close_result["fill_price"]
+                            trig["close_filled"] = close_result.get("filled", False)
                         trig["closed"] = True
                     journal_file.write_text(json.dumps(triggers, indent=2, default=str))
                     try:
@@ -1178,6 +1186,9 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                     trig["underlying_exit_price"] = underlying_price
                                     if close_result:
                                         trig["close_order_id"] = close_result["order_id"]
+                                        if close_result.get("fill_price"):
+                                            trig["actual_exit"] = close_result["fill_price"]
+                                        trig["close_filled"] = close_result.get("filled", False)
                                     trig["closed"] = True
                                     closed_count += 1
                             journal_file.write_text(json.dumps(triggers, indent=2, default=str))
@@ -1390,9 +1401,8 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             # rather than buying the underlying. Equity positions carry unbounded
                             # overnight risk and don't match replay/backtest semantics.
                             # {dte}DTE options: fetch chain, pick contract, buy-to-open
-                            from src.utils.alpaca_data import get_dte_chain
                             opt_type = "call" if "call" in trigger["direction"] else "put"
-                            contract = get_dte_chain(
+                            contract = broker.get_dte_chain(
                                 symbol, dte=dte, option_type=opt_type,
                                 target_delta=target_delta,
                                 spot_price=trigger.get("price"),
@@ -1419,11 +1429,11 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                     if info.get("occ_symbol") == new_occ
                                 )
                                 try:
-                                    live_positions_now = {p.symbol: p for p in trader.client.get_all_positions()}
+                                    live_positions_now = broker.get_option_positions_map(trader)
                                     existing = live_positions_now.get(new_occ)
-                                    existing_qty = int(float(existing.qty)) if existing else 0
+                                    existing_qty = int(existing["qty"]) if existing else 0
                                 except Exception as e:
-                                    logger.warning("Duplicate-order guard: Alpaca position fetch failed: %s — proceeding with placement", e)
+                                    logger.warning("Duplicate-order guard: broker position fetch failed: %s — proceeding with placement", e)
                                     existing_qty = expected_qty  # assume in sync, allow placement
                                 if existing_qty > expected_qty:
                                     logger.warning(
@@ -1535,7 +1545,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             continue
                         all_trades_status.extend(json.loads(jf.read_text()))
                     all_trades_status.sort(key=lambda t: t.get("timestamp", ""))
-                    enrich_trades_with_fills(all_trades_status)
+                    enrich_trades_with_fills(all_trades_status, trader=trader)
 
                     open_now = [t for t in all_trades_status if not t.get("closed")]
                     status_verdicts = verdicts_file.read_text().strip().split("\n") if verdicts_file.exists() else []
@@ -1557,6 +1567,64 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         # publish the closed bar). Matches replay_day, which scans bar-by-bar
         # at each closed-bar boundary instead of on a drifting wall-clock cadence.
         time.sleep(max(1.0, seconds_until_next_bar_close()))
+
+    # ── EOD Force-Close (belt-and-suspenders, 2026-08-13) ──
+    # If the loop exited (either normally or via error), sweep the broker
+    # for any position still open for THIS symbol and force-close at market.
+    # Should be a no-op in the happy path — the 15:30 time_stop closes 0DTE
+    # positions and _safe_to_exit() blocks loop-exit while positions exist.
+    # This fires only when something upstream failed (silent monitoring error,
+    # IBKR connection drop mid-day, restart-recovery gap, etc.). When it
+    # fires, we scream on Discord because it means the normal path missed.
+    force_closed = []
+    if trader:
+        try:
+            live_positions = broker.get_option_positions_map(trader)
+            # Filter to positions that belong to THIS symbol (OCC starts with symbol root).
+            my_positions = {occ: info for occ, info in live_positions.items()
+                            if occ.startswith(symbol)}
+            for occ, info in my_positions.items():
+                logger.critical("🚨 EOD FORCE-CLOSE: %s (qty=%s) still open past loop exit — closing at market",
+                                occ, info.get("qty"))
+                try:
+                    close_result = trader.close_options_position(occ)
+                except Exception as e:
+                    logger.error("EOD force-close of %s FAILED: %s — REQUIRES MANUAL INTERVENTION IN GATEWAY", occ, e)
+                    close_result = None
+                # Stamp matching journal triggers so the daily report accounts for it
+                for trig in triggers:
+                    if trig.get("occ_symbol") == occ and not trig.get("closed"):
+                        trig["exit_reason"] = "eod_force"
+                        trig["exit_time"] = get_et_now().isoformat()
+                        if close_result:
+                            trig["close_order_id"] = close_result["order_id"]
+                            if close_result.get("fill_price"):
+                                trig["actual_exit"] = close_result["fill_price"]
+                            trig["close_filled"] = close_result.get("filled", False)
+                        trig["closed"] = True
+                force_closed.append({"occ": occ, "qty": info.get("qty"),
+                                     "closed": close_result is not None and close_result.get("filled", False)})
+            if force_closed:
+                try:
+                    lines = "\n".join(
+                        f"- `{fc['occ']}` qty={fc['qty']} → "
+                        f"{'closed at market ✅' if fc['closed'] else 'CLOSE FAILED ❌ — check Gateway'}"
+                        for fc in force_closed
+                    )
+                    notifier.notify_alert(
+                        f"{symbol} EOD FORCE-CLOSE fired",
+                        f"Positions still open after loop exit were force-closed:\n{lines}\n\n"
+                        "This should NEVER happen in the happy path (15:30 time_stop covers 0DTE). "
+                        "Investigate the log for silent monitoring errors, IBKR disconnects, "
+                        "or exit-logic bugs.",
+                        level="critical",
+                    )
+                except Exception as e:
+                    logger.error("Failed to send EOD force-close alert to Discord: %s", e)
+                # Rewrite journal so the daily report sees the eod_force flag
+                journal_file.write_text(json.dumps(triggers, indent=2, default=str))
+        except Exception as e:
+            logger.error("EOD force-close sweep failed: %s — no positions swept", e)
 
     # ── EOD Reconciliation: backfill outcomes for every trigger ──
     if trader and triggers:
@@ -1586,15 +1654,48 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                     continue
                 all_trades.extend(json.loads(jf.read_text()))
             all_trades.sort(key=lambda t: t.get("timestamp", ""))
-            enrich_trades_with_fills(all_trades)
+            enrich_trades_with_fills(all_trades, trader=trader)
 
             verdicts_file_eod = JOURNAL_DIR / f"{today.isoformat()}_verdicts.jsonl"
             total_scans = 0
             if verdicts_file_eod.exists():
                 total_scans = sum(1 for line in verdicts_file_eod.read_text().strip().split("\n") if line)
 
-            notifier.notify_daily_report(today.isoformat(), all_trades, total_scans)
-            logger.info("  📧 Daily report sent: %d trades, %d scans", len(all_trades), total_scans)
+            # ── Reality-check: compare journal claims to broker's actual orders ──
+            # Layer 2 defense (2026-08-12): today's phantom "+3105R" report
+            # slipped through because the journal had discarded triggers with
+            # entry prices but no exits, and the report defaulted exit=$0.
+            # We now also cross-check the journal count against IBKR's own
+            # order log — if they disagree, prepend a bright warning to the
+            # report so no one trusts phantom P&L numbers again.
+            reality_warning = None
+            journal_real_count = sum(
+                1 for t in all_trades
+                if t.get("order_id") and not t.get("discard") and not t.get("order_failed")
+            )
+            broker_count = broker.count_orders_today(trader) if trader else 0
+            if trader and broker_count == -1:
+                reality_warning = (
+                    "⚠️ REALITY CHECK UNAVAILABLE: could not fetch broker order count. "
+                    "P&L below is journal-only and unverified against IBKR."
+                )
+            elif trader and broker_count != journal_real_count:
+                reality_warning = (
+                    f"🚨 JOURNAL/BROKER MISMATCH: journal claims {journal_real_count} placed "
+                    f"trade(s), broker (IBKR) shows {broker_count} order(s) today. "
+                    f"Numbers below may not reflect actual account state — verify with IB Gateway."
+                )
+            elif not trader and journal_real_count > 0:
+                reality_warning = (
+                    f"⚠️ TRADER-LESS RUN with {journal_real_count} placed trade(s) in journal — "
+                    "state should be zero. Investigate: this shouldn't happen in --no-paper mode."
+                )
+
+            notifier.notify_daily_report(today.isoformat(), all_trades, total_scans,
+                                         warning=reality_warning)
+            logger.info("  📧 Daily report sent: %d journal / %d broker orders / %d scans%s",
+                        journal_real_count, broker_count, total_scans,
+                        f" — WARNING: {reality_warning}" if reality_warning else "")
         except Exception as e:
             logger.error("  Daily report failed: %s", e)
 
@@ -1761,7 +1862,18 @@ def main():
                              "CALL PF 1.34→1.73). When >0, journal filename is suffixed _{dte}dte. "
                              "A missing chain (any DTE) triggers skip-trade; the agent never falls back "
                              "to buying shares (options-only policy 2026-07-18).")
+    parser.add_argument("--broker", choices=["alpaca", "ibkr"], default="alpaca",
+                        help="Which broker to route data / chain / execution through. "
+                             "'alpaca' (default) preserves the historically-validated flow. "
+                             "'ibkr' routes everything through Interactive Brokers TWS/Gateway "
+                             "(requires ibkr_client env: IBKR_HOST / IBKR_PORT / IBKR_CLIENT_ID_BASE, "
+                             "and Gateway running with API enabled).")
     args = parser.parse_args()
+
+    # Broker selection is a startup-time decision. Every subsequent broker.*
+    # call in this process routes here. The symbol is used for IBKR clientId
+    # offsetting so concurrent per-symbol daemons share one TWS.
+    broker.set_broker(args.broker, symbol=args.symbol)
 
     paper_trade = not args.no_paper
 

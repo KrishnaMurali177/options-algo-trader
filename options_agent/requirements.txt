@@ -7,6 +7,7 @@ google-genai>=1.0.0
 # Brokerage
 robin_stocks>=3.0.0
 pyotp>=2.9.0
+ib_async>=1.0.0    # Interactive Brokers (TWS/Gateway) — parallel to alpaca-py
 
 # Market Data & Analysis
 yfinance>=0.2.40

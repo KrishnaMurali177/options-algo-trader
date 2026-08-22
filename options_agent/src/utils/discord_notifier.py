@@ -162,7 +162,23 @@ class DiscordNotifier:
         now = datetime.now(ET)
         now_str = now.strftime("%I:%M %p ET")
 
-        closed = [t for t in trades if t.get("closed")]
+        # Exclude discarded and never-placed triggers from both lists —
+        # they aren't real positions and shouldn't appear as "open" or
+        # contribute to "closed trade" P&L math.
+        real_trades = [
+            t for t in trades
+            if not t.get("discard") and not t.get("order_failed")
+        ]
+        open_trades = [
+            t for t in (open_trades or [])
+            if not t.get("discard") and not t.get("order_failed") and t.get("order_id")
+        ]
+        # A "closed" trade requires order_id + closed flag (not just closed,
+        # because a discarded trigger could theoretically be marked closed).
+        closed = [
+            t for t in real_trades
+            if t.get("closed") and t.get("order_id")
+        ]
         total_dollar_pnl = 0.0
         has_fills = False
         trade_lines = []
@@ -240,8 +256,40 @@ class DiscordNotifier:
             }]
         })
 
+    def notify_alert(self, title: str, description: str, level: str = "warning") -> None:
+        """Fire a free-form alert embed to Discord.
+
+        `level` maps to a color:
+          warning  → orange
+          critical → red
+          info     → blue
+        Used by the agent for order-placement failures, EOD force-close events,
+        and other out-of-band anomalies that don't fit the trade-lifecycle
+        notifications above.
+        """
+        colors = {"critical": 0xc62828, "warning": 0xff9800, "info": 0x3498db}
+        emoji = {"critical": "\U0001f6a8", "warning": "⚠️", "info": "ℹ️"}
+        self._post({
+            "embeds": [{
+                "title": f"{emoji.get(level, '⚠️')} {title}",
+                "description": description[:4000],  # Discord embed description cap
+                "color": colors.get(level, colors["warning"]),
+            }]
+        })
+
     def notify_daily_report(self, date_str: str, trades: list[dict],
-                            total_scans: int) -> None:
+                            total_scans: int, warning: str | None = None) -> None:
+        # Filter out triggers that were never actually placed as orders.
+        # A `discard: true` trigger (e.g. chain lookup failed, duplicate-order
+        # guard fired, buying-power reject) is a signal, not a trade — it must
+        # NOT be counted as a win/loss and must NOT contribute phantom P&L.
+        # Same for triggers that failed at placement (no order_id).
+        real_trades = [
+            t for t in trades
+            if not t.get("discard") and not t.get("order_failed") and t.get("order_id")
+        ]
+        skipped_count = len(trades) - len(real_trades)
+
         wins = 0
         losses = 0
         total_r = 0.0
@@ -249,25 +297,32 @@ class DiscordNotifier:
         has_fills = False
         trade_lines = []
 
-        for t in trades:
+        for t in real_trades:
             direction = t.get("direction", "?")
             dir_label = "CALL" if "call" in direction else "PUT"
             symbol = t.get("symbol", "?")
             entry = t.get("entry", 0)
             stop = t.get("stop", 0)
-            exit_price = t.get("underlying_exit_price", 0)
+            exit_price = t.get("underlying_exit_price")  # None if never set
             exit_reason = t.get("exit_reason", "?")
             num_contracts = t.get("num_contracts", 1)
             actual_entry = t.get("actual_entry")
             actual_exit = t.get("actual_exit")
             risk = abs(entry - stop)
 
-            if "call" in direction:
-                pnl_pts = exit_price - entry
+            # Only compute R-based P&L when we actually have an exit price
+            # from the exit-monitoring loop. Never default exit_price to 0
+            # (naive default made a discarded PUT look like +486R "exit at $0").
+            if exit_price is not None:
+                if "call" in direction:
+                    pnl_pts = exit_price - entry
+                else:
+                    pnl_pts = entry - exit_price
+                pnl_r = pnl_pts / risk if risk > 0 else 0
+                total_r += pnl_r
             else:
-                pnl_pts = entry - exit_price
-            pnl_r = pnl_pts / risk if risk > 0 else 0
-            total_r += pnl_r
+                pnl_pts = None
+                pnl_r = None
 
             if actual_entry and actual_exit:
                 has_fills = True
@@ -276,14 +331,27 @@ class DiscordNotifier:
             else:
                 option_pnl = None
 
-            win = (option_pnl >= 0) if option_pnl is not None else (pnl_pts >= 0)
-            if win:
-                wins += 1
+            # Determine win/loss — prefer real fill P&L, fall back to R.
+            # If neither available (position still open at report time), skip
+            # rather than fabricate a verdict.
+            if option_pnl is not None:
+                win = option_pnl >= 0
+                counts_as_trade = True
+            elif pnl_pts is not None:
+                win = pnl_pts >= 0
+                counts_as_trade = True
             else:
-                losses += 1
+                win = None
+                counts_as_trade = False
+
+            if counts_as_trade:
+                if win:
+                    wins += 1
+                else:
+                    losses += 1
 
             reason_short = REASON_LABELS.get(exit_reason, exit_reason.upper())
-            icon = "✅" if win else "❌"
+            icon = ("✅" if win else "❌") if win is not None else "⏳"
             entry_time = t.get("time", "?")
 
             if actual_entry and actual_exit:
@@ -292,11 +360,17 @@ class DiscordNotifier:
                     f"${actual_entry:.2f} → ${actual_exit:.2f} "
                     f"**${option_pnl:+,.0f}** ({reason_short})"
                 )
-            else:
+            elif exit_price is not None and pnl_r is not None:
                 sign = "+" if pnl_r >= 0 else ""
                 trade_lines.append(
                     f"{icon} `{entry_time}` {dir_label} **{symbol}** "
                     f"${entry:.2f} → ${exit_price:.2f} **{sign}{pnl_r:.2f}R** ({reason_short})"
+                )
+            else:
+                # Still open at report time — no exit, no P&L. Show as pending.
+                trade_lines.append(
+                    f"{icon} `{entry_time}` {dir_label} **{symbol}** "
+                    f"${entry:.2f} (still open, no exit fill)"
                 )
 
         total_trades = wins + losses
@@ -312,11 +386,25 @@ class DiscordNotifier:
         day_emoji = "\U0001f4c8" if (total_dollar_pnl >= 0 if has_fills else total_r >= 0) else "\U0001f4c9"
         color = 0x2e7d32 if (total_dollar_pnl >= 0 if has_fills else total_r >= 0) else 0xc62828
 
-        desc = "\n".join(trade_lines) if trade_lines else "*No trades today*"
+        # If a reality-check warning is set, prepend it and force the embed
+        # to red so it's visually impossible to miss. The warning describes
+        # exactly what disagreed (journal vs broker); the P&L below may be
+        # unreliable and this line tells the reader to verify with IBKR.
+        if warning:
+            desc = f"**{warning}**\n\n" + ("\n".join(trade_lines) if trade_lines else "*No trades today*")
+            color = 0xc62828  # red
+            day_emoji = "\U0001f6a8"  # rotating light
+        else:
+            desc = "\n".join(trade_lines) if trade_lines else "*No trades today*"
+
+        # Trailing hint if we filtered out phantom triggers (discards / never-placed)
+        title_suffix = ""
+        if skipped_count:
+            title_suffix = f" ({skipped_count} unplaced trigger{'s' if skipped_count != 1 else ''} hidden)"
 
         self._post({
             "embeds": [{
-                "title": f"{day_emoji} Daily Report — {date_str}",
+                "title": f"{day_emoji} Daily Report — {date_str}{title_suffix}",
                 "color": color,
                 "description": desc,
                 "fields": [

@@ -4,10 +4,13 @@ Used to feed the standalone gold-vs-equities comparison chart.
 Prices are split- AND dividend-adjusted, so the series are total-return
 (the only fair basis for comparing a 0%-yield asset like gold to SPY/QQQ).
 
-Also attaches two FRED series aligned to the same trading days: CPIAUCSL (for
-real vs nominal returns) and DTWEXBGS, the broad trade-weighted dollar index
-(for the dollar's external value). Both publish on a lag; days past the last
-observation carry it forward and that date ships as "<name>_last".
+Also attaches, aligned to the same trading days:
+  * four price indices to deflate by (see DEFLATORS) -- headline CPI plus three
+    official measures that disagree with it, so the chart can show how much the
+    choice of yardstick moves the answer;
+  * DTWEXBGS, the broad trade-weighted dollar index (external dollar value).
+All publish on a lag; days past the last observation carry it forward and that
+date ships alongside the values.
 """
 from __future__ import annotations
 
@@ -25,6 +28,16 @@ import pandas as pd
 
 
 FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
+
+# Four official price indices that measure the same decade differently. Chained
+# CPI is the only NSA series here; over multi-year windows that is immaterial,
+# but it adds a seasonal wiggle to very short ones.
+DEFLATORS = {
+    "cpi":     ("CPIAUCSL",    "CPI-U",       "headline, seasonally adj."),
+    "pce":     ("PCEPI",       "PCE",         "the Fed's target measure"),
+    "chained": ("SUUR0000SA0", "Chained CPI", "allows for substitution, NSA"),
+    "core":    ("CPILFESL",    "Core CPI",    "ex food and energy"),
+}
 
 
 def fred_daily(series_id: str, index: pd.DatetimeIndex) -> tuple[list[float], str]:
@@ -87,14 +100,17 @@ def main() -> None:
     # Only keep dates where every series trades, so rebasing is always well-defined.
     close = close.dropna(how="any").sort_index()
 
-    cpi, cpi_last = fred_daily("CPIAUCSL", close.index)
+    deflators = {}
+    for key, (fred_id, label, sub) in DEFLATORS.items():
+        vals, last = fred_daily(fred_id, close.index)
+        deflators[key] = {"label": label, "sub": sub, "fred": fred_id,
+                          "last": last, "values": vals}
     usd, usd_last = fred_daily("DTWEXBGS", close.index)
 
     payload = {
         "dates": [d.strftime("%Y-%m-%d") for d in close.index],
         "series": {s: [round(float(v), 4) for v in close[s]] for s in syms},
-        "cpi": cpi,
-        "cpi_last": cpi_last,
+        "deflators": deflators,
         "usd": usd,
         "usd_last": usd_last,
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
@@ -106,8 +122,13 @@ def main() -> None:
     for s in syms:
         print(f"  {s}: {close[s].iloc[0]:.2f} -> {close[s].iloc[-1]:.2f} "
               f"({close[s].iloc[-1] / close[s].iloc[0] - 1:+.1%})")
-    print(f"  CPI: {cpi[0]:.1f} -> {cpi[-1]:.1f} ({cpi[-1] / cpi[0] - 1:+.1%}) "
-          f"=> $1 buys {cpi[0] / cpi[-1] - 1:+.1%}, last obs {cpi_last}")
+    n_yrs = (close.index[-1] - close.index[0]).days / 365.25
+    for key, d in deflators.items():
+        v = d["values"]
+        tot = v[-1] / v[0]
+        print(f"  {d['label']:<12} {v[0]:8.1f} -> {v[-1]:8.1f}  {tot - 1:+7.1%} cumulative, "
+              f"{tot ** (1 / n_yrs) - 1:+.2%}/yr  =>  $1 buys {1 / tot - 1:+.1%}  "
+              f"(last obs {d['last']})")
     print(f"  USD (broad): {usd[0]:.1f} -> {usd[-1]:.1f} ({usd[-1] / usd[0] - 1:+.1%}), "
           f"last obs {usd_last}")
     print(f"wrote {out} ({out.stat().st_size / 1024:.0f} KB)")

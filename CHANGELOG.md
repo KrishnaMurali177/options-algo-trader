@@ -266,3 +266,7 @@
 - [2026-08-23] Modified: Ubuntu box crontab — Added "50 13 * * 1-5 run_fill_check.sh" (13:50 PT / 16:50 ET weekdays); backup at ~/projects/options_algo/crontab.bak-2026-08-23
 - [2026-08-23] Created: options_agent/scripts/overnight_drift_study.py — Overnight/AH-to-open return decomposition study (SIP 5-min bars, cost + concentration + per-year diagnostics)
 - [2026-08-23] Created: options_agent/docs/2026-08-23_overnight_drift_ah_to_open.md — Verdict on the "buy after-hours, sell at open" thesis for MU/NVDA vs controls
+- [2026-08-24] Modified: options_agent/scripts/check_agents_health.linux.sh (Ubuntu box) — Extended AGENTS to cover the 2 live real-money and 4 shadow containers (previously paper-only, which is why shadow-qqq died unnoticed for 46h); added comment that container health != orders reaching the broker
+- [2026-08-24] Created: ~/projects/options_algo/compare_live_shadow.py (Ubuntu box) — Daily live-vs-shadow divergence report: signal-level, verdict-field, and acted-on differences per symbol
+- [2026-08-24] Modified: ~/projects/options_algo/run_fill_check.sh (Ubuntu box) — Appends the divergence report to the daily file and adds a divergences=N counter to summary.log
+- [2026-08-25] Created: options_agent/scripts/fetch_asset_comparison.py — Dumps split/dividend-adjusted daily total-return series (GLD/SPY/QQQ) as JSON for the asset comparison chart

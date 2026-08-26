@@ -4,10 +4,10 @@ Used to feed the standalone gold-vs-equities comparison chart.
 Prices are split- AND dividend-adjusted, so the series are total-return
 (the only fair basis for comparing a 0%-yield asset like gold to SPY/QQQ).
 
-Also attaches a daily CPI deflator (FRED CPIAUCSL, monthly, linearly
-interpolated) so the chart can show real as well as nominal returns.
-CPI publishes with a ~2-week lag; days past the last observation carry the
-last value forward and are reported via "cpi_last".
+Also attaches two FRED series aligned to the same trading days: CPIAUCSL (for
+real vs nominal returns) and DTWEXBGS, the broad trade-weighted dollar index
+(for the dollar's external value). Both publish on a lag; days past the last
+observation carry it forward and that date ships as "<name>_last".
 """
 from __future__ import annotations
 
@@ -24,23 +24,28 @@ import io
 import pandas as pd
 
 
-FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id=CPIAUCSL"
+FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
 
 
-def fetch_cpi(index: pd.DatetimeIndex) -> tuple[list[float], str]:
-    """Daily CPI deflator aligned to `index`, interpolated from monthly FRED data."""
-    with urllib.request.urlopen(FRED_CSV, timeout=30) as r:
+def fred_daily(series_id: str, index: pd.DatetimeIndex) -> tuple[list[float], str]:
+    """A FRED series aligned to `index`, plus its last real observation date.
+
+    Monthly series (CPI) are interpolated on the time axis; daily series (the
+    dollar index) mostly line up already and just need holidays filled. Both are
+    carried forward past the final observation, since FRED publishes on a lag —
+    hence returning that date so the UI can mark the tail as provisional.
+    """
+    with urllib.request.urlopen(FRED_CSV.format(series_id), timeout=30) as r:
         raw = r.read().decode()
-    cpi = pd.read_csv(io.StringIO(raw))
-    cpi.columns = ["date", "cpi"]
-    cpi["date"] = pd.to_datetime(cpi["date"]).dt.tz_localize("America/New_York")
-    cpi = cpi.dropna().set_index("date")["cpi"].astype(float).sort_index()
-    last = cpi.index[-1]
+    df = pd.read_csv(io.StringIO(raw))
+    df.columns = ["date", "value"]
+    df["date"] = pd.to_datetime(df["date"], errors="coerce")
+    df["value"] = pd.to_numeric(df["value"], errors="coerce")   # FRED writes "." for gaps
+    ser = df.dropna().set_index("date")["value"].astype(float).sort_index()
+    ser.index = ser.index.tz_localize("America/New_York")
+    last = ser.index[-1]
 
-    # Union the monthly stamps with the trading days, interpolate on the time
-    # axis, then read back only the trading days. Past the final observation
-    # pandas' time interpolation holds the last value, which is what we want.
-    joined = cpi.reindex(cpi.index.union(index)).interpolate(method="time").ffill()
+    joined = ser.reindex(ser.index.union(index)).interpolate(method="time").ffill()
     return [round(float(v), 4) for v in joined.reindex(index)], last.strftime("%Y-%m-%d")
 
 
@@ -82,13 +87,16 @@ def main() -> None:
     # Only keep dates where every series trades, so rebasing is always well-defined.
     close = close.dropna(how="any").sort_index()
 
-    cpi, cpi_last = fetch_cpi(close.index)
+    cpi, cpi_last = fred_daily("CPIAUCSL", close.index)
+    usd, usd_last = fred_daily("DTWEXBGS", close.index)
 
     payload = {
         "dates": [d.strftime("%Y-%m-%d") for d in close.index],
         "series": {s: [round(float(v), 4) for v in close[s]] for s in syms},
         "cpi": cpi,
         "cpi_last": cpi_last,
+        "usd": usd,
+        "usd_last": usd_last,
         "generated": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
     }
     out = Path(args.out)
@@ -98,8 +106,10 @@ def main() -> None:
     for s in syms:
         print(f"  {s}: {close[s].iloc[0]:.2f} -> {close[s].iloc[-1]:.2f} "
               f"({close[s].iloc[-1] / close[s].iloc[0] - 1:+.1%})")
-    print(f"  CPI: {cpi[0]:.1f} -> {cpi[-1]:.1f} ({cpi[-1] / cpi[0] - 1:+.1%}), "
-          f"last actual observation {cpi_last}")
+    print(f"  CPI: {cpi[0]:.1f} -> {cpi[-1]:.1f} ({cpi[-1] / cpi[0] - 1:+.1%}) "
+          f"=> $1 buys {cpi[0] / cpi[-1] - 1:+.1%}, last obs {cpi_last}")
+    print(f"  USD (broad): {usd[0]:.1f} -> {usd[-1]:.1f} ({usd[-1] / usd[0] - 1:+.1%}), "
+          f"last obs {usd_last}")
     print(f"wrote {out} ({out.stat().st_size / 1024:.0f} KB)")
 
 

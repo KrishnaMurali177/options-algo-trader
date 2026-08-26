@@ -270,3 +270,4 @@
 - [2026-08-24] Created: ~/projects/options_algo/compare_live_shadow.py (Ubuntu box) — Daily live-vs-shadow divergence report: signal-level, verdict-field, and acted-on differences per symbol
 - [2026-08-24] Modified: ~/projects/options_algo/run_fill_check.sh (Ubuntu box) — Appends the divergence report to the daily file and adds a divergences=N counter to summary.log
 - [2026-08-25] Created: options_agent/scripts/fetch_asset_comparison.py — Dumps split/dividend-adjusted daily total-return series (GLD/SPY/QQQ) as JSON for the asset comparison chart
+- [2026-08-25] Modified: options_agent/scripts/fetch_asset_comparison.py — Attach daily CPI deflator (FRED CPIAUCSL, interpolated) so returns can be shown in real terms

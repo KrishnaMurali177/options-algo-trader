@@ -273,3 +273,4 @@
 - [2026-08-25] Modified: options_agent/scripts/fetch_asset_comparison.py — Attach daily CPI deflator (FRED CPIAUCSL, interpolated) so returns can be shown in real terms
 - [2026-08-25] Modified: options_agent/scripts/fetch_asset_comparison.py — Generalise FRED fetch and add DTWEXBGS broad dollar index for the dollar-depreciation panels
 - [2026-08-26] Modified: options_agent/scripts/fetch_asset_comparison.py — Ship four price indices (CPI-U, PCE, Chained CPI, Core CPI) so the deflator choice is selectable
+- [2026-08-26] Modified: options_agent/scripts/fetch_asset_comparison.py — Add M2SL as a denominator, tagged kind=quantity to keep it distinct from the price indices

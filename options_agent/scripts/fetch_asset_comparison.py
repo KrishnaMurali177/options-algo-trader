@@ -5,9 +5,9 @@ Prices are split- AND dividend-adjusted, so the series are total-return
 (the only fair basis for comparing a 0%-yield asset like gold to SPY/QQQ).
 
 Also attaches, aligned to the same trading days:
-  * four price indices to deflate by (see DEFLATORS) -- headline CPI plus three
-    official measures that disagree with it, so the chart can show how much the
-    choice of yardstick moves the answer;
+  * several denominators to deflate by (see DEFLATORS) -- headline CPI plus
+    three official price measures that disagree with it, and M2, so the chart
+    can show how much the choice of yardstick moves the answer;
   * DTWEXBGS, the broad trade-weighted dollar index (external dollar value).
 All publish on a lag; days past the last observation carry it forward and that
 date ships alongside the values.
@@ -29,14 +29,21 @@ import pandas as pd
 
 FRED_CSV = "https://fred.stlouisfed.org/graph/fredgraph.csv?id={}"
 
-# Four official price indices that measure the same decade differently. Chained
-# CPI is the only NSA series here; over multi-year windows that is immaterial,
-# but it adds a seasonal wiggle to very short ones.
+# Official price indices that measure the same decade differently, plus M2.
+# Chained CPI is the only NSA series here; over multi-year windows that is
+# immaterial, but it adds a seasonal wiggle to very short ones.
+#
+# M2 carries kind="quantity" because it is NOT a price index: it measures how
+# many dollars exist, not what they buy. Deflating by it answers "did this asset
+# outgrow the money supply", which is a real question but a different one, and
+# it ignores that real output grew over the same period. The UI keeps it
+# visually separate for that reason.
 DEFLATORS = {
-    "cpi":     ("CPIAUCSL",    "CPI-U",       "headline, seasonally adj."),
-    "pce":     ("PCEPI",       "PCE",         "the Fed's target measure"),
-    "chained": ("SUUR0000SA0", "Chained CPI", "allows for substitution, NSA"),
-    "core":    ("CPILFESL",    "Core CPI",    "ex food and energy"),
+    "cpi":     ("CPIAUCSL",    "CPI-U",           "headline, seasonally adj.",   "price"),
+    "pce":     ("PCEPI",       "PCE",             "the Fed's target measure",    "price"),
+    "chained": ("SUUR0000SA0", "Chained CPI",     "allows for substitution, NSA", "price"),
+    "core":    ("CPILFESL",    "Core CPI",        "ex food and energy",          "price"),
+    "m2":      ("M2SL",        "M2 money supply", "a quantity, not a price",     "quantity"),
 }
 
 
@@ -101,10 +108,10 @@ def main() -> None:
     close = close.dropna(how="any").sort_index()
 
     deflators = {}
-    for key, (fred_id, label, sub) in DEFLATORS.items():
+    for key, (fred_id, label, sub, kind) in DEFLATORS.items():
         vals, last = fred_daily(fred_id, close.index)
         deflators[key] = {"label": label, "sub": sub, "fred": fred_id,
-                          "last": last, "values": vals}
+                          "kind": kind, "last": last, "values": vals}
     usd, usd_last = fred_daily("DTWEXBGS", close.index)
 
     payload = {
@@ -126,9 +133,9 @@ def main() -> None:
     for key, d in deflators.items():
         v = d["values"]
         tot = v[-1] / v[0]
-        print(f"  {d['label']:<12} {v[0]:8.1f} -> {v[-1]:8.1f}  {tot - 1:+7.1%} cumulative, "
-              f"{tot ** (1 / n_yrs) - 1:+.2%}/yr  =>  $1 buys {1 / tot - 1:+.1%}  "
-              f"(last obs {d['last']})")
+        print(f"  {d['label']:<16} {v[0]:9.1f} -> {v[-1]:9.1f}  {tot - 1:+7.1%} cumulative, "
+              f"{tot ** (1 / n_yrs) - 1:+.2%}/yr  =>  $1 share {1 / tot - 1:+.1%}  "
+              f"[{d['kind']}, last obs {d['last']})]")
     print(f"  USD (broad): {usd[0]:.1f} -> {usd[-1]:.1f} ({usd[-1] / usd[0] - 1:+.1%}), "
           f"last obs {usd_last}")
     print(f"wrote {out} ({out.stat().st_size / 1024:.0f} KB)")

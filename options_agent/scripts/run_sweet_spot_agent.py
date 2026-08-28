@@ -314,6 +314,20 @@ def seconds_until_next_bar_close(now_et: datetime | None = None, bar_sec: int = 
     return next_boundary - seconds_into_day + _BAR_CLOSE_BUFFER_SEC
 
 
+def bar_index(dt: datetime, bar_sec: int = 300) -> int:
+    """Absolute 5-min bar bucket a timestamp falls in.
+
+    The re-entry cooldown must be counted in BARS, not wall-clock seconds. The
+    scan loop sleeps to the bar close, so consecutive triggers land ~300.000s
+    apart and a raw `elapsed < 300` test is decided by microseconds of scheduler
+    jitter -- live and shadow diverged on 2 of 4 sessions that way (live allowed
+    at 300.000878s / 300.004084s, shadow blocked at 299.999935s / 299.994018s).
+    Bucketing by bar makes the decision deterministic and matches replay, which
+    compares discrete bar indices (i - last_trigger_idx < cooldown_bars).
+    """
+    return int(dt.timestamp() // bar_sec)
+
+
 def is_market_hours() -> bool:
     now = get_et_now()
     if now.weekday() >= 5:
@@ -1372,8 +1386,15 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                 # trend days; live now mirrors this. Duplicate-order safety is enforced
                 # at placement time by comparing in-memory position count vs Alpaca qty.
                 # See [[bug_live_replay_position_stacking]].
-                if last_trigger and (now - last_trigger).total_seconds() < cooldown_sec:
-                    logger.debug("Skipping duplicate trigger within cooldown (%d min)", cooldown_sec // 60)
+                # Compare BAR INDICES, not elapsed seconds. cooldown_sec // 300 bars
+                # reproduces replay exactly: with cooldown_bars=1 only a repeat in the
+                # SAME bar is suppressed and the next bar is allowed. The old
+                # elapsed<300 form sat exactly on the boundary and was resolved by
+                # microseconds of jitter. See bar_index() and bug_cooldown_300s_knife_edge.
+                cooldown_bars = max(1, cooldown_sec // 300)
+                if last_trigger and (bar_index(now) - bar_index(last_trigger)) < cooldown_bars:
+                    logger.info("- %s skip [cooldown] within %d bar(s) of previous trigger",
+                                symbol, cooldown_bars)
                 else:
                     last_trigger = now
                     trades_today += 1

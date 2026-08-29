@@ -160,23 +160,23 @@ services:
   agent-live-spy:
     image: options-algo-trader
     container_name: options-agent-live-spy
-    command: python scripts/run_sweet_spot_agent.py --daemon --symbol SPY --verbose-rejects --contracts 2 --cascade-size-low 1 --cascade-size-mid 1 --cascade-size-high 1 --max-contracts 2
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol SPY --verbose-rejects --contracts 1 --cascade-size-low 1 --cascade-size-mid 1 --cascade-size-high 1 --skip-failed-bounce
     env_file:
       - options_agent/.env          # shared config (Discord, etc.) + paper keys
       - options_agent/.env.live      # LIVE keys + ALPACA_PAPER=false (overrides the above)
     environment:
       - PYTHONUNBUFFERED=1
       - AGENT_SYMBOL=SPY
-      - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal_live
+      - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal   # (main ignores this; kept consistent with the mount)
       - DISCORD_TAG=🔴 ALPACA · ${HOST_LABEL:-REAL-MONEY}   # host label via root .env (HOST_LABEL=MAC/UBUNTU); default REAL-MONEY
       - DISCORD_WEBHOOK_URL=      # LIVE notifications OFF — overrides shared .env; avoids tempting manual intervention on live positions
     volumes:
       - ./options_agent/logs:/app/logs
-      - ./options_agent/sweet_spot_journal_live:/app/sweet_spot_journal_live
+      - ./options_agent/sweet_spot_journal_live:/app/sweet_spot_journal   # main hardcodes JOURNAL_DIR=sweet_spot_journal; mount host live dir there so writes persist
       - ./options_agent/data_cache:/app/data_cache
       - ./options_agent/config:/app/config
-      - ./options_agent/scripts:/app/scripts:ro
-      - ./options_agent/src:/app/src:ro
+      - ./.worktree-live-main/options_agent/scripts:/app/scripts:ro
+      - ./.worktree-live-main/options_agent/src:/app/src:ro
     restart: unless-stopped
     profiles:
       - realmoney
@@ -184,23 +184,23 @@ services:
   agent-live-qqq:
     image: options-algo-trader
     container_name: options-agent-live-qqq
-    command: python scripts/run_sweet_spot_agent.py --daemon --symbol QQQ --verbose-rejects --contracts 2 --cascade-size-low 1 --cascade-size-mid 1 --cascade-size-high 1 --max-contracts 2
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol QQQ --verbose-rejects --contracts 1 --cascade-size-low 1 --cascade-size-mid 1 --cascade-size-high 1 --skip-failed-bounce
     env_file:
       - options_agent/.env
       - options_agent/.env.live
     environment:
       - PYTHONUNBUFFERED=1
       - AGENT_SYMBOL=QQQ
-      - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal_live
+      - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal   # (main ignores this; kept consistent with the mount)
       - DISCORD_TAG=🔴 ALPACA · ${HOST_LABEL:-REAL-MONEY}   # host label via root .env (HOST_LABEL=MAC/UBUNTU); default REAL-MONEY
       - DISCORD_WEBHOOK_URL=      # LIVE notifications OFF — overrides shared .env; avoids tempting manual intervention on live positions
     volumes:
       - ./options_agent/logs:/app/logs
-      - ./options_agent/sweet_spot_journal_live:/app/sweet_spot_journal_live
+      - ./options_agent/sweet_spot_journal_live:/app/sweet_spot_journal   # main hardcodes JOURNAL_DIR=sweet_spot_journal; mount host live dir there so writes persist
       - ./options_agent/data_cache:/app/data_cache
       - ./options_agent/config:/app/config
-      - ./options_agent/scripts:/app/scripts:ro
-      - ./options_agent/src:/app/src:ro
+      - ./.worktree-live-main/options_agent/scripts:/app/scripts:ro
+      - ./.worktree-live-main/options_agent/src:/app/src:ro
     restart: unless-stopped
     profiles:
       - realmoney
@@ -218,7 +218,7 @@ services:
   agent-shadow-spy:
     image: options-algo-trader
     container_name: options-agent-shadow-spy
-    command: python scripts/run_sweet_spot_agent.py --daemon --symbol SPY --verbose-rejects --skip-failed-bounce
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol SPY --verbose-rejects --contracts 3 --cascade-size-low 1 --cascade-size-mid 1 --cascade-size-high 1 --skip-failed-bounce
     env_file:
       - options_agent/.env          # shared config (Discord, etc.)
       - options_agent/.env.shadow    # 2nd PAPER account keys + ALPACA_PAPER=true
@@ -232,8 +232,8 @@ services:
       - ./options_agent/sweet_spot_journal_shadow:/app/sweet_spot_journal   # main hardcodes JOURNAL_DIR=sweet_spot_journal; mount host shadow dir there so writes persist
       - ./options_agent/data_cache:/app/data_cache
       - ./options_agent/config:/app/config
-      - ./.worktree-main/options_agent/scripts:/app/scripts:ro   # main = NEW-golden code
-      - ./.worktree-main/options_agent/src:/app/src:ro
+      - ./.worktree-live-main/options_agent/scripts:/app/scripts:ro   # main = NEW-golden code
+      - ./.worktree-live-main/options_agent/src:/app/src:ro
     restart: unless-stopped
     profiles:
       - shadow
@@ -255,8 +255,54 @@ services:
       - ./options_agent/sweet_spot_journal_shadow:/app/sweet_spot_journal   # main hardcodes JOURNAL_DIR=sweet_spot_journal; mount host shadow dir there so writes persist
       - ./options_agent/data_cache:/app/data_cache
       - ./options_agent/config:/app/config
-      - ./.worktree-main/options_agent/scripts:/app/scripts:ro
-      - ./.worktree-main/options_agent/src:/app/src:ro
+      - ./.worktree-live-main/options_agent/scripts:/app/scripts:ro
+      - ./.worktree-live-main/options_agent/src:/app/src:ro
+    restart: unless-stopped
+    profiles:
+      - shadow
+
+  agent-shadow-aapl:
+    image: options-algo-trader
+    container_name: options-agent-shadow-aapl
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol AAPL --verbose-rejects --contracts 1 --cascade-size-low 1 --cascade-size-mid 1 --cascade-size-high 1 --skip-failed-bounce
+    env_file:
+      - options_agent/.env
+      - options_agent/.env.shadow
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AGENT_SYMBOL=AAPL
+      - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal
+      - DISCORD_TAG=🧪 SHADOW · NEW-GOLDEN
+    volumes:
+      - ./options_agent/logs/shadow:/app/logs
+      - ./options_agent/sweet_spot_journal_shadow:/app/sweet_spot_journal
+      - ./options_agent/data_cache:/app/data_cache
+      - ./options_agent/config:/app/config
+      - ./.worktree-live-main/options_agent/scripts:/app/scripts:ro
+      - ./.worktree-live-main/options_agent/src:/app/src:ro
+    restart: unless-stopped
+    profiles:
+      - shadow
+
+  agent-shadow-googl:
+    image: options-algo-trader
+    container_name: options-agent-shadow-googl
+    command: python scripts/run_sweet_spot_agent.py --daemon --symbol GOOGL --verbose-rejects --contracts 1 --cascade-size-low 1 --cascade-size-mid 1 --cascade-size-high 1 --skip-failed-bounce
+    env_file:
+      - options_agent/.env
+      - options_agent/.env.shadow
+    environment:
+      - PYTHONUNBUFFERED=1
+      - AGENT_SYMBOL=GOOGL
+      - SWEET_SPOT_JOURNAL_DIR=/app/sweet_spot_journal
+      - DISCORD_TAG=🧪 SHADOW · NEW-GOLDEN
+    volumes:
+      - ./options_agent/logs/shadow:/app/logs
+      - ./options_agent/sweet_spot_journal_shadow:/app/sweet_spot_journal
+      - ./options_agent/data_cache:/app/data_cache
+      - ./options_agent/config:/app/config
+      - ./.worktree-live-main/options_agent/scripts:/app/scripts:ro
+      - ./.worktree-live-main/options_agent/src:/app/src:ro
     restart: unless-stopped
     profiles:
       - shadow

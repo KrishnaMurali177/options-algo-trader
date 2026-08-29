@@ -291,6 +291,35 @@ def shadow_tile(net: float, div: float, since, syms: list[str]) -> str:
     )
 
 
+def ratio_tile(net: float, since, n_trades: int, weights: dict, active_syms: int) -> str:
+    """Always-on card for the depth-vs-breadth Ratio Book: SPY 3 : AAPL 1 : GOOGL 1
+    (QQQ dropped as redundant), forward-tested on the shadow account since it went
+    live. Same footprint as shadow_tile so the two sit as a matched pair."""
+    comp = " · ".join(f"{s} {w}" for s, w in weights.items())
+    if n_trades == 0:
+        headline = (f'<span style="color:{INK_MUTED};font-size:1.15rem;font-weight:600;'
+                    f'line-height:1.15">Awaiting first fills</span>')
+        foot = f'live since {since} · {comp} · QQQ excluded'
+    else:
+        ncol = POS if net >= 0 else NEG
+        nsign = "+" if net > 0 else ""
+        headline = (f'<span style="color:{ncol};font-family:{FONT};font-size:1.9rem;'
+                    f'font-weight:700;letter-spacing:-.02em;line-height:1.1">{nsign}${net:,.0f}</span>'
+                    f'<span style="color:{INK_MUTED};font-size:.85rem;font-weight:600">'
+                    f'{n_trades} trades · {active_syms}/3 symbols</span>')
+        foot = f'since {since} · {comp} · QQQ excluded · SPY+AAPL+GOOGL option fills'
+    return (
+        f'<div style="display:inline-block;border:1px solid {ZERO};border-radius:12px;'
+        f'padding:13px 18px;background:{CARD};box-shadow:0 2px 12px rgba(0,0,0,.25);'
+        f'margin:.1rem 0 1.1rem">'
+        f'<div style="color:{INK_MUTED};font-size:.68rem;font-weight:600;'
+        f'letter-spacing:.07em;text-transform:uppercase">⚖️ Ratio Book · 3 : 1 : 1</div>'
+        f'<div style="display:flex;align-items:baseline;gap:16px;margin-top:.35rem">'
+        f'{headline}</div>'
+        f'<div style="color:{INK_MUTED};font-size:.72rem;margin-top:.35rem">{foot}</div></div>'
+    )
+
+
 def _wash(hex_color: str, alpha: float = 0.13) -> str:
     """Series color at low alpha for the area fill under a line."""
     h = hex_color.lstrip("#")

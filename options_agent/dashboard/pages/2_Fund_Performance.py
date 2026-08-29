@@ -208,8 +208,17 @@ if has_shadow:
     _sfill = float(df_s["pnl"].sum())
     _ofill = (float(df_p[(df_p["symbol"].isin(_ssyms)) & (df_p["date"] >= _ss0)]["pnl"].sum())
               if not df_p.empty else 0.0)
-    st.markdown(charts.shadow_tile(_snet, _sfill - _ofill, _ss0, _ssyms),
-                unsafe_allow_html=True)
+    # Always-on Ratio Book tile beside the shadow tile: the 3:1:1 maximization
+    # structure (QQQ dropped), forward-tested since 2026-08-22. Independent of
+    # the selectors below; empty until the first post-08-22 fills land.
+    _rw = {"SPY": 3, "AAPL": 1, "GOOGL": 1}
+    _rstart = date(2026, 8, 22)
+    _dr0 = df_s[(df_s["symbol"].isin(_rw)) & (df_s["date"] >= _rstart)]
+    _rnet0 = float(_dr0["pnl"].sum()) if not _dr0.empty else 0.0
+    _tiles = (charts.shadow_tile(_snet, _sfill - _ofill, _ss0, _ssyms)
+              + charts.ratio_tile(_rnet0, _rstart, len(_dr0), _rw, int(_dr0["symbol"].nunique())))
+    st.markdown(f'<div style="display:flex;flex-wrap:wrap;gap:14px;align-items:flex-start">'
+                f'{_tiles}</div>', unsafe_allow_html=True)
 
 c = st.columns([2, 2, 1])
 period = c[0].radio("Period", ["1W", "1M", "3M", "6M", "YTD", "All", "Custom"], horizontal=True, index=2)
@@ -436,3 +445,49 @@ if not primary.empty:
                    f"{'less' if _gap > 0 else 'more'} than the headline. The "
                    f"difference is fees and any exercised contract's share leg, "
                    f"which belong to the account rather than to one trade.")
+
+
+# ── Ratio Book (depth-vs-breadth maximization structure) ─────────────────────
+# Forward-test of the core-and-satellite ratio from the diversification study:
+# SPY 3 : AAPL 1 : GOOGL 1, QQQ dropped as redundant (0.43-corr with SPY). The
+# shadow account trades this sizing live since 2026-08-22, so its SPY/AAPL/GOOGL
+# fills from that date ARE the ratio book's real performance. Option fills only,
+# consistent with the Shadow A/B above.
+if view == SHADOW and has_shadow:
+    from datetime import date as _date
+    RATIO_START = _date(2026, 8, 22)
+    RATIO_W = {"SPY": 3, "AAPL": 1, "GOOGL": 1}
+    st.divider()
+    st.subheader("⚖️ Ratio Book — SPY 3 : AAPL 1 : GOOGL 1")
+    st.caption("Core-and-satellite maximization structure from the diversification study "
+               "(QQQ dropped as redundant). Literal per-entry sizing; trend-stacking still "
+               "active. Live on the shadow account since **2026-08-22**.")
+    dr = df_s[(df_s["symbol"].isin(RATIO_W)) & (df_s["date"] >= RATIO_START)].copy()
+    if dr.empty:
+        st.info("No ratio-book trades yet — the 3:1:1 sizing went live 2026-08-22; "
+                "the first fills land on the next trading session.")
+    else:
+        rnet = float(dr["pnl"].sum())
+        st.markdown(charts.hero_html(rnet, "Ratio Book Net P&L",
+                    "SPY + AAPL + GOOGL option fills since 2026-08-22 · QQQ excluded"),
+                    unsafe_allow_html=True)
+        rk = st.columns(4)
+        rk[0].metric("Trades", f"{len(dr)}")
+        rk[1].metric("Win rate", f"{dr['win'].mean() * 100:.0f}%")
+        rk[2].metric("Avg / trade", f"${rnet / len(dr):,.0f}")
+        rk[3].metric("Symbols active", f"{dr['symbol'].nunique()}/3")
+        # Per-symbol with the target contract ratio alongside the realized avg size,
+        # so a glance confirms the book is actually trading 3 : 1 : 1.
+        rg = (dr.groupby("symbol")
+              .agg(trades=("pnl", "size"), win_rate=("win", "mean"),
+                   pnl=("pnl", "sum"), avg_ct=("qty", "mean")).reset_index())
+        rg["target"] = rg["symbol"].map(RATIO_W).astype(int).astype(str) + "×"
+        rg["win_rate"] = (rg["win_rate"] * 100).round(0).astype(int).astype(str) + "%"
+        rg["pnl"] = rg["pnl"].round(0)
+        rg["avg_ct"] = rg["avg_ct"].round(1)
+        rg = rg[["symbol", "target", "trades", "win_rate", "avg_ct", "pnl"]]
+        rg.columns = ["symbol", "target size", "trades", "win rate", "avg ct/day", "pnl"]
+        st.dataframe(rg.sort_values("pnl", ascending=False), width="stretch", hide_index=True)
+        st.caption("Per-entry sizing is flat (SPY 3 · AAPL 1 · GOOGL 1); a higher "
+                   "*avg ct/day* than the target means trend-stacking added entries "
+                   "that session. QQQ is intentionally excluded from this book.")

@@ -12,7 +12,18 @@ PROJ_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ENV_FILE="$PROJ_DIR/options_agent/.env"
 STATE_FILE="$PROJ_DIR/options_agent/logs/.agent_health_state"
 LOG="$PROJ_DIR/options_agent/logs/cron_agent.log"
-AGENTS=(options-agent-spy options-agent-qqq options-agent-msft options-agent-aapl)
+# Paper agents, LIVE real-money agents, and the shadow (2nd paper acct) stack.
+# Live + shadow added 2026-08-24: they were previously unmonitored, so shadow-qqq
+# sat dead ~46h unnoticed and a live agent could die silently. NOTE: container
+# health proves the process is alive, NOT that orders reach the broker — the
+# 08-19..08-21 outage had healthy containers placing zero orders. Use
+# check_live_fills.sh for execution truth.
+AGENTS=(
+    options-agent-spy options-agent-qqq options-agent-msft options-agent-aapl
+    options-agent-live-spy options-agent-live-qqq
+    options-agent-shadow-spy options-agent-shadow-qqq
+    options-agent-shadow-aapl options-agent-shadow-googl
+)
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
 

@@ -1169,6 +1169,34 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
     return triggers
 
 
+def _vix_for_session(vix_map: dict, trading_days: list, sess_idx: int) -> float | None:
+    """^VIX close for trading_days[sess_idx], falling back to the most recent
+    earlier session present in vix_map. None if nothing is available."""
+    if sess_idx < 0 or not vix_map:
+        return None
+    for j in range(min(sess_idx, len(trading_days) - 1), -1, -1):
+        v = vix_map.get(trading_days[j])
+        if v is not None:
+            return v
+    return None
+
+
+def resolve_day_vix(vix_map: dict, trading_days: list, idx: int,
+                    vix_lag: int = 1) -> tuple[float, float | None]:
+    """(day_vix, prev_vix) as actually knowable to the strategy on trading_days[idx].
+
+    The sit-out gate and the quality/chop scoring both read this. ^VIX only
+    settles at the close, so with vix_lag=1 (default) we hand the strategy the
+    *prior* session's close — the last value observable at the 10:30 scan — and
+    compare it against the session before that. vix_lag=0 restores the original
+    behaviour (today's settled close), which is a look-ahead and is retained
+    only for reproducing pre-2026-07 runs.
+    """
+    day_vix = _vix_for_session(vix_map, trading_days, idx - vix_lag)
+    prev_vix = _vix_for_session(vix_map, trading_days, idx - vix_lag - 1)
+    return (20.0 if day_vix is None else day_vix), prev_vix
+
+
 def build_parser():
     parser = argparse.ArgumentParser(description="Replay Sweet Spot Agent on historical data")
     # Defaults match GOLDEN parameters (see README) — produces validated 2-yr SPY
@@ -1276,7 +1304,7 @@ def build_parser():
                         help="Contracts for E 8+ tier (default: 3)")
     parser.add_argument("--dynamic-or", action="store_true", default=True,
                         help="Enable dynamic opening range (30-min quick OR + 10:00 scan-start when "
-                             "the 10:00 bar already broke >50% of the 30-min range beyond the boundary). "
+                             "the 10:00 bar already broke >50%% of the 30-min range beyond the boundary). "
                              "GOLDEN (2026-05-23): re-tested post cluster-penalty/max-trades=4/cooldown=1/"
                              "VWAP-slope-override goldens. 730d clean sweep both symbols (SPY Calmar "
                              "42.20→43.77, QQQ Sharpe 3.33→3.47); QQQ 365d Sharpe +0.15.")
@@ -1342,6 +1370,10 @@ def build_parser():
                         help="Skip trading days where VIX > this level (0=disabled, default: 30)")
     parser.add_argument("--vix-spike-pct", type=float, default=20.0,
                         help="Skip days where VIX spiked >N%% day-over-day (0=disabled, default: 20)")
+    parser.add_argument("--vix-lag", type=int, default=1,
+                        help="Sessions to lag the ^VIX close by (default: 1). The sit-out gate runs"
+                             " pre-open, so today's settled close is not knowable; lag 1 uses the prior"
+                             " session's close. Use 0 to reproduce pre-2026-07 runs (look-ahead).")
     # ── Tiered Stagnation (golden default: ON) ──
     parser.add_argument("--tiered-stagnation", action="store_true", default=True,
                         help="Enable tiered stagnation: early exit at bar 8 if trade is flat (-0.1R to +0.2R),"
@@ -1479,28 +1511,16 @@ def main():
         else:
             prior_bars = None
 
-        # Look up VIX for this day (fall back to most recent available or 20.0)
-        day_vix = vix_map.get(day, 20.0)
-        if day_vix == 20.0 and vix_map:
-            # Try previous trading day
-            for prev_day in reversed(trading_days[:idx]):
-                if prev_day in vix_map:
-                    day_vix = vix_map[prev_day]
-                    break
+        # Look up the VIX knowable at scan time (see resolve_day_vix)
+        day_vix, prev_vix = resolve_day_vix(vix_map, trading_days, idx, args.vix_lag)
 
         # ── VIX sit-out filter: skip days with extreme volatility ──
         if args.vix_max > 0 and day_vix > args.vix_max:
             continue
-        if args.vix_spike_pct > 0 and idx > 0:
-            prev_vix = None
-            for prev_day in reversed(trading_days[:idx]):
-                if prev_day in vix_map:
-                    prev_vix = vix_map[prev_day]
-                    break
-            if prev_vix and prev_vix > 0:
-                spike_pct = (day_vix - prev_vix) / prev_vix * 100
-                if spike_pct > args.vix_spike_pct:
-                    continue
+        if args.vix_spike_pct > 0 and prev_vix and prev_vix > 0:
+            spike_pct = (day_vix - prev_vix) / prev_vix * 100
+            if spike_pct > args.vix_spike_pct:
+                continue
 
         triggers = replay_day(day_bars, day, max_chop=args.max_chop,
                               min_chop=args.min_chop,

@@ -71,3 +71,42 @@ elif [ -z "$cur" ] && [ -n "$prev" ]; then
 fi
 
 echo "$cur" > "$STATE_FILE"
+
+# ── Ops incidents raised by the agents themselves ──
+# Live agents run with DISCORD_WEBHOOK_URL deliberately empty so trade activity
+# never pings (it tempts money-losing manual closes). Infrastructure failures are
+# a different class and MUST reach a human: the agent appends them to
+# logs/ops_alerts.log and we escalate here, on the ops channel. Added 2026-09-11
+# after Alpaca backend timeouts left two open real-money 0DTE positions with no
+# stop/target evaluation for 40 minutes, and nothing told anyone.
+OPS_LOG="$PROJ_DIR/options_agent/logs/ops_alerts.log"
+OPS_STATE="$PROJ_DIR/options_agent/logs/.ops_alerts_pos"
+if [ -f "$OPS_LOG" ]; then
+    prev_lines=0
+    [ -f "$OPS_STATE" ] && prev_lines=$(cat "$OPS_STATE" 2>/dev/null)
+    case "$prev_lines" in ''|*[!0-9]*) prev_lines=0 ;; esac
+    cur_lines=$(wc -l < "$OPS_LOG")
+    # Rotated/truncated log: replay from the top rather than skipping everything.
+    [ "$cur_lines" -lt "$prev_lines" ] && prev_lines=0
+    if [ "$cur_lines" -gt "$prev_lines" ]; then
+        desc=""
+        n=0
+        # Cap at 10 lines so a stuck agent can't post a wall of text every 10 min.
+        while IFS= read -r line; do
+            [ -z "$line" ] && continue
+            _ts=$(printf '%s' "$line" | cut -f1 | cut -dT -f2 | cut -d. -f1)
+            _sym=$(printf '%s' "$line" | cut -f2)
+            _msg=$(printf '%s' "$line" | cut -f3- | tr -d '"\\' | cut -c1-180)
+            desc="${desc}\n🛑 [${_ts}] ${_sym}: ${_msg}"
+            n=$((n + 1))
+        done <<< "$(tail -n +$((prev_lines + 1)) "$OPS_LOG" | head -10)"
+        if [ -n "$desc" ]; then
+            total=$((cur_lines - prev_lines))
+            [ "$total" -gt 10 ] && desc="${desc}\n… and $((total - 10)) more"
+            payload="{\"embeds\":[{\"title\":\"🛑 Agent OPS incident\",\"color\":15158332,\"description\":\"${desc}\",\"footer\":{\"text\":\"$(date '+%Y-%m-%d %I:%M %p %Z')\"}}]}"
+            post "$payload"
+            echo "$(ts) check_agents_health: OPS ALERT — $total new line(s)" >> "$LOG"
+        fi
+    fi
+    echo "$cur_lines" > "$OPS_STATE"
+fi

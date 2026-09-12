@@ -272,3 +272,4 @@
 - [2026-07-31] Modified: options_agent/dashboard/pages/2_Fund_Performance.py — Both mode: compare matched symbols (SPY/QQQ) clamped to live inception so intervention cost is apples-to-apples (-$31, matches ledger)
 - [2026-08-30] Modified: options_agent/scripts/ensure_agents.linux.sh — Auto-heal the realmoney + shadow profiles too (was paper-only); --no-recreate on those stacks so cron never recreates a live container mid-session
 - [2026-08-30] Modified: options_agent/scripts/check_agents_health.linux.sh — Alert on the 2 live real-money and 4 shadow containers, not just the 4 paper agents
+- [2026-09-11] Modified: options_agent/scripts/check_agents_health.linux.sh — Escalate agent-raised ops incidents (logs/ops_alerts.log) to Discord, deduped by line offset

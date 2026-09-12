@@ -342,6 +342,54 @@ def is_past_or(min_after_open: int = 60) -> bool:
     return minutes_since_open >= min_after_open
 
 
+def _fetch_bars_resilient(symbol: str, days_back: int = 1, interval: str = "5min",
+                          attempts: int = 4) -> pd.DataFrame:
+    """Fetch bars, retrying with BACKOFF before giving up.
+
+    The old exit-path guard retried once, immediately, against the same endpoint.
+    That covers a torn cache read but NOT a backend outage: on 2026-09-11 Alpaca
+    returned `backend request timeout` for 9 consecutive 5-min bars, and both the
+    read and the immediate refetch failed every time -- so stop/target/stagnation
+    monitoring was skipped for 40 minutes with open real-money 0DTE positions.
+    Spacing the retries gives a transient backend blip time to clear inside one bar
+    (total sleep budget ~17s, well under the 300s bar).
+    """
+    delays = [0.0, 2.0, 5.0, 10.0]
+    attempts = max(1, attempts)
+    last_err = None
+    for i in range(attempts):
+        d = delays[min(i, len(delays) - 1)]
+        if d:
+            time.sleep(d)
+        try:
+            # First attempt may use the cache; every retry forces a fresh pull so a
+            # torn or stale cache file cannot keep failing us.
+            return alpaca_fetch_bars(symbol, days_back=days_back, interval=interval,
+                                     force_refresh=(i > 0))
+        except Exception as e:
+            last_err = e
+            logger.warning("Bar fetch attempt %d/%d failed for %s: %s",
+                           i + 1, attempts, symbol, e)
+    raise last_err if last_err is not None else RuntimeError("bar fetch failed")
+
+
+def _ops_alert(symbol: str, message: str) -> None:
+    """Record an ops incident for check_agents_health.linux.sh to escalate.
+
+    Live agents run with DISCORD_WEBHOOK_URL deliberately empty so trade activity
+    never pings a human (it tempts money-losing manual closes). Infrastructure
+    failure is a different class: a blind exit-monitoring bar with real money open
+    must reach someone. The health check already owns a working webhook, so drop a
+    line into a file it can pick up rather than re-enabling the agent notifier.
+    """
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        with (LOG_DIR / "ops_alerts.log").open("a", encoding="utf-8") as f:
+            f.write("%s\t%s\t%s\n" % (get_et_now().isoformat(), symbol, message))
+    except Exception as e:
+        logger.debug("Ops alert write failed: %s", e)
+
+
 def check_sweet_spot(symbol: str, max_chop: int = 5, min_chop: int = 2,
                      regime_guard: bool = True,
                      pb_ema: bool = True, pb_ema_fast: int = 13, pb_ema_slow: int = 55,
@@ -881,6 +929,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
     trades_today = 0
     flip_trades_today = 0
     stops_today = 0
+    monitor_failures = 0  # consecutive blind exit-monitoring bars (ops escalation)
     consecutive_losses = 0
     # Position tracking — supports MULTIPLE positions per (symbol, direction) to
     # match replay's stacking behavior. Keyed on synthetic position_id (occ#entry_iso)
@@ -1054,17 +1103,15 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
         # OCC-fate-cohort closes together via Alpaca's close_position(occ).
         if trader and open_options:
             try:
-                # A torn cache read (another agent mid-write to the shared
-                # data_cache) must NOT skip the whole exit-check cycle — that
-                # would silently drop stop/target/decay monitoring for this
-                # loop. Retry once with force_refresh to pull a fresh copy
-                # straight from Alpaca (which also atomically rewrites the
-                # good file) before letting the outer handler give up.
-                try:
-                    current_price_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min")
-                except Exception as read_err:
-                    logger.warning("Monitoring bar read failed (%s) — refetching fresh from Alpaca", read_err)
-                    current_price_bars = alpaca_fetch_bars(symbol, days_back=1, interval="5min", force_refresh=True)
+                # A failed bar read must NOT skip the whole exit-check cycle —
+                # that silently drops stop/target/decay monitoring for this loop.
+                # Two distinct failure modes: a torn cache read (another agent
+                # mid-write to the shared data_cache), and a backend outage.
+                # _fetch_bars_resilient covers both — force_refresh on every retry
+                # rewrites a torn file, and the backoff rides out a transient
+                # timeout. If it still raises, the outer handler escalates rather
+                # than logging a warning and flying blind.
+                current_price_bars = _fetch_bars_resilient(symbol, days_back=1, interval="5min")
                 if len(current_price_bars) > 0:
                     underlying_price = float(current_price_bars["Close"].iloc[-1])
                     # Intrabar extremes of the last completed bar. Replay fires a
@@ -1229,7 +1276,17 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             else:
                                 consecutive_losses = 0
             except Exception as e:
-                logger.warning("Options monitoring failed: %s", e)
+                # Monitoring just failed with REAL positions open: no stop, target,
+                # stagnation or time-stop was evaluated on this bar. That is an ops
+                # incident, not a routine warning -- escalate so a human sees it.
+                monitor_failures += 1
+                logger.error("Options monitoring FAILED with %d position(s) open "
+                             "(consecutive=%d): %s", len(open_options), monitor_failures, e)
+                _ops_alert(symbol, "exit monitoring blind for %d consecutive bar(s) with "
+                                   "%d open position(s): %s"
+                                   % (monitor_failures, len(open_options), e))
+            else:
+                monitor_failures = 0
 
         # ── Entry cutoff: replay parity with --scan-end ──
         # Replay scans bars whose open timestamp ≤ scan_end. The last scannable

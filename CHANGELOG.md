@@ -104,3 +104,4 @@
 - [2026-06-12] Modified: options_agent/scripts/replay_sweet_spot.py — Added --require-real-options flag for real-pricing-only replay (skips synth fallback)
 - [2026-06-13] Created: LICENSE — Proprietary all-rights-reserved license with not-financial-advice disclaimer
 - [2026-09-11] Modified: options_agent/scripts/run_sweet_spot_agent.py — Exit monitoring: retry bar fetch with backoff instead of one immediate refetch; escalate to ops_alerts.log when monitoring fails with positions open
+- [2026-09-14] Modified: options_agent/scripts/run_sweet_spot_agent.py (live/main-realmoney) — Backported 19fb113 from the mag7 lineage: _reconcile_journal now looks up the close-order fill for ANY agent-initiated exit (was gainz_exit only, so stagnation/stop/decay_target/theta_exit/time_stop closes had no exit_price or pnl — 47 live and 33 shadow trades since 08-19), and long-put P&L no longer uses the short-the-underlying sign

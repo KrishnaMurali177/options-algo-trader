@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -29,6 +30,12 @@ from pathlib import Path
 import pandas as pd
 
 logger = logging.getLogger(__name__)
+
+# Bounds on the 0DTE chain fetch. It runs inside the scan loop, so overrunning a
+# 5-min bar costs a whole scan (see bug_unbounded_option_chain_call, 2026-09-14).
+# ~100 contracts/page, so 20 pages covers any liquid underlying with room spare.
+_CHAIN_MAX_PAGES = int(os.environ.get("ALPACA_CHAIN_MAX_PAGES", "20"))
+_CHAIN_BUDGET_SEC = float(os.environ.get("ALPACA_CHAIN_BUDGET_SEC", "60"))
 
 
 def alpaca_is_paper() -> bool:
@@ -349,10 +356,14 @@ def get_0dte_chain(
 
     # Fetch 0DTE contracts expiring today. Alpaca paginates at 100 contracts/page;
     # SPY has ~200+ strikes so without paging we'd only see the lowest strikes (deep ITM).
+    # This runs inside the single-threaded scan loop, so it must finish well
+    # inside a 5-min bar. Per-request timeouts (see alpaca_http) cap one call;
+    # these cap the LOOP, which could otherwise page or stall past a whole bar.
+    chain_started = time.monotonic()
     try:
         contracts = []
         page_token = None
-        while True:
+        for _page in range(_CHAIN_MAX_PAGES):
             req = GetOptionContractsRequest(
                 underlying_symbols=[symbol],
                 expiration_date=today,
@@ -367,6 +378,15 @@ def get_0dte_chain(
             page_token = getattr(contracts_resp, "next_page_token", None)
             if not page_token:
                 break
+            if time.monotonic() - chain_started > _CHAIN_BUDGET_SEC:
+                logger.warning(
+                    "0DTE chain paging for %s exceeded %.0fs budget after %d contracts — "
+                    "using what we have rather than overrunning the bar",
+                    symbol, _CHAIN_BUDGET_SEC, len(contracts))
+                break
+        else:
+            logger.warning("0DTE chain paging for %s hit the %d-page cap — truncated",
+                           symbol, _CHAIN_MAX_PAGES)
     except Exception as e:
         logger.error("Failed to fetch 0DTE chain for %s: %s", symbol, e)
         return None

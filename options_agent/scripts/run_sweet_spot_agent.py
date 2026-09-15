@@ -245,6 +245,9 @@ def _check_gainz_exit(underlying_symbol: str, direction: str, body_ratio: float,
 # ── Setup ──
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
+
+# A trigger-to-order path slower than this is eating into the next 5-min scan.
+CONTRACT_SELECT_WARN_SEC = float(os.environ.get("CONTRACT_SELECT_WARN_SEC", "30"))
 JOURNAL_DIR = Path(__file__).resolve().parent.parent / "sweet_spot_journal"
 JOURNAL_DIR.mkdir(exist_ok=True)
 
@@ -1564,11 +1567,25 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                             # {dte}DTE options: fetch chain, pick contract, buy-to-open
                             from src.utils.alpaca_data import get_dte_chain
                             opt_type = "call" if "call" in trigger["direction"] else "put"
+                            # Time this: the chain lookup is the one blocking call between
+                            # a trigger and an order, and on 2026-09-14 it hung 304s on the
+                            # live account, silently costing the whole next scan bar. It
+                            # returned normally, so nothing logged. Now an overrun is loud.
+                            _sel_started = time.monotonic()
                             contract = get_dte_chain(
                                 symbol, dte=dte, option_type=opt_type,
                                 target_delta=target_delta,
                                 spot_price=trigger.get("price"),
                             )
+                            _sel_elapsed = time.monotonic() - _sel_started
+                            if _sel_elapsed > CONTRACT_SELECT_WARN_SEC:
+                                logger.error(
+                                    "⏱️ Contract selection for %s took %.1fs (> %.0fs) — this "
+                                    "delays the fill and can consume the next scan bar",
+                                    symbol, _sel_elapsed, CONTRACT_SELECT_WARN_SEC)
+                                _ops_alert(symbol, "contract selection took %.1fs (budget %.0fs) — "
+                                                   "entry delayed, next scan bar at risk"
+                                                   % (_sel_elapsed, CONTRACT_SELECT_WARN_SEC))
                             if contract:
                                 # Cascade-tier contract sizing
                                 explosion = trigger.get("explosion", 4)
@@ -1950,6 +1967,13 @@ def _reconcile_journal(trader, triggers: list[dict], journal_file: Path,
 
 
 def main():
+    # Bound every Alpaca HTTP call before any client is built. alpaca-py accepts
+    # no timeout and passes none to its session, so without this a single hung
+    # socket blocks the single-threaded scan loop for as long as the server holds
+    # it open — 304s on 2026-09-14, which cost a whole scan bar silently.
+    from src.utils.alpaca_http import install_default_timeouts
+    install_default_timeouts()
+
     parser = argparse.ArgumentParser(description="Autonomous Sweet Spot Paper Trading Agent")
     parser.add_argument("--symbol", "-s", default="SPY", help="Symbol to monitor (default: SPY)")
     parser.add_argument("--qty", type=int, default=1, help="Shares per trade (default: 1)")

@@ -941,6 +941,26 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
     # This is acceptable — same-OCC positions have nearly identical Greeks.
     open_directions: dict[str, str] = {}  # position_id → "buy_call" / "buy_put"
     open_options: dict[str, dict] = {}  # position_id → {entry_premium, stop_price, target_price, direction, occ_symbol, ...}
+    # occ_symbol → close_reason, for closes the broker refused. Keyed by OCC, not
+    # position_id, because a close acts on the whole OCC-fate-cohort at once.
+    pending_close: dict[str, str] = {}
+
+    # ── Startup safety net: catch orphaned closes from a prior session ──
+    # A trigger marked closed but still open on the broker means a prior close
+    # silently failed. Re-close (or flag) BEFORE restart-recovery, so any that
+    # still won't close are marked open again and get rehydrated + retried below.
+    if trader and triggers:
+        _verify_closes_against_broker(trader, triggers, symbol, notifier)
+        # Anything it could not auto-close is now flagged open with exit_reason
+        # "close_failed". Seed the force-retry queue so the first monitoring loop
+        # re-attempts immediately rather than waiting for an exit condition to
+        # re-fire (which for a stagnation exit is another ~30 minutes).
+        for trig in triggers:
+            if trig.get("exit_reason") == "close_failed" and not trig.get("closed"):
+                occ = trig.get("occ_symbol")
+                if occ:
+                    pending_close[occ] = trig.get("close_failed_prior_reason") or "stagnation"
+        journal_file.write_text(json.dumps(triggers, indent=2, default=str))
 
     # ── Restart recovery: rehydrate open positions from Alpaca + journal ──
     # If the agent was restarted mid-day, in-memory state is empty. Pull live
@@ -1071,6 +1091,20 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                         close_result = trader.close_options_position(occ_or_sym)
                     else:
                         close_result = trader.close_position(occ_or_sym)
+                    if not close_result:
+                        # The broker refused the close even after in-line retries, so
+                        # the position is STILL OPEN. Do not mark it closed, do not
+                        # notify, and do not drop it from open_options — that is exactly
+                        # how a real-money position gets orphaned while every downstream
+                        # report calls it closed. Queue a forced retry instead.
+                        if is_option:
+                            pending_close[occ_or_sym] = "gainz_exit"
+                        logger.error("❌ GAINZ EXIT close FAILED for %s — position still "
+                                     "OPEN, will retry next loop", occ_or_sym)
+                        _ops_alert(symbol, "gainz close FAILED for %s — position still open, "
+                                           "queued for retry" % occ_or_sym)
+                        continue
+                    pending_close.pop(occ_or_sym, None)
                     # Stamp ALL triggers in the cohort with the Gainz exit info
                     cohort_entry_times = {open_options[pid].get("entry_time") for pid in cohort_ids if pid in open_options}
                     for trig in triggers:
@@ -1131,6 +1165,13 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                         occ_sym = opt_info.get("occ_symbol", pos_id)
                         should_close = False
                         close_reason = ""
+
+                        # ── Forced retry: a prior close for this OCC failed (transient
+                        # network, broker hiccup). Re-attempt every loop until it lands
+                        # instead of waiting for the exit condition to re-trigger. ──
+                        if occ_sym in pending_close:
+                            should_close = True
+                            close_reason = pending_close[occ_sym]
 
                         # ── Update Maximum Favorable Excursion (MFE) ──
                         entry_ul = opt_info.get("entry_underlying", underlying_price)
@@ -1249,14 +1290,49 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
                                         close_reason.upper(), occ_sym, opt_info["direction"],
                                         underlying_price, len(cohort_ids))
                             close_result = trader.close_options_position(occ_sym)
+                            if not close_result:
+                                # The close failed. Before queueing a retry, find out
+                                # whether the position is simply gone already (manually
+                                # closed, expired, or filled elsewhere) — if so, mark the
+                                # whole cohort resolved rather than hammering the broker
+                                # every loop for something that no longer exists.
+                                try:
+                                    still_open = occ_sym in {p["symbol"] for p in trader.get_positions()}
+                                except Exception:
+                                    still_open = True  # can't tell → assume open, safer to retry
+                                if not still_open:
+                                    pending_close.pop(occ_sym, None)
+                                    for trig in triggers:
+                                        if trig.get("occ_symbol") == occ_sym and not trig.get("closed"):
+                                            trig["exit_reason"] = close_reason or "closed_externally"
+                                            trig["exit_time"] = get_et_now().isoformat()
+                                            trig["underlying_exit_price"] = underlying_price
+                                            trig["closed"] = True
+                                    journal_file.write_text(json.dumps(triggers, indent=2, default=str))
+                                    for pid in cohort_ids:
+                                        open_options.pop(pid, None)
+                                        open_directions.pop(pid, None)
+                                    logger.info("↩️ %s no longer an open broker position — "
+                                                "marking cohort resolved, no further retries", occ_sym)
+                                    continue
+                                # Still open at the broker — keep it tracked and retry.
+                                # Falling through here would mark it closed and stop
+                                # monitoring a live position.
+                                pending_close[occ_sym] = close_reason
+                                logger.error("❌ OPTIONS %s close FAILED for %s — position still "
+                                             "OPEN, will retry next loop", close_reason.upper(), occ_sym)
+                                _ops_alert(symbol, "%s close FAILED for %s (cohort=%d) — position "
+                                                   "still open, queued for retry"
+                                                   % (close_reason, occ_sym, len(cohort_ids)))
+                                continue
+                            pending_close.pop(occ_sym, None)
                             closed_count = 0
                             for trig in triggers:
                                 if trig.get("occ_symbol") == occ_sym and not trig.get("closed"):
                                     trig["exit_reason"] = close_reason
                                     trig["exit_time"] = get_et_now().isoformat()
                                     trig["underlying_exit_price"] = underlying_price
-                                    if close_result:
-                                        trig["close_order_id"] = close_result["order_id"]
+                                    trig["close_order_id"] = close_result["order_id"]
                                     trig["closed"] = True
                                     closed_count += 1
                             journal_file.write_text(json.dumps(triggers, indent=2, default=str))
@@ -1657,7 +1733,7 @@ def run_day(symbol: str, qty: int, max_chop: int, paper_trade: bool,
 
     # ── EOD Reconciliation: backfill outcomes for every trigger ──
     if trader and triggers:
-        _reconcile_journal(trader, triggers, journal_file)
+        _reconcile_journal(trader, triggers, journal_file, symbol=symbol, notifier=notifier)
 
     # ── EOD Summary ──
     logger.info("═══ EOD Summary: %d scans, %d triggers ═══", scan_count, len(triggers))
@@ -1721,7 +1797,65 @@ def _safe_sleep(seconds: float, label: str = "waiting") -> None:
         time.sleep(min(300, remaining))
 
 
-def _reconcile_journal(trader, triggers: list[dict], journal_file: Path) -> None:
+def _verify_closes_against_broker(trader, triggers: list[dict], symbol: str,
+                                  notifier=None) -> None:
+    """Re-close anything the journal calls closed that the broker still holds.
+
+    A close that silently failed leaves a real-money position open while every
+    downstream report says it is flat. This is the backstop: compare the journal
+    against live positions, re-attempt the close, and if it still will not close,
+    flag the trigger OPEN again so monitoring resumes and a human is told.
+
+    Cohort-aware: one close acts on the whole OCC quantity, so attempts are
+    deduped per OCC and the result is applied to every trigger sharing it.
+    """
+    try:
+        live_syms = {p["symbol"] for p in trader.get_positions()}
+    except Exception as e:
+        logger.warning("  Reconcile: could not fetch live positions to verify closes: %s", e)
+        return
+
+    orphaned = {t.get("occ_symbol") for t in triggers
+                if t.get("occ_symbol") and t.get("trade_mode", "").endswith("dte_option")
+                and t.get("closed") and t.get("occ_symbol") in live_syms}
+
+    for occ in sorted(o for o in orphaned if o):
+        cohort = [t for t in triggers if t.get("occ_symbol") == occ and t.get("closed")]
+        logger.error("  ⚠️ %s is marked CLOSED in the journal but is STILL OPEN on the "
+                     "broker (cohort=%d) — re-attempting close", occ, len(cohort))
+        close_result = trader.close_options_position(occ)
+        if close_result:
+            for t in cohort:
+                t["close_order_id"] = close_result["order_id"]
+            logger.info("  ✅ Recovered orphaned close for %s (order=%s)",
+                        occ, close_result["order_id"])
+            continue
+        for t in cohort:
+            # Keep why it was being closed. The retry re-uses it, so a recovered
+            # orphan still counts toward stops_today / consecutive_losses instead
+            # of resetting them with an unrecognised reason.
+            t.setdefault("close_failed_prior_reason", t.get("exit_reason"))
+            t["closed"] = False
+            t["exit_reason"] = "close_failed"
+        logger.error("  ❌ Could not auto-close orphaned %s — flagged OPEN for retry", occ)
+        _ops_alert(symbol, "ORPHANED POSITION: %s was reported closed but is still OPEN "
+                           "on the broker and could not be auto-closed (cohort=%d). "
+                           "Manual action needed." % (occ, len(cohort)))
+        if notifier:
+            try:
+                notifier.notify_alert(
+                    f"{symbol} ORPHANED POSITION",
+                    f"`{occ}` was reported closed but is still OPEN on the broker and "
+                    f"could not be auto-closed ({len(cohort)} position(s)). "
+                    "Manual action needed.",
+                    level="critical",
+                )
+            except Exception as e:
+                logger.debug("Orphan alert notify failed: %s", e)
+
+
+def _reconcile_journal(trader, triggers: list[dict], journal_file: Path,
+                       symbol: str = "", notifier=None) -> None:
     """Pull fill data from Alpaca and fill in actual_entry / exit_price / pnl on each trigger.
 
     Handles four exit cases:
@@ -1733,7 +1867,14 @@ def _reconcile_journal(trader, triggers: list[dict], journal_file: Path) -> None
     Also runs a broker-truth reconcile: a journal-open trigger the broker no
     longer holds was closed outside the agent (e.g. manually on the website).
     Pull the real sell fill so the journal reflects reality, not a stale 'open'.
+
+    And the mirror image of that, via _verify_closes_against_broker: a trigger
+    marked closed whose option is STILL an open live position means the earlier
+    close silently failed — re-attempt it, and if it still will not close, flag
+    the trigger back open and alert, so real money is never left orphaned.
     """
+    _verify_closes_against_broker(trader, triggers, symbol, notifier)
+
     try:
         live_syms = {p["symbol"] for p in trader.get_positions()}
     except Exception as e:

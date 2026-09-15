@@ -261,6 +261,23 @@ class DiscordNotifier:
             }]
         })
 
+    def notify_alert(self, title: str, message: str, level: str = "warning") -> None:
+        """Operational alert — infrastructure, not trade activity.
+
+        Live agents keep the webhook empty on purpose so trade pings never tempt
+        a manual close; this still posts wherever a webhook IS configured
+        (shadow, paper). For live, _ops_alert() in the agent is the channel that
+        actually reaches a human.
+        """
+        color = {"critical": 0xE53935, "warning": 0xFB8C00}.get(level, 0x9AA0A6)
+        self._post({
+            "embeds": [{
+                "title": f"⚠️ {title}",
+                "color": color,
+                "description": message,
+            }]
+        })
+
     def notify_daily_report(self, date_str: str, trades: list[dict],
                             total_scans: int) -> None:
         # Only executed-and-closed trades belong in the daily P&L/record. A

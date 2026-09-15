@@ -35,6 +35,24 @@ class TradeNotifier:
             except Exception as e:
                 logger.error("Notification failed (%s): %s", type(ch).__name__, e)
 
+    def notify_alert(self, title: str, message: str | None = None,
+                     level: str = "warning") -> None:
+        """Send an operational alert (orphaned position, failed order).
+
+        Two call shapes are in use and both are supported: `notify_alert(msg)`
+        for a bare message, and `notify_alert(title, body, level=...)` for the
+        titled form the order-placement handler uses. This method did not exist
+        on this lineage, so that handler's alert silently raised AttributeError
+        into its own except block and never reached anyone.
+        """
+        if message is None:
+            title, message = "Agent alert", title
+        for ch in self._channels:
+            try:
+                ch.notify_alert(title, message, level)
+            except Exception as e:
+                logger.error("Notification failed (%s): %s", type(ch).__name__, e)
+
     def notify_status_update(self, trades: list[dict], open_trades: list[dict],
                              total_scans: int, scan_triggers: int,
                              scan_rejects: int) -> None:

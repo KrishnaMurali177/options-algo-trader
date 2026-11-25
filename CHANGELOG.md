@@ -113,3 +113,5 @@
 - [2026-09-14] Modified: options_agent/src/utils/alpaca_data.py — Capped the 0DTE chain pagination (was `while True`) at 20 pages / 60s wall-clock, so the loop cannot outrun a 5-min bar even when individual requests succeed
 - [2026-09-14] Modified: options_agent/scripts/run_sweet_spot_agent.py — install_default_timeouts() at startup; contract selection is now timed and raises an ERROR + ops alert past CONTRACT_SELECT_WARN_SEC (30s), so a slow trigger-to-order path is never silent again
 - [2026-09-14] Created: options_agent/tests/test_alpaca_http_timeout.py — 10 tests covering timeout injection, idempotent binding, explicit-timeout passthrough, safe install/uninstall, and the chain-paging caps
+- [2026-11-25] Modified: options_agent/scripts/replay_sweet_spot.py — Added causal --post-stag-block-bars (default 0 = off) for the post-stagnation re-entry A/B
+- [2026-11-25] Created: options_agent/docs/2026-11-24_ez_drivers/ — E[z] drivers study; §6 causal post-stag check, §7 A/B (REJECTED), ab_summary.json, analysis scripts

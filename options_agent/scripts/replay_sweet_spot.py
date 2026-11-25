@@ -226,6 +226,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                  tiered_stag_pnl_lo: float = -0.1,
                  tiered_stag_pnl_hi: float = 0.2,
                  stag_cooldown_bars: int = 1,
+                 post_stag_block_bars: int = 0,
                  r_anchored_risk: bool = False,
                  r_anchor_pct: float = 0.25,
                    extension_veto: bool = False,
@@ -317,6 +318,7 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
     triggers = []
     last_trigger_idx = -999
     last_was_stagnation = False  # Track for extended stag cooldown
+    last_stag_exit_ts = None  # most recent stagnation exit the agent has SEEN (exit_ts <= scan ts)
     open_until: dict[str, pd.Timestamp | None] = {"buy_call": None, "buy_put": None}
     stops_today = 0  # Track stop-outs for daily loss limit
     consecutive_losses = 0  # Track streak for streak breaker
@@ -411,6 +413,8 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
                 if px["exit_ts"] <= ts:
                     if px["outcome"] == "stop":
                         stops_today += 1
+                    if px["outcome"] == "stagnation":
+                        last_stag_exit_ts = px["exit_ts"]
                     if px["pnl"] <= 0:
                         consecutive_losses += 1
                     else:
@@ -425,6 +429,15 @@ def replay_day(day_bars: pd.DataFrame, trade_date: date, max_chop: int = 5,
             break
         if max_consecutive_losses > 0 and consecutive_losses >= max_consecutive_losses:
             break
+        # Post-stagnation block (A/B, 2026-11-25): causal — keyed on a stagnation
+        # exit that has already been drained (happened), unlike stag_cooldown_bars,
+        # which reads the previous entry's eventual outcome at entry time.
+        # <0 = no more entries today after a stag exit; N>0 = block N bars after it.
+        if post_stag_block_bars and last_stag_exit_ts is not None:
+            if post_stag_block_bars < 0:
+                break
+            if ts < last_stag_exit_ts + pd.Timedelta(minutes=5 * post_stag_block_bars):
+                continue
         if daily_loss_limit > 0 and daily_pnl_cumulative <= -daily_loss_limit:
             break
 
@@ -1682,6 +1695,10 @@ def main():
     parser.add_argument("--stag-cooldown-bars", type=int, default=1,
                         help="Extended cooldown bars after stagnation exit (default: 1 = matches live agent, "
                              "which has no extra post-stagnation cooldown — see bug_replay_cooldown_timing_drift)")
+    parser.add_argument("--post-stag-block-bars", type=int, default=0,
+                        help="A/B (2026-11-25): after a stagnation exit has HAPPENED, block new entries for N "
+                             "bars (N>0) or for the rest of the day (N<0). 0 = off (golden). Causal, unlike "
+                             "--stag-cooldown-bars which reads the prior entry's eventual outcome.")
     parser.add_argument("--r-anchored-risk", action="store_true", default=False,
                         help="A/B: anchor risk to a fixed fraction of range width (default: 25%%) "
                              "instead of (entry - mid_stop). Removes endogeneity between entry "
@@ -2169,6 +2186,7 @@ def main():
                               tiered_stag_pnl_lo=args.tiered_stag_pnl_lo,
                               tiered_stag_pnl_hi=args.tiered_stag_pnl_hi,
                               stag_cooldown_bars=args.stag_cooldown_bars,
+                              post_stag_block_bars=args.post_stag_block_bars,
                               r_anchored_risk=args.r_anchored_risk,
                               r_anchor_pct=args.r_anchor_pct,
                               extension_veto=args.extension_veto,
